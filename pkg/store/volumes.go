@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlVolumeStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlVolumeStore) Create(ctx context.Context, v *Volume) error {

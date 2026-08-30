@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,60 @@ func TestStore_MigrationsAndPing(t *testing.T) {
 	if err := st.Ping(ctx); err != nil {
 		t.Fatalf("Ping failed: %v", err)
 	}
+}
+
+// TestStore_PragmasAppliedOnEveryPooledConnection proves that busy_timeout and
+// foreign_keys (per-connection SQLite session settings) are active on every
+// connection database/sql opens in the pool, not just the first one that
+// happened to run the one-time pragma ExecContext calls used to. Each
+// concurrent goroutine holds its own transaction (which pins a distinct
+// pooled connection for its duration) and queries the pragma values back.
+func TestStore_PragmasAppliedOnEveryPooledConnection(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "pragma_test.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	db := st.DB()
+	ctx := context.Background()
+
+	const concurrentConns = 12
+	var wg sync.WaitGroup
+	for i := 0; i < concurrentConns; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Errorf("BeginTx failed: %v", err)
+				return
+			}
+			defer tx.Rollback()
+
+			var busyTimeout int
+			if err := tx.QueryRowContext(ctx, "PRAGMA busy_timeout;").Scan(&busyTimeout); err != nil {
+				t.Errorf("query busy_timeout failed: %v", err)
+				return
+			}
+			if busyTimeout != 5000 {
+				t.Errorf("busy_timeout = %d, want 5000 (per-connection pragma not applied)", busyTimeout)
+			}
+
+			var foreignKeys int
+			if err := tx.QueryRowContext(ctx, "PRAGMA foreign_keys;").Scan(&foreignKeys); err != nil {
+				t.Errorf("query foreign_keys failed: %v", err)
+				return
+			}
+			if foreignKeys != 1 {
+				t.Errorf("foreign_keys = %d, want 1 (per-connection pragma not applied)", foreignKeys)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestStore_Organizations(t *testing.T) {
@@ -429,4 +484,3 @@ func TestStore_BackupSchedules(t *testing.T) {
 		t.Fatalf("Expected ErrNotFound after deletion, got: %v", err)
 	}
 }
-

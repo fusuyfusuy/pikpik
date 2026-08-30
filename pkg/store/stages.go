@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlStageStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlStageStore) Create(ctx context.Context, stage *Stage) error {

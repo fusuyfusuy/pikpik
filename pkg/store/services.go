@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlServiceStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {

@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlScheduleStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 const scheduleSelectCols = `

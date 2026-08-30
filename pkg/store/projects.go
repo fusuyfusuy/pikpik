@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlProjectStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlProjectStore) Create(ctx context.Context, p *Project) error {

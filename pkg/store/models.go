@@ -48,15 +48,16 @@ type Session struct {
 
 // APIToken represents a machine-to-machine scoped authorization token.
 type APIToken struct {
-	ID         string     `json:"id"`
-	UserID     string     `json:"user_id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"` // First 12 chars e.g. "pik_live_a1b2"
-	TokenHash  string     `json:"-"`      // SHA-256 hex digest
-	Scopes     []string   `json:"scopes"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	ExpiresAt  *time.Time `json:"expires_at"` // NULL = Never expires
-	CreatedAt  time.Time  `json:"created_at"`
+	ID             string     `json:"id"`
+	UserID         string     `json:"user_id"`
+	Name           string     `json:"name"`
+	Prefix         string     `json:"prefix"` // First 12 chars e.g. "pik_live_a1b2"
+	TokenHash      string     `json:"-"`      // SHA-256 hex digest
+	Scopes         []string   `json:"scopes"`
+	SessionVersion int        `json:"-"` // User's session_version at issuance; invalidated once it falls behind
+	LastUsedAt     *time.Time `json:"last_used_at"`
+	ExpiresAt      *time.Time `json:"expires_at"` // NULL = Never expires
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // Project represents an application grouping.
@@ -156,15 +157,15 @@ type BackupConfig struct {
 
 // BackupExecution represents an individual backup run log.
 type BackupExecution struct {
-	ID             string    `json:"id"`
-	ConfigID       string    `json:"config_id"`
-	ServiceID      string    `json:"service_id"`
-	S3Key          string    `json:"s3_key"`
-	BytesStreamed  int64     `json:"bytes_streamed"`
-	DurationMS     int64     `json:"duration_ms"`
-	Status         string    `json:"status"` // "in_progress", "completed", "failed"
-	ErrorMessage   string    `json:"error_message,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	ConfigID      string    `json:"config_id"`
+	ServiceID     string    `json:"service_id"`
+	S3Key         string    `json:"s3_key"`
+	BytesStreamed int64     `json:"bytes_streamed"`
+	DurationMS    int64     `json:"duration_ms"`
+	Status        string    `json:"status"` // "in_progress", "completed", "failed"
+	ErrorMessage  string    `json:"error_message,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // AuditLog represents an immutable security audit event.
@@ -205,4 +206,3 @@ type BackupSchedule struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 }
-

@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlAPITokenStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlAPITokenStore) Create(ctx context.Context, token *APIToken) error {
@@ -26,6 +24,9 @@ func (s *sqlAPITokenStore) Create(ctx context.Context, token *APIToken) error {
 	if token.Scopes == nil {
 		token.Scopes = []string{}
 	}
+	if token.SessionVersion == 0 {
+		token.SessionVersion = 1
+	}
 
 	scopesJSON, err := json.Marshal(token.Scopes)
 	if err != nil {
@@ -34,12 +35,12 @@ func (s *sqlAPITokenStore) Create(ctx context.Context, token *APIToken) error {
 
 	query := `
 	INSERT INTO api_tokens (
-		id, user_id, name, prefix, token_hash, scopes, last_used_at, expires_at, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		id, user_id, name, prefix, token_hash, scopes, session_version, last_used_at, expires_at, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		token.ID, token.UserID, token.Name, token.Prefix, token.TokenHash,
-		string(scopesJSON), token.LastUsedAt, token.ExpiresAt, token.CreatedAt,
+		string(scopesJSON), token.SessionVersion, token.LastUsedAt, token.ExpiresAt, token.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to create api token: %w", err)
@@ -49,7 +50,7 @@ func (s *sqlAPITokenStore) Create(ctx context.Context, token *APIToken) error {
 
 func (s *sqlAPITokenStore) GetByID(ctx context.Context, id string) (*APIToken, error) {
 	query := `
-	SELECT id, user_id, name, prefix, token_hash, scopes, last_used_at, expires_at, created_at
+	SELECT id, user_id, name, prefix, token_hash, scopes, session_version, last_used_at, expires_at, created_at
 	FROM api_tokens WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, id)
@@ -58,7 +59,7 @@ func (s *sqlAPITokenStore) GetByID(ctx context.Context, id string) (*APIToken, e
 
 func (s *sqlAPITokenStore) GetByHash(ctx context.Context, tokenHash string) (*APIToken, error) {
 	query := `
-	SELECT id, user_id, name, prefix, token_hash, scopes, last_used_at, expires_at, created_at
+	SELECT id, user_id, name, prefix, token_hash, scopes, session_version, last_used_at, expires_at, created_at
 	FROM api_tokens WHERE token_hash = ?`
 
 	row := s.db.QueryRowContext(ctx, query, tokenHash)
@@ -71,7 +72,7 @@ func (s *sqlAPITokenStore) scanToken(row *sql.Row) (*APIToken, error) {
 
 	err := row.Scan(
 		&token.ID, &token.UserID, &token.Name, &token.Prefix,
-		&token.TokenHash, &scopesJSON, &token.LastUsedAt, &token.ExpiresAt, &token.CreatedAt,
+		&token.TokenHash, &scopesJSON, &token.SessionVersion, &token.LastUsedAt, &token.ExpiresAt, &token.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -88,7 +89,7 @@ func (s *sqlAPITokenStore) scanToken(row *sql.Row) (*APIToken, error) {
 
 func (s *sqlAPITokenStore) ListByUser(ctx context.Context, userID string) ([]*APIToken, error) {
 	query := `
-	SELECT id, user_id, name, prefix, token_hash, scopes, last_used_at, expires_at, created_at
+	SELECT id, user_id, name, prefix, token_hash, scopes, session_version, last_used_at, expires_at, created_at
 	FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, query, userID)
@@ -104,7 +105,7 @@ func (s *sqlAPITokenStore) ListByUser(ctx context.Context, userID string) ([]*AP
 
 		err := rows.Scan(
 			&token.ID, &token.UserID, &token.Name, &token.Prefix,
-			&token.TokenHash, &scopesJSON, &token.LastUsedAt, &token.ExpiresAt, &token.CreatedAt,
+			&token.TokenHash, &scopesJSON, &token.SessionVersion, &token.LastUsedAt, &token.ExpiresAt, &token.CreatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: failed to scan token row: %w", err)

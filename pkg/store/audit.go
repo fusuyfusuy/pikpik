@@ -4,13 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 )
 
 type sqlAuditStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlAuditStore) Record(ctx context.Context, userID, action, resType, resID, metadataJSON, ip string) error {

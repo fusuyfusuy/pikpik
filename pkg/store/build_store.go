@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -29,8 +28,7 @@ type GitHubInstallationStore interface {
 }
 
 type sqlBuildStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlBuildStore) Create(ctx context.Context, b *Build) error {
@@ -200,8 +198,7 @@ func (s *sqlBuildStore) Delete(ctx context.Context, id string) error {
 }
 
 type sqlGitHubInstallationStore struct {
-	db      dbExecutor
-	writeMu *sync.Mutex
+	db dbExecutor
 }
 
 func (s *sqlGitHubInstallationStore) Create(ctx context.Context, inst *GitHubInstallation) error {
