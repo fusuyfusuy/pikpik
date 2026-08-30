@@ -44,13 +44,15 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 
 	query := `
 	INSERT INTO services (
-		id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		svc.ID, svc.ProjectID, svc.StageID, svc.Name, svc.Slug, svc.Type,
 		svc.Image, svc.Replicas, svc.ContainerPort, string(domainsJSON),
-		svc.DeployTokenHash, svc.Status, svc.CreatedAt, svc.UpdatedAt,
+		svc.DeployTokenHash, svc.Status, svc.GitRepoURL, svc.GitBranch,
+		svc.BuildStrategy, svc.DockerfilePath, svc.PublishDirectory,
+		svc.CreatedAt, svc.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to create service: %w", err)
@@ -60,7 +62,7 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 
 func (s *sqlServiceStore) GetByID(ctx context.Context, id string) (*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
 	FROM services WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, id)
@@ -69,7 +71,7 @@ func (s *sqlServiceStore) GetByID(ctx context.Context, id string) (*Service, err
 
 func (s *sqlServiceStore) GetBySlug(ctx context.Context, projectID, stageID, slug string) (*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
 	FROM services WHERE project_id = ? AND stage_id = ? AND slug = ?`
 
 	row := s.db.QueryRowContext(ctx, query, projectID, stageID, slug)
@@ -81,11 +83,18 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 	var domainsJSON string
 	var containerPort sql.NullInt64
 	var deployTokenHash sql.NullString
+	var gitRepoURL sql.NullString
+	var gitBranch sql.NullString
+	var buildStrategy sql.NullString
+	var dockerfilePath sql.NullString
+	var publishDirectory sql.NullString
 
 	err := row.Scan(
 		&svc.ID, &svc.ProjectID, &svc.StageID, &svc.Name, &svc.Slug, &svc.Type,
 		&svc.Image, &svc.Replicas, &containerPort, &domainsJSON,
-		&deployTokenHash, &svc.Status, &svc.CreatedAt, &svc.UpdatedAt,
+		&deployTokenHash, &svc.Status,
+		&gitRepoURL, &gitBranch, &buildStrategy, &dockerfilePath, &publishDirectory,
+		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -98,6 +107,11 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 		svc.ContainerPort = int(containerPort.Int64)
 	}
 	svc.DeployTokenHash = deployTokenHash.String
+	svc.GitRepoURL = gitRepoURL.String
+	svc.GitBranch = gitBranch.String
+	svc.BuildStrategy = buildStrategy.String
+	svc.DockerfilePath = dockerfilePath.String
+	svc.PublishDirectory = publishDirectory.String
 
 	if err := json.Unmarshal([]byte(domainsJSON), &svc.DomainNames); err != nil {
 		svc.DomainNames = []string{}
@@ -107,7 +121,7 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 
 func (s *sqlServiceStore) ListByStage(ctx context.Context, stageID string) ([]*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
 	FROM services WHERE stage_id = ? ORDER BY name ASC`
 
 	rows, err := s.db.QueryContext(ctx, query, stageID)
@@ -122,11 +136,18 @@ func (s *sqlServiceStore) ListByStage(ctx context.Context, stageID string) ([]*S
 		var domainsJSON string
 		var containerPort sql.NullInt64
 		var deployTokenHash sql.NullString
+		var gitRepoURL sql.NullString
+		var gitBranch sql.NullString
+		var buildStrategy sql.NullString
+		var dockerfilePath sql.NullString
+		var publishDirectory sql.NullString
 
 		err := rows.Scan(
 			&svc.ID, &svc.ProjectID, &svc.StageID, &svc.Name, &svc.Slug, &svc.Type,
 			&svc.Image, &svc.Replicas, &containerPort, &domainsJSON,
-			&deployTokenHash, &svc.Status, &svc.CreatedAt, &svc.UpdatedAt,
+			&deployTokenHash, &svc.Status,
+			&gitRepoURL, &gitBranch, &buildStrategy, &dockerfilePath, &publishDirectory,
+			&svc.CreatedAt, &svc.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: failed to scan service row: %w", err)
@@ -136,6 +157,11 @@ func (s *sqlServiceStore) ListByStage(ctx context.Context, stageID string) ([]*S
 			svc.ContainerPort = int(containerPort.Int64)
 		}
 		svc.DeployTokenHash = deployTokenHash.String
+		svc.GitRepoURL = gitRepoURL.String
+		svc.GitBranch = gitBranch.String
+		svc.BuildStrategy = buildStrategy.String
+		svc.DockerfilePath = dockerfilePath.String
+		svc.PublishDirectory = publishDirectory.String
 
 		if err := json.Unmarshal([]byte(domainsJSON), &svc.DomainNames); err != nil {
 			svc.DomainNames = []string{}
@@ -174,12 +200,16 @@ func (s *sqlServiceStore) Update(ctx context.Context, svc *Service) error {
 	query := `
 	UPDATE services SET
 		name = ?, slug = ?, type = ?, image = ?, replicas = ?,
-		container_port = ?, domain_names = ?, deploy_token_hash = ?, status = ?, updated_at = ?
+		container_port = ?, domain_names = ?, deploy_token_hash = ?, status = ?,
+		git_repo_url = ?, git_branch = ?, build_strategy = ?, dockerfile_path = ?, publish_directory = ?,
+		updated_at = ?
 	WHERE id = ?`
 
 	res, err := s.db.ExecContext(ctx, query,
 		svc.Name, svc.Slug, svc.Type, svc.Image, svc.Replicas,
-		svc.ContainerPort, string(domainsJSON), svc.DeployTokenHash, svc.Status, svc.UpdatedAt, svc.ID,
+		svc.ContainerPort, string(domainsJSON), svc.DeployTokenHash, svc.Status,
+		svc.GitRepoURL, svc.GitBranch, svc.BuildStrategy, svc.DockerfilePath, svc.PublishDirectory,
+		svc.UpdatedAt, svc.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: failed to update service: %w", err)

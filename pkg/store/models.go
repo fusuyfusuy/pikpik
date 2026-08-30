@@ -83,20 +83,25 @@ type Stage struct {
 
 // Service represents a workload container or database.
 type Service struct {
-	ID              string    `json:"id"`
-	ProjectID       string    `json:"project_id"`
-	StageID         string    `json:"stage_id"`
-	Name            string    `json:"name"`
-	Slug            string    `json:"slug"`
-	Type            string    `json:"type"` // "app", "database", "worker", "job"
-	Image           string    `json:"image"`
-	Replicas        int       `json:"replicas"`
-	ContainerPort   int       `json:"container_port"`
-	DomainNames     []string  `json:"domain_names"`
-	DeployTokenHash string    `json:"-"`
-	Status          string    `json:"status"` // "idle", "deploying", "running", "unhealthy", "stopped", "failed"
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	ProjectID        string    `json:"project_id"`
+	StageID          string    `json:"stage_id"`
+	Name             string    `json:"name"`
+	Slug             string    `json:"slug"`
+	Type             string    `json:"type"` // "app", "database", "worker", "job"
+	Image            string    `json:"image"`
+	Replicas         int       `json:"replicas"`
+	ContainerPort    int       `json:"container_port"`
+	DomainNames      []string  `json:"domain_names"`
+	DeployTokenHash  string    `json:"-"`
+	Status           string    `json:"status"` // "idle", "deploying", "running", "unhealthy", "stopped", "failed"
+	GitRepoURL       string    `json:"git_repo_url,omitempty"`
+	GitBranch        string    `json:"git_branch,omitempty"`
+	BuildStrategy    string    `json:"build_strategy,omitempty"`
+	DockerfilePath   string    `json:"dockerfile_path,omitempty"`
+	PublishDirectory string    `json:"publish_directory,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // EnvVar represents an encrypted environment variable at any hierarchy tier.
