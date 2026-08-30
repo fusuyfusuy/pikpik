@@ -153,9 +153,42 @@ func BuildCaddyRoute(spec RouteSpec) CaddyRoute {
 
 // BuildCaddyConfig constructs the full server bootstrap and reconciliation configuration.
 func BuildCaddyConfig(routes []RouteSpec, tlsCfg GlobalTLSConfig) CaddyConfig {
-	caddyRoutes := make([]CaddyRoute, 0, len(routes))
+	return BuildCaddyConfigWithSplits(routes, nil, tlsCfg)
+}
+
+// BuildCaddyConfigWithSplits constructs the full Caddy configuration preserving active traffic splits.
+func BuildCaddyConfigWithSplits(routes []RouteSpec, splits []TrafficSplitConfig, tlsCfg GlobalTLSConfig) CaddyConfig {
+	splitMap := make(map[string]TrafficSplitConfig, len(splits))
+	for _, s := range splits {
+		if s.Domain != "" {
+			splitMap[s.Domain] = s
+		}
+	}
+
+	caddyRoutes := make([]CaddyRoute, 0, len(routes)+len(splits))
+	emittedSplits := make(map[string]bool)
+
 	for _, spec := range routes {
-		caddyRoutes = append(caddyRoutes, BuildCaddyRoute(spec))
+		hasSplit := false
+		for _, h := range spec.Hosts {
+			if splitCfg, ok := splitMap[h]; ok {
+				if !emittedSplits[h] {
+					caddyRoutes = append(caddyRoutes, BuildTrafficSplitRoute(splitCfg))
+					emittedSplits[h] = true
+				}
+				hasSplit = true
+			}
+		}
+		if !hasSplit {
+			caddyRoutes = append(caddyRoutes, BuildCaddyRoute(spec))
+		}
+	}
+
+	for domain, splitCfg := range splitMap {
+		if !emittedSplits[domain] {
+			caddyRoutes = append(caddyRoutes, BuildTrafficSplitRoute(splitCfg))
+			emittedSplits[domain] = true
+		}
 	}
 
 	loadFiles := make([]CaddyTLSFileLoader, 0)

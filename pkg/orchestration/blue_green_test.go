@@ -66,6 +66,13 @@ func (m *MockTrafficSplitter) GetTrafficSplit(ctx context.Context, domain string
 	return &cfg, nil
 }
 
+func (m *MockTrafficSplitter) RemoveTrafficSplit(ctx context.Context, domain string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.splits, domain)
+	return nil
+}
+
 // TestBlueGreenDeployer_Success verifies a complete end-to-end Blue-Green switchover.
 func TestBlueGreenDeployer_Success(t *testing.T) {
 	var stoppedContainers []string

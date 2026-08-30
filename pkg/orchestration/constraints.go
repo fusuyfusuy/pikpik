@@ -98,8 +98,8 @@ func (c PlacementConstraint) MatchesNode(node NodeStatus) bool {
 		}
 	case strings.HasPrefix(c.Field, "engine.labels."):
 		key := strings.TrimPrefix(c.Field, "engine.labels.")
-		if node.Labels != nil {
-			actualValue, exists = node.Labels[key]
+		if node.EngineLabels != nil {
+			actualValue, exists = node.EngineLabels[key]
 		}
 	}
 

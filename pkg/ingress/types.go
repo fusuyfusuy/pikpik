@@ -96,6 +96,9 @@ type IngressManager interface {
 
 	// GetTrafficSplit returns the current traffic split config for a domain.
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
+
+	// RemoveTrafficSplit removes the traffic split route for a domain.
+	RemoveTrafficSplit(ctx context.Context, domain string) error
 }
 
 // TrafficSplitter defines the contract for canary traffic shifting.
@@ -103,6 +106,7 @@ type TrafficSplitter interface {
 	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
 	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
+	RemoveTrafficSplit(ctx context.Context, domain string) error
 }
 
 // CaddyClient defines the raw REST client talking to http://127.0.0.1:2019.
@@ -116,4 +120,5 @@ type CaddyClient interface {
 	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
 	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
+	RemoveTrafficSplit(ctx context.Context, domain string) error
 }

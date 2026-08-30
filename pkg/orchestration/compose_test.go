@@ -1,11 +1,17 @@
 package orchestration_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // TestResolveDeploymentOrder verifies Kahn's topological sorting algorithm on service DAGs.
@@ -199,4 +205,152 @@ volumes:
 	if len(spec.Volumes) != 2 {
 		t.Errorf("expected 2 volumes, got %d", len(spec.Volumes))
 	}
+}
+
+func TestStackManager_RollbackAndErrorPropagation(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("NetworkCreate failure propagates and triggers rollback", func(t *testing.T) {
+		removedNets := make([]string, 0)
+		mock := &MockDockerClient{
+			NetworkCreateFunc: func(ctx context.Context, name string, options types.NetworkCreate) (types.NetworkCreateResponse, error) {
+				if name == "teststack_net2" {
+					return types.NetworkCreateResponse{}, errors.New("network subnet collision")
+				}
+				return types.NetworkCreateResponse{ID: "nid-" + name}, nil
+			},
+			NetworkRemoveFunc: func(ctx context.Context, networkID string) error {
+				removedNets = append(removedNets, networkID)
+				return nil
+			},
+		}
+
+		containers := orchestration.NewDockerContainerManager(mock)
+		stacks := orchestration.NewDockerStackManager(mock, containers)
+
+		spec := orchestration.ComposeStackSpec{
+			Name:     "teststack",
+			Networks: []string{"net1", "net2"},
+			Services: map[string]orchestration.ComposeServiceDef{
+				"app": {Name: "app", Image: "alpine"},
+			},
+		}
+
+		res, err := stacks.DeployStack(ctx, spec)
+		if err == nil {
+			t.Fatalf("expected error from NetworkCreate failure, got nil")
+		}
+		if res == nil || len(res.Errors) == 0 {
+			t.Errorf("expected errors recorded in deployment result")
+		}
+
+		// First network should have been cleaned up
+		if len(removedNets) != 1 || removedNets[0] != "teststack_net1" {
+			t.Errorf("expected net1 to be cleaned up on rollback, got %v", removedNets)
+		}
+	})
+
+	t.Run("VolumeCreate failure propagates and triggers rollback", func(t *testing.T) {
+		removedNets := make([]string, 0)
+		removedVols := make([]string, 0)
+		mock := &MockDockerClient{
+			NetworkCreateFunc: func(ctx context.Context, name string, options types.NetworkCreate) (types.NetworkCreateResponse, error) {
+				return types.NetworkCreateResponse{ID: "nid-" + name}, nil
+			},
+			NetworkRemoveFunc: func(ctx context.Context, networkID string) error {
+				removedNets = append(removedNets, networkID)
+				return nil
+			},
+			VolumeCreateFunc: func(ctx context.Context, options volume.CreateOptions) (volume.Volume, error) {
+				if options.Name == "testvolstack_vol2" {
+					return volume.Volume{}, errors.New("disk quota exceeded")
+				}
+				return volume.Volume{Name: options.Name}, nil
+			},
+			VolumeRemoveFunc: func(ctx context.Context, volumeID string, force bool) error {
+				removedVols = append(removedVols, volumeID)
+				return nil
+			},
+		}
+
+		containers := orchestration.NewDockerContainerManager(mock)
+		stacks := orchestration.NewDockerStackManager(mock, containers)
+
+		spec := orchestration.ComposeStackSpec{
+			Name:     "testvolstack",
+			Networks: []string{"net1"},
+			Volumes:  []string{"vol1", "vol2"},
+			Services: map[string]orchestration.ComposeServiceDef{
+				"app": {Name: "app", Image: "alpine"},
+			},
+		}
+
+		res, err := stacks.DeployStack(ctx, spec)
+		if err == nil {
+			t.Fatalf("expected error from VolumeCreate failure, got nil")
+		}
+		if res == nil || len(res.Errors) == 0 {
+			t.Errorf("expected errors recorded in deployment result")
+		}
+
+		// vol1 and net1 should have been cleaned up
+		if len(removedVols) != 1 || removedVols[0] != "testvolstack_vol1" {
+			t.Errorf("expected vol1 to be cleaned up on rollback, got %v", removedVols)
+		}
+		if len(removedNets) != 1 || removedNets[0] != "testvolstack_net1" {
+			t.Errorf("expected net1 to be cleaned up on rollback, got %v", removedNets)
+		}
+	})
+
+	t.Run("Container creation failure cleans up volumes and networks", func(t *testing.T) {
+		removedNets := make([]string, 0)
+		removedVols := make([]string, 0)
+		mock := &MockDockerClient{
+			NetworkCreateFunc: func(ctx context.Context, name string, options types.NetworkCreate) (types.NetworkCreateResponse, error) {
+				return types.NetworkCreateResponse{ID: "nid-" + name}, nil
+			},
+			NetworkRemoveFunc: func(ctx context.Context, networkID string) error {
+				removedNets = append(removedNets, networkID)
+				return nil
+			},
+			VolumeCreateFunc: func(ctx context.Context, options volume.CreateOptions) (volume.Volume, error) {
+				return volume.Volume{Name: options.Name}, nil
+			},
+			VolumeRemoveFunc: func(ctx context.Context, volumeID string, force bool) error {
+				removedVols = append(removedVols, volumeID)
+				return nil
+			},
+			ContainerCreateFunc: func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
+				return container.CreateResponse{}, errors.New("image pull rate limit")
+			},
+		}
+
+		containers := orchestration.NewDockerContainerManager(mock)
+		stacks := orchestration.NewDockerStackManager(mock, containers)
+
+		spec := orchestration.ComposeStackSpec{
+			Name:     "testcstack",
+			Networks: []string{"app_net"},
+			Volumes:  []string{"app_data"},
+			Services: map[string]orchestration.ComposeServiceDef{
+				"web": {Name: "web", Image: "nginx:alpine"},
+			},
+		}
+
+		res, err := stacks.DeployStack(ctx, spec)
+		if err == nil {
+			t.Fatalf("expected error from container creation failure, got nil")
+		}
+		if res == nil || len(res.Errors) == 0 {
+			t.Errorf("expected errors in result")
+		}
+
+		// Verify volume and network cleanup
+		if len(removedVols) != 1 || removedVols[0] != "testcstack_app_data" {
+			t.Errorf("expected app_data volume to be cleaned up on rollback, got %v", removedVols)
+		}
+		if len(removedNets) != 1 || removedNets[0] != "testcstack_app_net" {
+			t.Errorf("expected app_net network to be cleaned up on rollback, got %v", removedNets)
+		}
+	})
 }

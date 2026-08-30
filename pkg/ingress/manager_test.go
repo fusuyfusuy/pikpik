@@ -259,3 +259,144 @@ func TestIngressManager_ReconcileFromStore(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressManager_ReconcilePreservesActiveCanarySplits(t *testing.T) {
+	var lastConfig ingress.CaddyConfig
+	var mu sync.Mutex
+	routesStore := make(map[string]ingress.CaddyRoute)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/load":
+			_ = json.NewDecoder(r.Body).Decode(&lastConfig)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPut && len(r.URL.Path) > 4 && r.URL.Path[:4] == "/id/":
+			id := r.URL.Path[4:]
+			var route ingress.CaddyRoute
+			_ = json.NewDecoder(r.Body).Decode(&route)
+			routesStore[id] = route
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`true`))
+		case r.Method == http.MethodDelete && len(r.URL.Path) > 4 && r.URL.Path[:4] == "/id/":
+			id := r.URL.Path[4:]
+			delete(routesStore, id)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`true`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := ingress.NewCaddyClient(server.URL, time.Second)
+	mgr := ingress.NewIngressManager(client, nil)
+	ctx := context.Background()
+
+	// 1. Set active canary split (80% stable, 20% canary) on api.example.com
+	splitCfg := ingress.TrafficSplitConfig{
+		Domain:         "api.example.com",
+		StableUpstream: "api_blue:8080",
+		CanaryUpstream: "api_green:8080",
+		CanaryPercent:  20,
+	}
+	if err := mgr.SetTrafficSplit(ctx, "api.example.com", splitCfg); err != nil {
+		t.Fatalf("SetTrafficSplit failed: %v", err)
+	}
+
+	// 2. Perform ReconcileAll with static routes
+	staticRoutes := []ingress.RouteSpec{
+		{
+			ID:           "route_app_example_com",
+			ServiceID:    "svc_app",
+			Hosts:        []string{"app.example.com"},
+			UpstreamDial: "app:3000",
+			EnableHSTS:   true,
+		},
+		{
+			ID:           "route_api_example_com",
+			ServiceID:    "svc_api",
+			Hosts:        []string{"api.example.com"},
+			UpstreamDial: "api_blue:8080",
+			EnableHSTS:   true,
+		},
+	}
+	tlsCfg := ingress.GlobalTLSConfig{AdminEmail: "admin@example.com"}
+
+	if err := mgr.ReconcileAll(ctx, staticRoutes, tlsCfg); err != nil {
+		t.Fatalf("ReconcileAll failed: %v", err)
+	}
+
+	mu.Lock()
+	loadedRoutes := lastConfig.Apps.HTTP.Servers["srv0"].Routes
+	mu.Unlock()
+
+	if len(loadedRoutes) != 2 {
+		t.Fatalf("expected 2 loaded routes, got %d", len(loadedRoutes))
+	}
+
+	// Verify that api.example.com preserved the split route structure
+	var apiRoute *ingress.CaddyRoute
+	for i := range loadedRoutes {
+		if len(loadedRoutes[i].Match) > 0 && len(loadedRoutes[i].Match[0].Host) > 0 && loadedRoutes[i].Match[0].Host[0] == "api.example.com" {
+			apiRoute = &loadedRoutes[i]
+			break
+		}
+	}
+	if apiRoute == nil {
+		t.Fatalf("api.example.com route not found in reconciled config")
+	}
+	if apiRoute.ID != ingress.GenerateTrafficSplitRouteID("api.example.com") {
+		t.Errorf("expected split route ID %s, got %s", ingress.GenerateTrafficSplitRouteID("api.example.com"), apiRoute.ID)
+	}
+
+	// Check upstreams inside subroute handler
+	subroute := apiRoute.Handle[0]
+	innerRoute := subroute.Routes[0]
+	var rpHandler *ingress.CaddyRouteHandler
+	for _, h := range innerRoute.Handle {
+		if h.Handler == "reverse_proxy" {
+			hCopy := h
+			rpHandler = &hCopy
+			break
+		}
+	}
+	if rpHandler == nil {
+		t.Fatalf("reverse_proxy handler not found on split route")
+	}
+	if len(rpHandler.Upstreams) != 2 {
+		t.Fatalf("expected 2 upstreams on split route, got %d", len(rpHandler.Upstreams))
+	}
+	if rpHandler.Upstreams[0].Weight != 80 || rpHandler.Upstreams[1].Weight != 20 {
+		t.Errorf("unexpected upstreams weights: %+v", rpHandler.Upstreams)
+	}
+
+	// 3. Remove traffic split explicitly and reconcile again
+	if err := mgr.RemoveTrafficSplit(ctx, "api.example.com"); err != nil {
+		t.Fatalf("RemoveTrafficSplit failed: %v", err)
+	}
+
+	if err := mgr.ReconcileAll(ctx, staticRoutes, tlsCfg); err != nil {
+		t.Fatalf("second ReconcileAll failed: %v", err)
+	}
+
+	mu.Lock()
+	loadedRoutesAfter := lastConfig.Apps.HTTP.Servers["srv0"].Routes
+	mu.Unlock()
+
+	var apiRouteAfter *ingress.CaddyRoute
+	for i := range loadedRoutesAfter {
+		if len(loadedRoutesAfter[i].Match) > 0 && len(loadedRoutesAfter[i].Match[0].Host) > 0 && loadedRoutesAfter[i].Match[0].Host[0] == "api.example.com" {
+			apiRouteAfter = &loadedRoutesAfter[i]
+			break
+		}
+	}
+	if apiRouteAfter == nil {
+		t.Fatalf("api.example.com route not found after removing split")
+	}
+	if apiRouteAfter.ID == ingress.GenerateTrafficSplitRouteID("api.example.com") {
+		t.Errorf("route ID should revert from split ID, got %s", apiRouteAfter.ID)
+	}
+}

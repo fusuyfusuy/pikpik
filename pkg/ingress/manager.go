@@ -16,6 +16,7 @@ type DefaultIngressManager struct {
 	validator DomainValidator
 	mu        sync.RWMutex
 	routes    map[string]RouteSpec
+	splits    map[string]TrafficSplitConfig
 }
 
 // NewIngressManager constructs a new IngressManager instance.
@@ -24,6 +25,7 @@ func NewIngressManager(client CaddyClient, validator DomainValidator) *DefaultIn
 		client:    client,
 		validator: validator,
 		routes:    make(map[string]RouteSpec),
+		splits:    make(map[string]TrafficSplitConfig),
 	}
 }
 
@@ -68,6 +70,11 @@ func (m *DefaultIngressManager) RemoveRoute(ctx context.Context, routeID string)
 
 	m.mu.Lock()
 	delete(m.routes, routeID)
+	for domain := range m.splits {
+		if GenerateTrafficSplitRouteID(domain) == routeID {
+			delete(m.splits, domain)
+		}
+	}
 	m.mu.Unlock()
 
 	return nil
@@ -113,9 +120,16 @@ func (m *DefaultIngressManager) ListRoutes(ctx context.Context) ([]RouteSpec, er
 	return specs, nil
 }
 
-// ReconcileAll rebuilds the full Caddy routing and TLS state.
+// ReconcileAll rebuilds the full Caddy routing and TLS state while preserving active canary/traffic splits.
 func (m *DefaultIngressManager) ReconcileAll(ctx context.Context, routes []RouteSpec, tlsCfg GlobalTLSConfig) error {
-	config := BuildCaddyConfig(routes, tlsCfg)
+	m.mu.RLock()
+	activeSplits := make([]TrafficSplitConfig, 0, len(m.splits))
+	for _, s := range m.splits {
+		activeSplits = append(activeSplits, s)
+	}
+	m.mu.RUnlock()
+
+	config := BuildCaddyConfigWithSplits(routes, activeSplits, tlsCfg)
 	if err := m.client.LoadFullConfig(ctx, config); err != nil {
 		return err
 	}

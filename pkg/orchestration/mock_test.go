@@ -51,6 +51,7 @@ type MockDockerClient struct {
 	NetworkRemoveFunc         func(ctx context.Context, networkID string) error
 	NetworkConnectFunc        func(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	VolumeCreateFunc          func(ctx context.Context, options volume.CreateOptions) (volume.Volume, error)
+	VolumeRemoveFunc          func(ctx context.Context, volumeID string, force bool) error
 }
 
 func (m *MockDockerClient) Info(ctx context.Context) (system.Info, error) {
@@ -436,4 +437,11 @@ func (m *MockDockerClient) VolumeCreate(ctx context.Context, options volume.Crea
 		return m.VolumeCreateFunc(ctx, options)
 	}
 	return volume.Volume{Name: options.Name}, nil
+}
+
+func (m *MockDockerClient) VolumeRemove(ctx context.Context, volumeID string, force bool) error {
+	if m.VolumeRemoveFunc != nil {
+		return m.VolumeRemoveFunc(ctx, volumeID, force)
+	}
+	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/docker/docker/client"
 )
@@ -28,7 +27,7 @@ func NewDockerEngineClient(ctx context.Context, socketPath string) (*EngineClien
 	cli, err := client.NewClientWithOpts(
 		client.WithHost(socketPath),
 		client.WithHTTPClient(&http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 0,
 		}),
 		client.WithAPIVersionNegotiation(),
 	)

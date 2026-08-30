@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 )
@@ -196,5 +197,113 @@ func TestSwarmManagerServiceLifecycle(t *testing.T) {
 	}
 	if err := mgr.ScaleService(ctx, "", 2); !errors.Is(err, orchestration.ErrServiceNotFound) {
 		t.Errorf("expected ErrServiceNotFound for empty scale ID, got %v", err)
+	}
+}
+
+func TestSwarmManager_PlacementConstraintValidation(t *testing.T) {
+	mock := &MockDockerClient{}
+	mgr := orchestration.NewDockerSwarmManager(mock)
+	ctx := context.Background()
+
+	// 1. Invalid constraint in CreateService -> must fail before ServiceCreate
+	invalidCases := []struct {
+		name       string
+		constraint string
+	}{
+		{name: "invalid role", constraint: "node.role == master"},
+		{name: "unsupported field", constraint: "node.unknown == value"},
+		{name: "missing field", constraint: "== worker"},
+		{name: "missing label key", constraint: "node.labels. == us-east"},
+		{name: "missing engine label key", constraint: "engine.labels. == linux"},
+		{name: "invalid operator", constraint: "node.role >= worker"},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run("create_"+tc.name, func(t *testing.T) {
+			spec := orchestration.ServiceSpec{
+				Name:        "invalid-svc",
+				Image:       "nginx:alpine",
+				Constraints: []string{tc.constraint},
+			}
+			_, err := mgr.CreateService(ctx, spec)
+			if err == nil {
+				t.Fatalf("expected error for invalid constraint %q, got nil", tc.constraint)
+			}
+		})
+
+		t.Run("update_"+tc.name, func(t *testing.T) {
+			spec := orchestration.ServiceSpec{
+				Name:        "invalid-svc",
+				Image:       "nginx:alpine",
+				Constraints: []string{tc.constraint},
+			}
+			err := mgr.UpdateService(ctx, "svc-1", 1, spec)
+			if err == nil {
+				t.Fatalf("expected error for invalid constraint %q, got nil", tc.constraint)
+			}
+		})
+	}
+
+	// 2. Valid constraints in CreateService
+	validSpec := orchestration.ServiceSpec{
+		Name:  "valid-svc",
+		Image: "nginx:alpine",
+		Constraints: []string{
+			"node.role == worker",
+			"node.labels.disk == ssd",
+			"engine.labels.operatingsystem == linux",
+		},
+	}
+	sid, err := mgr.CreateService(ctx, validSpec)
+	if err != nil {
+		t.Fatalf("CreateService with valid constraints failed: %v", err)
+	}
+	if sid == "" {
+		t.Errorf("expected non-empty service ID")
+	}
+
+	// 3. Verify ListNodes populates EngineLabels
+	mock.NodeListFunc = func(ctx context.Context, options types.NodeListOptions) ([]swarm.Node, error) {
+		return []swarm.Node{
+			{
+				ID: "node-engine-test",
+				Description: swarm.NodeDescription{
+					Hostname: "worker-01",
+					Engine: swarm.EngineDescription{
+						EngineVersion: "27.5.1",
+						Labels:        map[string]string{"operatingsystem": "linux", "driver": "overlay2"},
+					},
+				},
+				Spec: swarm.NodeSpec{
+					Role: swarm.NodeRoleWorker,
+					Annotations: swarm.Annotations{
+						Labels: map[string]string{"disk": "ssd"},
+					},
+				},
+				Status: swarm.NodeStatus{
+					State: swarm.NodeStateReady,
+				},
+			},
+		}, nil
+	}
+
+	nodes, err := mgr.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("ListNodes failed: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
+	if nodes[0].EngineLabels["operatingsystem"] != "linux" {
+		t.Errorf("expected EngineLabels['operatingsystem'] == 'linux', got %v", nodes[0].EngineLabels)
+	}
+
+	// Verify constraint MatchesNode works with EngineLabels
+	cEngine, err := orchestration.ParseConstraint("engine.labels.operatingsystem == linux")
+	if err != nil {
+		t.Fatalf("ParseConstraint failed: %v", err)
+	}
+	if !cEngine.MatchesNode(nodes[0]) {
+		t.Errorf("expected node to match engine.labels constraint")
 	}
 }

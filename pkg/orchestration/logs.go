@@ -98,6 +98,9 @@ func (s *DockerLogStreamer) StreamContainerLogs(ctx context.Context, containerID
 	if containerID == "" {
 		return nil, ErrContainerNotFound
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.cli.ContainerLogs(ctx, containerID, s.toDockerLogsOptions(opts))
 }
 
@@ -106,11 +109,17 @@ func (s *DockerLogStreamer) StreamServiceLogs(ctx context.Context, serviceID str
 	if serviceID == "" {
 		return nil, ErrServiceNotFound
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.cli.ServiceLogs(ctx, serviceID, s.toDockerLogsOptions(opts))
 }
 
 // StreamDemux streams and decodes multiplexed container logs directly into stdout and stderr writers.
 func (s *DockerLogStreamer) StreamDemux(ctx context.Context, containerID string, opts LogOptions, stdout, stderr io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	stream, err := s.StreamContainerLogs(ctx, containerID, opts)
 	if err != nil {
 		return err

@@ -259,17 +259,66 @@ func (c *HTTPCaddyClient) GetTrafficSplit(ctx context.Context, domain string) (*
 	return &cfg, nil
 }
 
-// SetTrafficSplit delegates traffic splitting to the underlying Caddy client.
-func (m *DefaultIngressManager) SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error {
-	return m.client.SetTrafficSplit(ctx, domain, cfg)
+// RemoveTrafficSplit removes active traffic splitting for a domain and deletes its split route.
+func (c *HTTPCaddyClient) RemoveTrafficSplit(ctx context.Context, domain string) error {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return fmt.Errorf("%w: domain cannot be empty", ErrInvalidRoutePayload)
+	}
+
+	c.mu.Lock()
+	delete(c.splits, domain)
+	c.mu.Unlock()
+
+	routeID := GenerateTrafficSplitRouteID(domain)
+	return c.DeleteRoute(ctx, routeID)
 }
 
-// SetCanaryWeight delegates dynamic canary weight shifting to the underlying Caddy client.
+// SetTrafficSplit delegates traffic splitting to the underlying Caddy client and preserves active split.
+func (m *DefaultIngressManager) SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error {
+	if domain != "" && cfg.Domain == "" {
+		cfg.Domain = domain
+	}
+	if err := m.client.SetTrafficSplit(ctx, domain, cfg); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.splits == nil {
+		m.splits = make(map[string]TrafficSplitConfig)
+	}
+	m.splits[cfg.Domain] = cfg
+	m.mu.Unlock()
+	return nil
+}
+
+// SetCanaryWeight delegates dynamic canary weight shifting to the underlying Caddy client and updates active split.
 func (m *DefaultIngressManager) SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error {
-	return m.client.SetCanaryWeight(ctx, domain, canaryPercent)
+	if err := m.client.SetCanaryWeight(ctx, domain, canaryPercent); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.splits != nil {
+		if cfg, ok := m.splits[domain]; ok {
+			cfg.CanaryPercent = canaryPercent
+			m.splits[domain] = cfg
+		}
+	}
+	m.mu.Unlock()
+	return nil
 }
 
 // GetTrafficSplit delegates traffic split retrieval to the underlying Caddy client.
 func (m *DefaultIngressManager) GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error) {
 	return m.client.GetTrafficSplit(ctx, domain)
+}
+
+// RemoveTrafficSplit removes active traffic splitting for a domain and cleans up local state.
+func (m *DefaultIngressManager) RemoveTrafficSplit(ctx context.Context, domain string) error {
+	domain = strings.TrimSpace(domain)
+	m.mu.Lock()
+	if m.splits != nil {
+		delete(m.splits, domain)
+	}
+	m.mu.Unlock()
+	return m.client.RemoveTrafficSplit(ctx, domain)
 }

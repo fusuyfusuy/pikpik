@@ -186,6 +186,7 @@ type NodeStatus struct {
 	IPAddress     string            `json:"ipAddress"`
 	EngineVersion string            `json:"engineVersion"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	EngineLabels  map[string]string `json:"engineLabels,omitempty"`
 	NanoCPUs      int64             `json:"nanoCPUs"`
 	MemoryBytes   int64             `json:"memoryBytes"`
 }

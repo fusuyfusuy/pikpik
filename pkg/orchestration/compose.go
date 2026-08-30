@@ -358,50 +358,10 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 		DeployedAt: time.Now(),
 	}
 
-	// 1. Reconcile Networks
 	createdNets := make([]string, 0)
-	for _, netName := range spec.Networks {
-		fullNetName := fmt.Sprintf("%s_%s", spec.Name, netName)
-		_, err := m.cli.NetworkCreate(ctx, fullNetName, types.NetworkCreate{
-			Driver: "bridge",
-			Labels: map[string]string{
-				"pikpik.stack_name": spec.Name,
-				"pikpik.project_id": spec.ProjectID,
-				"pikpik.managed":    "true",
-			},
-		})
-		if err == nil {
-			createdNets = append(createdNets, fullNetName)
-		}
-	}
-	result.CreatedNetworks = createdNets
-
-	// 2. Reconcile Volumes
 	createdVols := make([]string, 0)
-	for _, volName := range spec.Volumes {
-		fullVolName := fmt.Sprintf("%s_%s", spec.Name, volName)
-		_, err := m.cli.VolumeCreate(ctx, volume.CreateOptions{
-			Name: fullVolName,
-			Labels: map[string]string{
-				"pikpik.stack_name": spec.Name,
-				"pikpik.project_id": spec.ProjectID,
-				"pikpik.managed":    "true",
-			},
-		})
-		if err == nil {
-			createdVols = append(createdVols, fullVolName)
-		}
-	}
-	result.CreatedVolumes = createdVols
-
-	// 3. Resolve Topological Service Deployment Order
-	order, err := ResolveDeploymentOrder(spec.Services)
-	if err != nil {
-		return nil, err
-	}
-
-	// 4. Sequentially Deploy Services with Rollback Guard
 	deployedContainers := make([]string, 0)
+
 	rollback := func(deployErr error) (*StackDeploymentResult, error) {
 		// Teardown all containers created during this deployment
 		for _, cid := range deployedContainers {
@@ -412,9 +372,57 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 		for _, nid := range createdNets {
 			_ = m.cli.NetworkRemove(context.Background(), nid)
 		}
+		// Teardown volumes created during this deployment
+		for _, vid := range createdVols {
+			_ = m.cli.VolumeRemove(context.Background(), vid, true)
+		}
 		result.Errors = append(result.Errors, deployErr.Error())
 		return result, deployErr
 	}
+
+	// 1. Reconcile Networks
+	for _, netName := range spec.Networks {
+		fullNetName := fmt.Sprintf("%s_%s", spec.Name, netName)
+		_, err := m.cli.NetworkCreate(ctx, fullNetName, types.NetworkCreate{
+			Driver: "bridge",
+			Labels: map[string]string{
+				"pikpik.stack_name": spec.Name,
+				"pikpik.project_id": spec.ProjectID,
+				"pikpik.managed":    "true",
+			},
+		})
+		if err != nil {
+			return rollback(fmt.Errorf("failed to create network '%s': %w", fullNetName, err))
+		}
+		createdNets = append(createdNets, fullNetName)
+	}
+	result.CreatedNetworks = createdNets
+
+	// 2. Reconcile Volumes
+	for _, volName := range spec.Volumes {
+		fullVolName := fmt.Sprintf("%s_%s", spec.Name, volName)
+		_, err := m.cli.VolumeCreate(ctx, volume.CreateOptions{
+			Name: fullVolName,
+			Labels: map[string]string{
+				"pikpik.stack_name": spec.Name,
+				"pikpik.project_id": spec.ProjectID,
+				"pikpik.managed":    "true",
+			},
+		})
+		if err != nil {
+			return rollback(fmt.Errorf("failed to create volume '%s': %w", fullVolName, err))
+		}
+		createdVols = append(createdVols, fullVolName)
+	}
+	result.CreatedVolumes = createdVols
+
+	// 3. Resolve Topological Service Deployment Order
+	order, err := ResolveDeploymentOrder(spec.Services)
+	if err != nil {
+		return rollback(err)
+	}
+
+	// 4. Sequentially Deploy Services with Rollback Guard
 
 	for _, svcName := range order {
 		svcDef := spec.Services[svcName]

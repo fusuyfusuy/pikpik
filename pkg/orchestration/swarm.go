@@ -109,6 +109,14 @@ func (s *DockerSwarmManager) GetClusterInfo(ctx context.Context) (*ClusterInfo, 
 
 // CreateService creates a declarative Swarm service.
 func (s *DockerSwarmManager) CreateService(ctx context.Context, spec ServiceSpec) (string, error) {
+	if len(spec.Constraints) > 0 {
+		parsed, err := ParseConstraints(spec.Constraints)
+		if err != nil {
+			return "", fmt.Errorf("invalid placement constraint: %w", err)
+		}
+		spec.ParsedConstraints = parsed
+	}
+
 	swarmSpec := s.convertSpecToSwarm(spec)
 
 	resp, err := s.cli.ServiceCreate(ctx, swarmSpec, types.ServiceCreateOptions{})
@@ -124,6 +132,14 @@ func (s *DockerSwarmManager) UpdateService(ctx context.Context, serviceID string
 	if serviceID == "" {
 		return ErrServiceNotFound
 	}
+	if len(spec.Constraints) > 0 {
+		parsed, err := ParseConstraints(spec.Constraints)
+		if err != nil {
+			return fmt.Errorf("invalid placement constraint: %w", err)
+		}
+		spec.ParsedConstraints = parsed
+	}
+
 	swarmSpec := s.convertSpecToSwarm(spec)
 
 	_, err := s.cli.ServiceUpdate(
@@ -335,6 +351,7 @@ func (s *DockerSwarmManager) ListNodes(ctx context.Context) ([]NodeStatus, error
 			IPAddress:     n.Status.Addr,
 			EngineVersion: n.Description.Engine.EngineVersion,
 			Labels:        n.Spec.Annotations.Labels,
+			EngineLabels:  n.Description.Engine.Labels,
 			NanoCPUs:      n.Description.Resources.NanoCPUs,
 			MemoryBytes:   n.Description.Resources.MemoryBytes,
 		})

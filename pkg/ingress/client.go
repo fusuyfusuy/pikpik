@@ -94,12 +94,27 @@ func (c *HTTPCaddyClient) DeleteRoute(ctx context.Context, routeID string) error
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		c.mu.Lock()
+		for domain := range c.splits {
+			if GenerateTrafficSplitRouteID(domain) == routeID {
+				delete(c.splits, domain)
+			}
+		}
+		c.mu.Unlock()
 		return ErrRouteNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("%w: delete status %d: %s", ErrCaddyMutationFailed, resp.StatusCode, string(body))
 	}
+
+	c.mu.Lock()
+	for domain := range c.splits {
+		if GenerateTrafficSplitRouteID(domain) == routeID {
+			delete(c.splits, domain)
+		}
+	}
+	c.mu.Unlock()
 
 	return nil
 }
