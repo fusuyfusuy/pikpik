@@ -12,6 +12,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/deploy"
 	"github.com/fusuycorp/pikpik/pkg/store"
+	"github.com/fusuycorp/pikpik/pkg/templates"
 )
 
 // WriteJSON sends a standardized JSON success response envelope.
@@ -60,6 +61,11 @@ func getPathParam(r *http.Request, key string) string {
 			return v
 		}
 	}
+	if key == "id" {
+		if v := r.PathValue("app_id"); v != "" {
+			return v
+		}
+	}
 	if key == "build_id" {
 		if v := r.PathValue("id"); v != "" {
 			return v
@@ -67,6 +73,13 @@ func getPathParam(r *http.Request, key string) string {
 	}
 	// Fallback to URL path token splitting
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if key == "app_id" || key == "id" {
+		for i, p := range parts {
+			if (p == "apps" || p == "templates" || p == "stacks" || p == "nodes" || p == "databases" || p == "backups" || p == "builds") && i+1 < len(parts) {
+				return parts[i+1]
+			}
+		}
+	}
 	if len(parts) > 0 {
 		return parts[len(parts)-1]
 	}
@@ -327,6 +340,49 @@ func RegisterRoutes(
 			return
 		}
 		WriteJSON(w, http.StatusOK, env, GetRequestID(r.Context()))
+	}))
+
+	// GET /api/v1/apps/{app_id}/traffic
+	mux.Handle("GET /api/v1/apps/{app_id}/traffic", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		appID := getPathParam(r, "app_id")
+		traffic, err := ctrl.GetAppTraffic(r.Context(), appID)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, traffic, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/apps/{app_id}/traffic
+	mux.Handle("POST /api/v1/apps/{app_id}/traffic", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		appID := getPathParam(r, "app_id")
+		var req SetTrafficSplitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed traffic split payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		traffic, err := ctrl.SetAppTraffic(r.Context(), appID, &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, traffic, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/apps/{app_id}/blue-green
+	mux.Handle("POST /api/v1/apps/{app_id}/blue-green", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		appID := getPathParam(r, "app_id")
+		var req BlueGreenDeployRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed blue-green payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		res, err := ctrl.DeployBlueGreen(r.Context(), appID, &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
 	}))
 
 	// Nudge Webhook endpoint
@@ -871,4 +927,51 @@ func RegisterRoutes(
 			sseBroadcaster.ServeLogsStream(w, r, buildID)
 		}))
 	}
+
+	// --- 13. Template Marketplace Endpoints ---
+	// GET /api/v1/templates (List templates with optional ?category= and ?search=)
+	mux.Handle("GET /api/v1/templates", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		category := r.URL.Query().Get("category")
+		search := r.URL.Query().Get("search")
+		if search == "" {
+			search = r.URL.Query().Get("q")
+		}
+		tpls, err := ctrl.ListTemplates(r.Context(), category, search)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, tpls, GetRequestID(r.Context()))
+	}))
+
+	// GET /api/v1/templates/{id} (Get template details & variable schema)
+	mux.Handle("GET /api/v1/templates/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		tpl, err := ctrl.GetTemplate(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Template not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, tpl, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/templates/{id}/deploy (Deploy template stack)
+	mux.Handle("POST /api/v1/templates/{id}/deploy", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req templates.DeployTemplateRequest
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		resp, err := ctrl.DeployTemplate(r.Context(), id, &req)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, resp, GetRequestID(r.Context()))
+	}))
 }
+

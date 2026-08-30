@@ -107,7 +107,8 @@ type CaddyHeadersResponse struct {
 
 // CaddyUpstream specifies a reverse proxy dial destination.
 type CaddyUpstream struct {
-	Dial string `json:"dial"`
+	Dial   string `json:"dial"`
+	Weight int    `json:"weight,omitempty"`
 }
 
 // CaddyHealthChecks configures active and passive health checks for reverse proxying.
@@ -152,9 +153,10 @@ type CaddyLoadBalancing struct {
 	TryDuration     string                `json:"try_duration,omitempty"`
 }
 
-// CaddySelectionPolicy specifies load balancing algorithm (e.g. round_robin).
+// CaddySelectionPolicy specifies load balancing algorithm (e.g. round_robin, weighted_round_robin).
 type CaddySelectionPolicy struct {
-	Policy string `json:"policy"`
+	Policy  string         `json:"policy"`
+	Weights map[string]int `json:"weights,omitempty"`
 }
 
 // CaddyTLSApp defines TLS certificates and ACME automation configurations.

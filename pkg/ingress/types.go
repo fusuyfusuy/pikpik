@@ -87,6 +87,22 @@ type IngressManager interface {
 
 	// HealthCheck returns nil if Caddy Admin API is responding within SLA (<5ms).
 	HealthCheck(ctx context.Context) error
+
+	// SetTrafficSplit updates Caddy reverse proxy upstream load balancing weights.
+	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
+
+	// SetCanaryWeight instantly updates dynamic traffic split canary percent (0-100).
+	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
+
+	// GetTrafficSplit returns the current traffic split config for a domain.
+	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
+}
+
+// TrafficSplitter defines the contract for canary traffic shifting.
+type TrafficSplitter interface {
+	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
+	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
+	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
 }
 
 // CaddyClient defines the raw REST client talking to http://127.0.0.1:2019.
@@ -97,4 +113,7 @@ type CaddyClient interface {
 	ListRoutes(ctx context.Context) ([]CaddyRoute, error)
 	LoadFullConfig(ctx context.Context, config CaddyConfig) error
 	Ping(ctx context.Context) error
+	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
+	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
+	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
 }

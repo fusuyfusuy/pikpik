@@ -37,6 +37,7 @@ type SQLiteStore struct {
 	audit               AuditStore
 	builds              BuildStore
 	githubInstallations GitHubInstallationStore
+	schedules           ScheduleStore
 }
 
 // Open initializes a SQLite database connection with production WAL pragmas and executes migrations.
@@ -105,6 +106,7 @@ func newStoreWithExecutor(exec dbExecutor, writeMu *sync.Mutex, isTx bool) *SQLi
 	s.audit = &sqlAuditStore{db: exec, writeMu: writeMu}
 	s.builds = &sqlBuildStore{db: exec, writeMu: writeMu}
 	s.githubInstallations = &sqlGitHubInstallationStore{db: exec, writeMu: writeMu}
+	s.schedules = &sqlScheduleStore{db: exec, writeMu: writeMu}
 
 	return s
 }
@@ -123,6 +125,7 @@ func (s *SQLiteStore) Backups() BackupStore                             { return
 func (s *SQLiteStore) Audit() AuditStore                                { return s.audit }
 func (s *SQLiteStore) Builds() BuildStore                               { return s.builds }
 func (s *SQLiteStore) GitHubInstallations() GitHubInstallationStore     { return s.githubInstallations }
+func (s *SQLiteStore) Schedules() ScheduleStore                         { return s.schedules }
 
 func (s *SQLiteStore) DB() *sql.DB {
 	return s.db

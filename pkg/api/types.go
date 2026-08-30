@@ -78,6 +78,49 @@ type DeployAppRequest struct {
 	Image string `json:"image,omitempty"`
 }
 
+// Traffic Splitting Models
+type TrafficSplitDTO struct {
+	AppID          string            `json:"app_id"`
+	Domain         string            `json:"domain"`
+	StableUpstream string            `json:"stable_upstream"`
+	CanaryUpstream string            `json:"canary_upstream"`
+	CanaryPercent  int               `json:"canary_percent"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Paths          []string          `json:"paths,omitempty"`
+}
+
+type SetTrafficSplitRequest struct {
+	Domain         string            `json:"domain,omitempty"`
+	StableUpstream string            `json:"stable_upstream,omitempty"`
+	CanaryUpstream string            `json:"canary_upstream,omitempty"`
+	CanaryPercent  int               `json:"canary_percent"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Paths          []string          `json:"paths,omitempty"`
+}
+
+// Blue-Green Deployment Models
+type BlueGreenDeployRequest struct {
+	Image           string            `json:"image"`
+	Domain          string            `json:"domain,omitempty"`
+	ContainerPort   uint32            `json:"container_port,omitempty"`
+	HealthCheckPath string            `json:"health_check_path,omitempty"`
+	ProbeTimeoutSec int               `json:"probe_timeout_sec,omitempty"`
+	DrainPeriodSec  int               `json:"drain_period_sec,omitempty"`
+	CanarySteps     []int             `json:"canary_steps,omitempty"`
+	Environment     map[string]string `json:"environment,omitempty"`
+}
+
+type BlueGreenDeployResponse struct {
+	AppID             string    `json:"app_id"`
+	BlueContainerID   string    `json:"blue_container_id,omitempty"`
+	GreenContainerID  string    `json:"green_container_id"`
+	ActiveContainerID string    `json:"active_container_id"`
+	Domain            string    `json:"domain"`
+	Status            string    `json:"status"`
+	SwappedAt         time.Time `json:"swapped_at"`
+	DurationMs        int64     `json:"duration_ms"`
+}
+
 // Swarm Node Models
 type SwarmNode struct {
 	ID           string    `json:"id"`

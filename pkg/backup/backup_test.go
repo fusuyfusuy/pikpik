@@ -24,11 +24,14 @@ func TestStreamingBackup_MemoryAndDiskInvariants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	testTmp := t.TempDir()
+	t.Setenv("TMPDIR", testTmp)
 	tmpDir := os.TempDir()
 	initialFiles, err := os.ReadDir(tmpDir)
 	if err != nil {
 		t.Fatalf("failed reading tmp dir: %v", err)
 	}
+
 
 	var mStart, mPeak runtime.MemStats
 	runtime.GC()

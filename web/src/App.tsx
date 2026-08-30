@@ -8,6 +8,7 @@ import { User } from './lib/types';
 // Views
 import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
+import { MarketplaceView } from './views/MarketplaceView';
 import { AppsView } from './views/AppsView';
 import { StacksView } from './views/StacksView';
 import { NodesView } from './views/NodesView';
@@ -93,6 +94,7 @@ export function App() {
       sseStatus={sseStatus}
     >
       {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
+      {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
       {currentView === 'apps' && <AppsView />}
       {currentView === 'stacks' && <StacksView />}
       {currentView === 'nodes' && <NodesView />}

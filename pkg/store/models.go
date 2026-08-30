@@ -178,3 +178,31 @@ type AuditLog struct {
 	IPAddress    string    `json:"ip_address"`
 	CreatedAt    time.Time `json:"created_at"`
 }
+
+// BackupSchedule represents a recurring multi-database backup schedule.
+type BackupSchedule struct {
+	ID                   string     `json:"id"`
+	ServiceID            string     `json:"service_id"`
+	CronExpr             string     `json:"cron_expr"`
+	Engine               string     `json:"engine"`
+	DatabaseName         string     `json:"database_name"`
+	Username             string     `json:"username"`
+	PasswordEncrypted    string     `json:"-"`
+	S3Bucket             string     `json:"s3_bucket"`
+	S3Endpoint           string     `json:"s3_endpoint,omitempty"`
+	S3Region             string     `json:"s3_region,omitempty"`
+	S3AccessKey          string     `json:"s3_access_key,omitempty"`
+	S3SecretKeyEncrypted string     `json:"-"`
+	RetentionHourly      int        `json:"retention_hourly"`
+	RetentionDaily       int        `json:"retention_daily"`
+	RetentionWeekly      int        `json:"retention_weekly"`
+	RetentionMonthly     int        `json:"retention_monthly"`
+	MaxBackups           int        `json:"max_backups"`
+	Compression          string     `json:"compression"` // "gzip" or "zstd"
+	IsEnabled            bool       `json:"is_enabled"`
+	LastRunAt            *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt            *time.Time `json:"next_run_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+

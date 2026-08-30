@@ -15,6 +15,7 @@ import {
   X,
   Zap,
   Activity,
+  Store,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { User } from '../lib/types';
@@ -39,6 +40,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
+  { id: 'marketplace', label: '1-Click Marketplace', icon: Store, badge: 'New' },
   { id: 'apps', label: 'Applications', icon: Box },
   { id: 'stacks', label: 'Compose Stacks', icon: Layers },
   { id: 'databases', label: 'Databases', icon: DbIcon },

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { App, CreateAppRequest, Build } from '../lib/types';
+import { App, CreateAppRequest, Build, TrafficSplitConfig, BlueGreenDeployRequest, BlueGreenDeployResponse } from '../lib/types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
@@ -35,6 +35,9 @@ import {
   XCircle,
   Loader2,
   Radio,
+  Sliders,
+  ArrowRightLeft,
+  Zap,
 } from 'lucide-react';
 
 const ansi = new AnsiUp();
@@ -45,7 +48,7 @@ export function AppsView() {
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<App | null>(null);
-  const [activeTab, setActiveTab] = useState<'details' | 'builds' | 'logs' | 'terminal' | 'env'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'builds' | 'traffic' | 'logs' | 'terminal' | 'env'>('details');
 
   // Form states
   const [sourceType, setSourceType] = useState<'image' | 'git'>('image');
@@ -406,6 +409,7 @@ export function AppsView() {
               tabs={[
                 { id: 'details', label: 'Overview', icon: <Box className="h-3.5 w-3.5" /> },
                 { id: 'builds', label: 'Builds & CI', icon: <Hammer className="h-3.5 w-3.5" /> },
+                { id: 'traffic', label: 'Traffic & Canary', icon: <Sliders className="h-3.5 w-3.5" /> },
                 { id: 'logs', label: 'Streaming Logs', icon: <FileText className="h-3.5 w-3.5" /> },
                 { id: 'terminal', label: 'Live Shell (PTY)', icon: <TerminalIcon className="h-3.5 w-3.5" /> },
                 { id: 'env', label: 'Environment & Secrets', icon: <Key className="h-3.5 w-3.5" /> },
@@ -477,6 +481,9 @@ export function AppsView() {
 
             {/* Tab: Builds & CI */}
             {activeTab === 'builds' && <AppBuildsTab app={selectedApp} />}
+
+            {/* Tab: Traffic Splitting & Canary */}
+            {activeTab === 'traffic' && <AppTrafficTab app={selectedApp} />}
 
             {/* Tab: Virtualized Logs */}
             {activeTab === 'logs' && <AppLogsViewer appId={selectedApp.id} />}
@@ -1219,6 +1226,294 @@ function LiveBuildStreamModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Subcomponent: Traffic Splitting & Canary Rollout Tab
+function AppTrafficTab({ app }: { app: App }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const [domain, setDomain] = useState(app.domains?.[0] || `${app.name}.example.com`);
+  const [stableUpstream, setStableUpstream] = useState(`${app.name}_blue:8080`);
+  const [canaryUpstream, setCanaryUpstream] = useState(`${app.name}_green:8080`);
+  const [canaryPercent, setCanaryPercent] = useState<number>(0);
+  const [headerKey, setHeaderKey] = useState('X-Canary');
+  const [headerValue, setHeaderValue] = useState('true');
+  const [pathMatch, setPathMatch] = useState('');
+
+  // Blue-Green Form
+  const [bgImage, setBgImage] = useState(app.image || '');
+  const [bgPort, setBgPort] = useState(8080);
+  const [bgHealthPath, setBgHealthPath] = useState('/healthz');
+  const [bgProbeTimeout, setBgProbeTimeout] = useState(10);
+  const [bgDrainPeriod, setBgDrainPeriod] = useState(5);
+  const [bgResult, setBgResult] = useState<BlueGreenDeployResponse | null>(null);
+
+  const { data: trafficData } = useQuery({
+    queryKey: ['traffic', app.id],
+    queryFn: () => api.traffic.get(app.id),
+  });
+
+  useEffect(() => {
+    if (trafficData) {
+      if (trafficData.domain) setDomain(trafficData.domain);
+      if (trafficData.stable_upstream) setStableUpstream(trafficData.stable_upstream);
+      if (trafficData.canary_upstream) setCanaryUpstream(trafficData.canary_upstream);
+      setCanaryPercent(trafficData.canary_percent ?? 0);
+      if (trafficData.headers && Object.keys(trafficData.headers).length > 0) {
+        const k = Object.keys(trafficData.headers)[0];
+        setHeaderKey(k);
+        setHeaderValue(trafficData.headers[k]);
+      }
+      if (trafficData.paths && trafficData.paths.length > 0) {
+        setPathMatch(trafficData.paths.join(', '));
+      }
+    }
+  }, [trafficData]);
+
+  const setTrafficMutation = useMutation({
+    mutationFn: (req: Partial<TrafficSplitConfig>) => api.traffic.set(app.id, req),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['traffic', app.id] });
+      toast.success(
+        'Traffic Weight Applied',
+        `Routed ${100 - res.canary_percent}% Stable / ${res.canary_percent}% Canary`
+      );
+    },
+    onError: (err: Error) => toast.error('Traffic Update Failed', err.message),
+  });
+
+  const blueGreenMutation = useMutation({
+    mutationFn: (req: BlueGreenDeployRequest) => api.traffic.deployBlueGreen(app.id, req),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['apps'] });
+      queryClient.invalidateQueries({ queryKey: ['traffic', app.id] });
+      setBgResult(res);
+      toast.success(
+        'Blue-Green Cutover Completed',
+        `Swapped traffic to green container in ${res.duration_ms}ms`
+      );
+    },
+    onError: (err: Error) => toast.error('Blue-Green Rollout Failed', err.message),
+  });
+
+  const handleApplyTraffic = (e: React.FormEvent) => {
+    e.preventDefault();
+    const headersMap: Record<string, string> = {};
+    if (headerKey.trim() && headerValue.trim()) {
+      headersMap[headerKey.trim()] = headerValue.trim();
+    }
+    const paths = pathMatch
+      ? pathMatch
+          .split(',')
+          .map((p) => p.trim())
+          .filter(Boolean)
+      : undefined;
+
+    setTrafficMutation.mutate({
+      domain: domain.trim(),
+      stable_upstream: stableUpstream.trim(),
+      canary_upstream: canaryUpstream.trim(),
+      canary_percent: Number(canaryPercent),
+      headers: Object.keys(headersMap).length > 0 ? headersMap : undefined,
+      paths,
+    });
+  };
+
+  const handleBlueGreenSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bgImage.trim()) return;
+
+    blueGreenMutation.mutate({
+      image: bgImage.trim(),
+      domain: domain.trim() || undefined,
+      container_port: Number(bgPort),
+      health_check_path: bgHealthPath.trim(),
+      probe_timeout_sec: Number(bgProbeTimeout),
+      drain_period_sec: Number(bgDrainPeriod),
+    });
+  };
+
+  return (
+    <div className="space-y-6 pt-2">
+      {/* Visual Canary Split Progress */}
+      <form onSubmit={handleApplyTraffic} className="space-y-4">
+        <div className="p-4 bg-zinc-950 rounded-xl border border-zinc-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+              <Sliders className="h-3.5 w-3.5 text-cyan-400" />
+              Canary Traffic Weighting
+            </span>
+            <div className="flex items-center gap-3 text-xs font-mono font-semibold">
+              <span className="text-cyan-400">Stable: {100 - canaryPercent}%</span>
+              <span className="text-emerald-400">Canary: {canaryPercent}%</span>
+            </div>
+          </div>
+
+          <div className="h-3 w-full bg-zinc-900 rounded-full overflow-hidden flex border border-zinc-800 p-0.5">
+            <div
+              style={{ width: `${100 - canaryPercent}%` }}
+              className="h-full bg-cyan-500 rounded-l-full transition-all duration-300"
+            />
+            <div
+              style={{ width: `${canaryPercent}%` }}
+              className="h-full bg-emerald-500 rounded-r-full transition-all duration-300"
+            />
+          </div>
+
+          {/* Slider */}
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={canaryPercent}
+            onChange={(e) => setCanaryPercent(Number(e.target.value))}
+            className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+          />
+
+          {/* Preset Buttons */}
+          <div className="flex flex-wrap gap-2 pt-1">
+            {[
+              { label: '0% (100% Stable)', val: 0 },
+              { label: '10% Canary', val: 10 },
+              { label: '25% Canary', val: 25 },
+              { label: '50% Split', val: 50 },
+              { label: '100% Canary', val: 100 },
+            ].map((preset) => (
+              <button
+                type="button"
+                key={preset.val}
+                onClick={() => setCanaryPercent(preset.val)}
+                className={`px-2.5 py-0.5 rounded text-[10px] font-mono transition-all ${
+                  canaryPercent === preset.val
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 font-bold'
+                    : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Routing Upstreams */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
+            <Input
+              label="Domain"
+              placeholder="api.example.com"
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              required
+            />
+            <Input
+              label="Stable Upstream (Blue)"
+              placeholder="app_blue:8080"
+              value={stableUpstream}
+              onChange={(e) => setStableUpstream(e.target.value)}
+              required
+            />
+            <Input
+              label="Canary Upstream (Green)"
+              placeholder="app_green:8080"
+              value={canaryUpstream}
+              onChange={(e) => setCanaryUpstream(e.target.value)}
+              required
+            />
+          </div>
+
+          <div className="flex justify-end pt-2 border-t border-zinc-800/80">
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              isLoading={setTrafficMutation.isPending}
+              leftIcon={<Sliders className="h-3.5 w-3.5" />}
+            >
+              Apply Canary Weights
+            </Button>
+          </div>
+        </div>
+      </form>
+
+      {/* Blue-Green Zero-Downtime Rollout */}
+      <form onSubmit={handleBlueGreenSubmit} className="space-y-4">
+        <div className="p-4 bg-zinc-950 rounded-xl border border-zinc-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+              <ArrowRightLeft className="h-3.5 w-3.5 text-emerald-400" />
+              Blue-Green Zero-Downtime Rollout
+            </span>
+            <Badge variant="outline" className="text-[10px] text-cyan-400 border-zinc-700">
+              Atomic Cutover
+            </Badge>
+          </div>
+
+          <p className="text-[11px] text-zinc-400 leading-relaxed">
+            Spawns a new Green container image, probes health endpoint, swaps Caddy ingress upstream instantly, and drains older Blue connections.
+          </p>
+
+          <Input
+            label="Green Release Image"
+            placeholder="my-org/my-app:v2.0.0"
+            value={bgImage}
+            onChange={(e) => setBgImage(e.target.value)}
+            required
+          />
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <Input
+              label="Container Port"
+              type="number"
+              value={bgPort}
+              onChange={(e) => setBgPort(Number(e.target.value))}
+              required
+            />
+            <Input
+              label="Health Check Path"
+              value={bgHealthPath}
+              onChange={(e) => setBgHealthPath(e.target.value)}
+            />
+            <Input
+              label="Probe Timeout (s)"
+              type="number"
+              value={bgProbeTimeout}
+              onChange={(e) => setBgProbeTimeout(Number(e.target.value))}
+            />
+            <Input
+              label="Drain Period (s)"
+              type="number"
+              value={bgDrainPeriod}
+              onChange={(e) => setBgDrainPeriod(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="flex justify-end pt-2 border-t border-zinc-800/80">
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              isLoading={blueGreenMutation.isPending}
+              leftIcon={<Zap className="h-3.5 w-3.5 fill-current" />}
+            >
+              Deploy Blue-Green Release
+            </Button>
+          </div>
+
+          {bgResult && (
+            <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-lg text-xs space-y-1 mt-2">
+              <div className="font-semibold text-emerald-200 flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                Cutover Succeeded ({bgResult.duration_ms}ms)
+              </div>
+              <div className="text-zinc-400 font-mono text-[11px]">
+                Active Container: {bgResult.active_container_id.slice(0, 12)} • Domain: {bgResult.domain}
+              </div>
+            </div>
+          )}
+        </div>
+      </form>
+    </div>
   );
 }
 

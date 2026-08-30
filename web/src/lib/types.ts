@@ -227,6 +227,42 @@ export interface BackupDestination {
   is_default: boolean;
 }
 
+export interface BackupSchedule {
+  id: string;
+  service_id: string;
+  database_type?: string;
+  engine?: string;
+  cron_expression: string;
+  cron_expr?: string;
+  s3_destination_id?: string;
+  retention_days?: number;
+  is_enabled: boolean;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateBackupScheduleRequest {
+  service_id: string;
+  database_type?: string;
+  engine?: string;
+  cron_expression: string;
+  s3_destination_id?: string;
+  retention_days?: number;
+  is_enabled?: boolean;
+}
+
+export interface UpdateBackupScheduleRequest {
+  service_id?: string;
+  database_type?: string;
+  engine?: string;
+  cron_expression?: string;
+  s3_destination_id?: string;
+  retention_days?: number;
+  is_enabled?: boolean;
+}
+
 // --- Ingress & Domains ---
 export interface DomainBinding {
   id: string;
@@ -249,6 +285,42 @@ export interface CertificateUploadRequest {
   domain: string;
   cert_pem: string;
   key_pem: string;
+}
+
+// --- Traffic Splitting & Canary Models ---
+export interface TrafficSplitConfig {
+  domain: string;
+  stable_upstream: string;
+  canary_upstream: string;
+  canary_percent: number;
+  headers?: Record<string, string>;
+  paths?: string[];
+  app_id?: string;
+}
+
+export type TrafficSplitDTO = TrafficSplitConfig;
+export type SetTrafficSplitRequest = TrafficSplitConfig;
+
+export interface BlueGreenDeployRequest {
+  image: string;
+  domain?: string;
+  container_port?: number;
+  health_check_path?: string;
+  probe_timeout_sec?: number;
+  drain_period_sec?: number;
+  canary_steps?: number[];
+  environment?: Record<string, string>;
+}
+
+export interface BlueGreenDeployResponse {
+  app_id: string;
+  blue_container_id?: string;
+  green_container_id: string;
+  active_container_id: string;
+  domain: string;
+  status: string;
+  swapped_at: string;
+  duration_ms: number;
 }
 
 // --- Volume Models ---
@@ -404,3 +476,79 @@ export interface TermExitMessage {
   exit_code: number;
   error?: string;
 }
+
+// --- Template & Marketplace Models ---
+export interface TemplateEnvVar {
+  key: string;
+  label: string;
+  description: string;
+  default?: string;
+  required: boolean;
+  is_secret: boolean;
+  auto_generate?: string; // "hex_32" | "pass_16" | "base64_32" | ""
+}
+
+export interface TemplateVolume {
+  name: string;
+  mount_path: string;
+  host_path?: string;
+  read_only: boolean;
+}
+
+export interface TemplateService {
+  name: string;
+  image: string;
+  command?: string[];
+  entrypoint?: string[];
+  ports?: Array<{ host_port?: number; container_port: number; protocol?: string }>;
+  environment?: Record<string, string>;
+  mounts?: TemplateVolume[];
+  depends_on?: string[];
+  resources?: { cpu_limit?: string; memory_limit?: string };
+  health_check?: { test: string[]; interval_sec?: number; timeout_sec?: number; retries?: number };
+  restart?: string;
+  labels?: Record<string, string>;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  icon: string;
+  version: string;
+  documentation_url?: string;
+  tags?: string[];
+  default_port: number;
+  services: TemplateService[];
+  env_vars?: TemplateEnvVar[];
+  volumes?: TemplateVolume[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeployTemplateRequest {
+  name?: string;
+  project_id?: string;
+  stage_id?: string;
+  variables?: Record<string, string>;
+  domain?: string;
+  auto_generate_missing?: boolean;
+}
+
+export interface DeployTemplateResponse {
+  app_id: string;
+  name: string;
+  template_id: string;
+  category: string;
+  status: string;
+  services: string[];
+  containers?: string[];
+  volumes?: string[];
+  network: string;
+  endpoints?: string[];
+  resolved_variables?: Record<string, string>;
+  deployed_at: string;
+  message?: string;
+}
+

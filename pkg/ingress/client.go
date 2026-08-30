@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,8 @@ import (
 type HTTPCaddyClient struct {
 	baseURL    string
 	httpClient *http.Client
+	mu         sync.RWMutex
+	splits     map[string]TrafficSplitConfig
 }
 
 // NewCaddyClient creates a new HTTPCaddyClient configured with baseURL and timeout.
@@ -36,6 +39,7 @@ func NewCaddyClient(baseURL string, timeout time.Duration) *HTTPCaddyClient {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+		splits: make(map[string]TrafficSplitConfig),
 	}
 }
 

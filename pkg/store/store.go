@@ -40,6 +40,7 @@ type Store interface {
 	Audit() AuditStore
 	Builds() BuildStore
 	GitHubInstallations() GitHubInstallationStore
+	Schedules() ScheduleStore
 
 	// WithTx executes the supplied operation inside an atomic database transaction.
 	WithTx(ctx context.Context, fn func(tx Store) error) error
@@ -159,3 +160,16 @@ type AuditStore interface {
 	Record(ctx context.Context, userID, action, resType, resID, metadataJSON, ip string) error
 	ListByResource(ctx context.Context, resType, resID string, limit int) ([]*AuditLog, error)
 }
+
+// ScheduleStore handles recurring multi-database backup schedule persistence.
+type ScheduleStore interface {
+	Create(ctx context.Context, s *BackupSchedule) error
+	GetByID(ctx context.Context, id string) (*BackupSchedule, error)
+	ListByService(ctx context.Context, serviceID string) ([]*BackupSchedule, error)
+	ListActive(ctx context.Context) ([]*BackupSchedule, error)
+	ListDue(ctx context.Context, now time.Time) ([]*BackupSchedule, error)
+	Update(ctx context.Context, s *BackupSchedule) error
+	UpdateRunTimes(ctx context.Context, id string, lastRun, nextRun time.Time) error
+	Delete(ctx context.Context, id string) error
+}
+

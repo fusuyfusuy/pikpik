@@ -285,3 +285,148 @@ func TestStore_WithTx(t *testing.T) {
 		t.Fatalf("Expected org to be found after commit: %v", err)
 	}
 }
+
+func TestStore_BackupSchedules(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// 1. Setup required hierarchy
+	org := &store.Organization{Name: "Org 1", Slug: "org-1"}
+	if err := st.Organizations().Create(ctx, org); err != nil {
+		t.Fatalf("Failed to create org: %v", err)
+	}
+	proj := &store.Project{OrgID: org.ID, Name: "Proj 1", Slug: "proj-1"}
+	if err := st.Projects().Create(ctx, proj); err != nil {
+		t.Fatalf("Failed to create project: %v", err)
+	}
+	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
+	if err := st.Stages().Create(ctx, stage); err != nil {
+		t.Fatalf("Failed to create stage: %v", err)
+	}
+	svc := &store.Service{
+		ProjectID: proj.ID,
+		StageID:   stage.ID,
+		Name:      "Main DB",
+		Slug:      "main-db",
+		Type:      "database",
+		Image:     "postgres:17-alpine",
+	}
+	if err := st.Services().Create(ctx, svc); err != nil {
+		t.Fatalf("Failed to create service: %v", err)
+	}
+
+	// 2. Create Backup Schedule
+	now := time.Now().UTC().Truncate(time.Second)
+	nextRun := now.Add(1 * time.Hour)
+	sch := &store.BackupSchedule{
+		ServiceID:         svc.ID,
+		CronExpr:          "0 * * * *",
+		Engine:            "postgres:17",
+		DatabaseName:      "production_db",
+		Username:          "pguser",
+		PasswordEncrypted: "encrypted_pass",
+		S3Bucket:          "backups-bucket",
+		S3Endpoint:        "https://r2.cloudflarestorage.com",
+		S3Region:          "auto",
+		RetentionHourly:   24,
+		RetentionDaily:    7,
+		RetentionWeekly:   4,
+		RetentionMonthly:  12,
+		MaxBackups:        50,
+		Compression:       "gzip",
+		IsEnabled:         true,
+		NextRunAt:         &nextRun,
+	}
+
+	if err := st.Schedules().Create(ctx, sch); err != nil {
+		t.Fatalf("Failed to create schedule: %v", err)
+	}
+	if sch.ID == "" {
+		t.Fatalf("Expected generated ID for schedule")
+	}
+
+	// 3. GetByID
+	fetched, err := st.Schedules().GetByID(ctx, sch.ID)
+	if err != nil {
+		t.Fatalf("Failed to get schedule by ID: %v", err)
+	}
+	if fetched.DatabaseName != "production_db" || !fetched.IsEnabled || fetched.NextRunAt == nil {
+		t.Fatalf("Fetched schedule does not match: %+v", fetched)
+	}
+
+	// 4. ListByService
+	list, err := st.Schedules().ListByService(ctx, svc.ID)
+	if err != nil {
+		t.Fatalf("Failed to list schedules by service: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != sch.ID {
+		t.Fatalf("Expected 1 schedule in list, got %d", len(list))
+	}
+
+	// 5. ListActive
+	activeList, err := st.Schedules().ListActive(ctx)
+	if err != nil {
+		t.Fatalf("Failed to list active schedules: %v", err)
+	}
+	if len(activeList) != 1 {
+		t.Fatalf("Expected 1 active schedule, got %d", len(activeList))
+	}
+
+	// 6. ListDue (NextRunAt in future should not be returned for now)
+	dueList, err := st.Schedules().ListDue(ctx, now)
+	if err != nil {
+		t.Fatalf("Failed to list due schedules: %v", err)
+	}
+	if len(dueList) != 0 {
+		t.Fatalf("Expected 0 due schedules before nextRun, got %d", len(dueList))
+	}
+
+	// ListDue with future time should return schedule
+	dueListFuture, err := st.Schedules().ListDue(ctx, nextRun.Add(1*time.Minute))
+	if err != nil {
+		t.Fatalf("Failed to list due schedules in future: %v", err)
+	}
+	if len(dueListFuture) != 1 {
+		t.Fatalf("Expected 1 due schedule in future, got %d", len(dueListFuture))
+	}
+
+	// 7. UpdateRunTimes
+	lastRun := now
+	newNextRun := nextRun.Add(1 * time.Hour)
+	if err := st.Schedules().UpdateRunTimes(ctx, sch.ID, lastRun, newNextRun); err != nil {
+		t.Fatalf("Failed to update run times: %v", err)
+	}
+
+	updated, err := st.Schedules().GetByID(ctx, sch.ID)
+	if err != nil {
+		t.Fatalf("Failed to get updated schedule: %v", err)
+	}
+	if updated.LastRunAt == nil || updated.NextRunAt == nil {
+		t.Fatalf("Expected non-nil LastRunAt and NextRunAt")
+	}
+
+	// 8. Update
+	updated.CronExpr = "0 0 * * *"
+	updated.RetentionDaily = 14
+	if err := st.Schedules().Update(ctx, updated); err != nil {
+		t.Fatalf("Failed to update schedule: %v", err)
+	}
+
+	reFetched, err := st.Schedules().GetByID(ctx, sch.ID)
+	if err != nil {
+		t.Fatalf("Failed to get refetched schedule: %v", err)
+	}
+	if reFetched.CronExpr != "0 0 * * *" || reFetched.RetentionDaily != 14 {
+		t.Fatalf("Update not reflected: %+v", reFetched)
+	}
+
+	// 9. Delete
+	if err := st.Schedules().Delete(ctx, sch.ID); err != nil {
+		t.Fatalf("Failed to delete schedule: %v", err)
+	}
+	_, err = st.Schedules().GetByID(ctx, sch.ID)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Expected ErrNotFound after deletion, got: %v", err)
+	}
+}
+

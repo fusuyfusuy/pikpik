@@ -21,6 +21,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/registry"
 	"github.com/fusuycorp/pikpik/pkg/store"
+	"github.com/fusuycorp/pikpik/pkg/templates"
 )
 
 // Controller defines the business logic contract for the API Gateway.
@@ -45,6 +46,9 @@ type Controller interface {
 	StartApp(ctx context.Context, id string) error
 	GetAppEnv(ctx context.Context, id string) (map[string]string, error)
 	SetAppEnv(ctx context.Context, id string, env map[string]string) error
+	GetAppTraffic(ctx context.Context, appID string) (*TrafficSplitDTO, error)
+	SetAppTraffic(ctx context.Context, appID string, req *SetTrafficSplitRequest) (*TrafficSplitDTO, error)
+	DeployBlueGreen(ctx context.Context, appID string, req *BlueGreenDeployRequest) (*BlueGreenDeployResponse, error)
 
 	// Stacks
 	ListStacks(ctx context.Context) ([]Stack, error)
@@ -103,6 +107,11 @@ type Controller interface {
 	Rebuild(ctx context.Context, buildID string) (*store.Build, error)
 	HandleGitHubWebhook(ctx context.Context, secret string, signature string, payload []byte) (*store.Build, error)
 	HandleGenericGitWebhook(ctx context.Context, appID, token string, r *http.Request) (*store.Build, error)
+
+	// Templates
+	ListTemplates(ctx context.Context, category, search string) ([]templates.Template, error)
+	GetTemplate(ctx context.Context, id string) (*templates.Template, error)
+	DeployTemplate(ctx context.Context, id string, req *templates.DeployTemplateRequest) (*templates.DeployTemplateResponse, error)
 }
 
 // ControllerDependencies bundles underlying pikpik core subsystems.
@@ -117,6 +126,7 @@ type ControllerDependencies struct {
 	WSHub          *WebSocketHub
 	SSEBroadcaster *SSEBroadcaster
 	BuildManager   *build.BuildManager
+	Deployer       templates.Deployer
 }
 
 // DefaultController implements Controller.
@@ -131,6 +141,7 @@ type DefaultController struct {
 	wsHub          *WebSocketHub
 	sseBroadcaster *SSEBroadcaster
 	buildMgr       *build.BuildManager
+	deployer       templates.Deployer
 
 	// In-memory fallbacks / caches for standalone or testing modes
 	mu           sync.RWMutex
@@ -141,10 +152,15 @@ type DefaultController struct {
 	destinations map[string]*BackupDestination
 	domains      map[string]*DomainBinding
 	builds       map[string]*store.Build
+	splits       map[string]*TrafficSplitDTO
 }
 
 // NewDefaultController constructs a new DefaultController.
 func NewDefaultController(deps ControllerDependencies) *DefaultController {
+	deployer := deps.Deployer
+	if deployer == nil {
+		deployer = templates.NewDeployer(templates.DefaultCatalog(), deps.Store, deps.Orchestrator)
+	}
 	return &DefaultController{
 		st:             deps.Store,
 		authSvc:        deps.AuthService,
@@ -156,6 +172,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		wsHub:          deps.WSHub,
 		sseBroadcaster: deps.SSEBroadcaster,
 		buildMgr:       deps.BuildManager,
+		deployer:       deployer,
 		apps:           make(map[string]*App),
 		stacks:         make(map[string]*Stack),
 		databases:      make(map[string]*Database),
@@ -163,6 +180,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		destinations:   make(map[string]*BackupDestination),
 		domains:        make(map[string]*DomainBinding),
 		builds:         make(map[string]*store.Build),
+		splits:         make(map[string]*TrafficSplitDTO),
 	}
 }
 
@@ -563,6 +581,223 @@ func (c *DefaultController) SetAppEnv(ctx context.Context, id string, env map[st
 	app.Env = env
 	app.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+func (c *DefaultController) GetAppTraffic(ctx context.Context, appID string) (*TrafficSplitDTO, error) {
+	app, err := c.GetApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+
+	domain := ""
+	if len(app.Domains) > 0 {
+		domain = app.Domains[0]
+	}
+	if domain == "" {
+		domain = app.Name + ".local"
+	}
+
+	c.mu.RLock()
+	cached, ok := c.splits[appID]
+	c.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	if c.ingress != nil && domain != "" {
+		split, err := c.ingress.GetTrafficSplit(ctx, domain)
+		if err == nil && split != nil {
+			dto := &TrafficSplitDTO{
+				AppID:          appID,
+				Domain:         split.Domain,
+				StableUpstream: split.StableUpstream,
+				CanaryUpstream: split.CanaryUpstream,
+				CanaryPercent:  split.CanaryPercent,
+				Headers:        split.Headers,
+				Paths:          split.Paths,
+			}
+			c.mu.Lock()
+			c.splits[appID] = dto
+			c.mu.Unlock()
+			return dto, nil
+		}
+	}
+
+	// Default fallback: 100% stable
+	return &TrafficSplitDTO{
+		AppID:          appID,
+		Domain:         domain,
+		StableUpstream: app.Name + ":80",
+		CanaryUpstream: "",
+		CanaryPercent:  0,
+	}, nil
+}
+
+func (c *DefaultController) SetAppTraffic(ctx context.Context, appID string, req *SetTrafficSplitRequest) (*TrafficSplitDTO, error) {
+	app, err := c.GetApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.CanaryPercent < 0 || req.CanaryPercent > 100 {
+		return nil, fmt.Errorf("canary percent must be between 0 and 100, got %d", req.CanaryPercent)
+	}
+
+	domain := req.Domain
+	if domain == "" {
+		if len(app.Domains) > 0 {
+			domain = app.Domains[0]
+		} else {
+			domain = app.Name + ".local"
+		}
+	}
+
+	stableUpstream := req.StableUpstream
+	if stableUpstream == "" {
+		stableUpstream = app.Name + ":80"
+	}
+
+	canaryUpstream := req.CanaryUpstream
+	if req.CanaryPercent > 0 && canaryUpstream == "" {
+		canaryUpstream = app.Name + "_green:80"
+	}
+
+	splitCfg := ingress.TrafficSplitConfig{
+		Domain:         domain,
+		StableUpstream: stableUpstream,
+		CanaryUpstream: canaryUpstream,
+		CanaryPercent:  req.CanaryPercent,
+		Headers:        req.Headers,
+		Paths:          req.Paths,
+	}
+
+	if c.ingress != nil {
+		if err := c.ingress.SetTrafficSplit(ctx, domain, splitCfg); err != nil {
+			return nil, fmt.Errorf("failed to update ingress traffic split: %w", err)
+		}
+	}
+
+	dto := &TrafficSplitDTO{
+		AppID:          appID,
+		Domain:         domain,
+		StableUpstream: stableUpstream,
+		CanaryUpstream: canaryUpstream,
+		CanaryPercent:  req.CanaryPercent,
+		Headers:        req.Headers,
+		Paths:          req.Paths,
+	}
+
+	c.mu.Lock()
+	c.splits[appID] = dto
+	c.mu.Unlock()
+
+	return dto, nil
+}
+
+func (c *DefaultController) DeployBlueGreen(ctx context.Context, appID string, req *BlueGreenDeployRequest) (*BlueGreenDeployResponse, error) {
+	app, err := c.GetApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+
+	image := req.Image
+	if image == "" {
+		image = app.Image
+	}
+	if image == "" {
+		return nil, errors.New("image cannot be empty for blue-green deployment")
+	}
+
+	domain := req.Domain
+	if domain == "" {
+		if len(app.Domains) > 0 {
+			domain = app.Domains[0]
+		} else {
+			domain = app.Name + ".local"
+		}
+	}
+
+	containerPort := req.ContainerPort
+	if containerPort == 0 {
+		containerPort = 80
+	}
+
+	probeTimeout := time.Duration(req.ProbeTimeoutSec) * time.Second
+	if probeTimeout == 0 {
+		probeTimeout = 30 * time.Second
+	}
+
+	drainPeriod := time.Duration(req.DrainPeriodSec) * time.Second
+	if drainPeriod == 0 {
+		drainPeriod = 5 * time.Second
+	}
+
+	envMap := app.Env
+	if len(req.Environment) > 0 {
+		envMap = req.Environment
+	}
+
+	if c.orch != nil {
+		bgDeployer := orchestration.NewBlueGreenDeployer(c.orch.Containers(), c.ingress)
+		cfg := orchestration.BlueGreenConfig{
+			AppID:           appID,
+			ProjectID:       app.ProjectID,
+			Name:            app.Name,
+			Domain:          domain,
+			Image:           image,
+			ContainerPort:   containerPort,
+			Environment:     envMap,
+			HealthCheckPath: req.HealthCheckPath,
+			ProbeTimeout:    probeTimeout,
+			DrainPeriod:     drainPeriod,
+			CanarySteps:     req.CanarySteps,
+		}
+
+		res, err := bgDeployer.Deploy(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+
+		app.Image = image
+		app.UpdatedAt = time.Now().UTC()
+
+		return &BlueGreenDeployResponse{
+			AppID:             appID,
+			BlueContainerID:   res.BlueContainerID,
+			GreenContainerID:  res.GreenContainerID,
+			ActiveContainerID: res.ActiveContainerID,
+			Domain:            res.Domain,
+			Status:            res.Status,
+			SwappedAt:         res.SwappedAt,
+			DurationMs:        res.Duration.Milliseconds(),
+		}, nil
+	}
+
+	// Standalone mock fallback
+	blueID := "c_blue_" + appID
+	greenID := fmt.Sprintf("c_green_%s_%d", appID, time.Now().Unix())
+
+	if c.ingress != nil && domain != "" {
+		_ = c.ingress.SetTrafficSplit(ctx, domain, ingress.TrafficSplitConfig{
+			Domain:         domain,
+			StableUpstream: greenID + fmt.Sprintf(":%d", containerPort),
+			CanaryPercent:  0,
+		})
+	}
+
+	app.Image = image
+	app.UpdatedAt = time.Now().UTC()
+
+	return &BlueGreenDeployResponse{
+		AppID:             appID,
+		BlueContainerID:   blueID,
+		GreenContainerID:  greenID,
+		ActiveContainerID: greenID,
+		Domain:            domain,
+		Status:            "success",
+		SwappedAt:         time.Now().UTC(),
+		DurationMs:        120,
+	}, nil
 }
 
 // --- Stack Operations ---
@@ -1377,4 +1612,29 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 
 	return bld, nil
 }
+
+// --- Template Operations ---
+
+func (c *DefaultController) ListTemplates(ctx context.Context, category, search string) ([]templates.Template, error) {
+	if search != "" {
+		return templates.SearchTemplates(category, search), nil
+	}
+	return templates.ListTemplates(category), nil
+}
+
+func (c *DefaultController) GetTemplate(ctx context.Context, id string) (*templates.Template, error) {
+	return templates.GetTemplate(id)
+}
+
+func (c *DefaultController) DeployTemplate(ctx context.Context, id string, req *templates.DeployTemplateRequest) (*templates.DeployTemplateResponse, error) {
+	if req == nil {
+		req = &templates.DeployTemplateRequest{}
+	}
+	if c.deployer != nil {
+		return c.deployer.Deploy(ctx, id, *req)
+	}
+	deployer := templates.NewDeployer(templates.DefaultCatalog(), c.st, c.orch)
+	return deployer.Deploy(ctx, id, *req)
+}
+
 

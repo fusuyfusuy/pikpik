@@ -31,6 +31,15 @@ import {
   APIToken,
   CreateTokenRequest,
   Build,
+  Template,
+  DeployTemplateRequest,
+  DeployTemplateResponse,
+  BackupSchedule,
+  CreateBackupScheduleRequest,
+  UpdateBackupScheduleRequest,
+  TrafficSplitConfig,
+  BlueGreenDeployRequest,
+  BlueGreenDeployResponse,
 } from './types';
 
 const TOKEN_KEY = 'pikpik_token';
@@ -326,5 +335,63 @@ export const api = {
         method: 'POST',
       }),
     streamUrl: (buildId: string): string => `/api/v1/builds/${buildId}/stream`,
+  },
+
+  // --- Templates & Marketplace ---
+  templates: {
+    list: (category?: string, search?: string): Promise<Template[]> => {
+      const params = new URLSearchParams();
+      if (category && category.toLowerCase() !== 'all') {
+        params.set('category', category);
+      }
+      if (search && search.trim() !== '') {
+        params.set('search', search.trim());
+      }
+      const qs = params.toString();
+      return request<Template[]>(`/api/v1/templates${qs ? `?${qs}` : ''}`);
+    },
+    get: (id: string): Promise<Template> =>
+      request<Template>(`/api/v1/templates/${id}`),
+    deploy: (id: string, req: DeployTemplateRequest): Promise<DeployTemplateResponse> =>
+      request<DeployTemplateResponse>(`/api/v1/templates/${id}/deploy`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  },
+
+  // --- Backup Schedules ---
+  schedules: {
+    list: (serviceId?: string): Promise<BackupSchedule[]> =>
+      request<BackupSchedule[]>(
+        `/api/v1/backups/schedules${serviceId ? `?service_id=${serviceId}` : ''}`
+      ),
+    create: (req: CreateBackupScheduleRequest): Promise<BackupSchedule> =>
+      request<BackupSchedule>('/api/v1/backups/schedules', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    update: (id: string, req: UpdateBackupScheduleRequest): Promise<BackupSchedule> =>
+      request<BackupSchedule>(`/api/v1/backups/schedules/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request(`/api/v1/backups/schedules/${id}`, { method: 'DELETE' }),
+  },
+
+  // --- Traffic Splitting & Canary ---
+  traffic: {
+    get: (appId: string): Promise<TrafficSplitConfig> =>
+      request<TrafficSplitConfig>(`/api/v1/apps/${appId}/traffic`),
+    set: (appId: string, req: Partial<TrafficSplitConfig>): Promise<TrafficSplitConfig> =>
+      request<TrafficSplitConfig>(`/api/v1/apps/${appId}/traffic`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    deployBlueGreen: (appId: string, req: BlueGreenDeployRequest): Promise<BlueGreenDeployResponse> =>
+      request<BlueGreenDeployResponse>(`/api/v1/apps/${appId}/blue-green`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
   },
 };
