@@ -21,6 +21,12 @@ data/
 # Logs
 *.log
 
+# Web dependencies & cache (preserve web/dist for Go embed.FS)
+node_modules/
+web/node_modules/
+.vite/
+web/.vite/
+
 # OS artifacts
 .DS_Store
 Thumbs.db

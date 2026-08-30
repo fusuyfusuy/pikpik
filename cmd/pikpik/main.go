@@ -291,8 +291,16 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		_, _ = w.Write([]byte(`{"status":"healthy","version":"` + Version + `"}`))
 	})
 
+	// 11. Embedded SPA Static Handler
+	staticHandler := NewStaticHandler()
+
 	// Mount API Gateway & WebSockets
-	rootMux.Handle("/", gateway)
+	rootMux.Handle("/api/", gateway)
+	rootMux.Handle("/ws", gateway)
+	rootMux.Handle("/ws/", gateway)
+
+	// Mount Embedded Frontend SPA
+	rootMux.Handle("/", staticHandler)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
