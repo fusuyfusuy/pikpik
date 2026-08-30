@@ -25,20 +25,72 @@ export interface ErrorResponse {
   error: APIError;
 }
 
+// --- Organization & Project Models ---
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateOrgRequest {
+  name: string;
+  slug?: string;
+}
+
+export interface Project {
+  id: string;
+  org_id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  tags: string[];
+  app_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectRequest {
+  org_id?: string;
+  name: string;
+  slug?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface UpdateProjectRequest {
+  name?: string;
+  slug?: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface TagSummary {
+  tag: string;
+  count: number;
+}
+
 // --- App Models ---
 export interface App {
   id: string;
-  project_id?: string;
+  project_id: string;
+  project_name?: string;
   stage_id?: string;
   name: string;
   image: string;
   replicas: number;
+  container_port?: number;
   domains: string[];
+  tags: string[];
+  runtime_mode?: 'swarm' | 'standalone' | string;
+  compose_yaml?: string;
   env?: Record<string, string>;
   status: 'running' | 'stopped' | 'deploying' | 'error' | 'pending' | string;
   git_repo_url?: string;
   git_branch?: string;
   dockerfile_path?: string;
+  publish_directory?: string;
   build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
   webhook_secret?: string;
   created_at: string;
@@ -46,33 +98,74 @@ export interface App {
 }
 
 export interface CreateAppRequest {
+  project_id?: string;
+  stage_id?: string;
   name: string;
   image?: string;
   replicas: number;
+  container_port?: number;
   domains?: string[];
+  tags?: string[];
+  runtime_mode?: string;
+  compose_yaml?: string;
   env?: Record<string, string>;
   git_repo_url?: string;
   git_branch?: string;
   dockerfile_path?: string;
+  publish_directory?: string;
   build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
   webhook_secret?: string;
 }
 
 export interface UpdateAppRequest {
+  project_id?: string;
+  stage_id?: string;
   name?: string;
   image?: string;
   replicas?: number;
+  container_port?: number;
   domains?: string[];
+  tags?: string[];
+  runtime_mode?: string;
+  compose_yaml?: string;
   env?: Record<string, string>;
   git_repo_url?: string;
   git_branch?: string;
   dockerfile_path?: string;
+  publish_directory?: string;
   build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
   webhook_secret?: string;
 }
 
 export interface DeployAppRequest {
   image?: string;
+}
+
+export interface ComposeVariableDef {
+  name: string;
+  defaultValue?: string;
+  isSecret: boolean;
+  required: boolean;
+}
+
+export interface ComposeServiceInspection {
+  name: string;
+  image: string;
+  ports?: Array<{ hostPort?: number; containerPort?: number; protocol?: string }>;
+  volumes?: string[];
+  networks?: string[];
+  environmentKeys?: string[];
+  hasDeployBlock: boolean;
+  replicas: number;
+}
+
+export interface InspectComposeResponse {
+  services: ComposeServiceInspection[];
+  variables: ComposeVariableDef[];
+  exposed_ports: number[];
+  declared_volumes: string[];
+  declared_networks: string[];
+  suggested_runtime: 'swarm' | 'standalone' | string;
 }
 
 // --- Git & Build Models ---
@@ -146,20 +239,108 @@ export interface JoinTokensResponse {
   worker: string;
 }
 
+// --- Managed Machine Models ---
+export interface HostMetrics {
+  node_id: string;
+  timestamp: string;
+  uptime_seconds?: number;
+  cpu_percent: number;
+  cpu_cores: number;
+  load_avg_1m?: number;
+  load_avg_5m?: number;
+  load_avg_15m?: number;
+  mem_total_bytes: number;
+  mem_used_bytes: number;
+  mem_avail_bytes?: number;
+  mem_percent: number;
+  swap_total_bytes?: number;
+  swap_used_bytes?: number;
+  disk_read_bps?: number;
+  disk_write_bps?: number;
+  disk_read_iops?: number;
+  disk_write_iops?: number;
+  net_rx_bps?: number;
+  net_tx_bps?: number;
+  net_rx_errors?: number;
+  net_tx_errors?: number;
+}
+
+export interface MachineDTO {
+  id: string;
+  hostname: string;
+  role: 'worker' | 'manager' | 'standalone' | string;
+  public_ip: string;
+  private_ip: string;
+  os_kernel: string;
+  cpu_arch: string;
+  docker_version: string;
+  agent_version: string;
+  status: 'online' | 'degraded' | 'offline' | string;
+  last_seen?: string;
+  created_at: string;
+  updated_at: string;
+  metrics?: HostMetrics;
+  containers_count?: number;
+}
+
+export interface EnrollMachineResponse {
+  command: string;
+  token: string;
+  server_url: string;
+  install_bash: string;
+}
+
+export interface JoinSwarmRequest {
+  role?: 'worker' | 'manager';
+  remote_addrs?: string[];
+  join_token?: string;
+}
+
 // --- Stack Models ---
+export interface StackContainer {
+  id: string;
+  name: string;
+  service: string;
+  state: string;
+  status: string;
+}
+
 export interface Stack {
   id: string;
+  project_id?: string;
   name: string;
   compose_yaml: string;
   services: string[];
-  status: 'active' | 'deploying' | 'failed' | 'inactive' | string;
+  status: 'running' | 'deploying' | 'stopped' | 'failed' | string;
+  containers?: StackContainer[];
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateStackRequest {
+  project_id?: string;
   name: string;
   compose_yaml: string;
+}
+
+// --- Network Models ---
+export interface NetworkDTO {
+  id: string;
+  project_id: string;
+  name: string;
+  driver: string;
+  scope: string;
+  is_external?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateNetworkRequest {
+  project_id?: string;
+  name: string;
+  driver?: string;
+  scope?: string;
+  is_external?: boolean;
 }
 
 // --- Database Models ---
@@ -287,41 +468,31 @@ export interface CertificateUploadRequest {
   key_pem: string;
 }
 
-// --- Traffic Splitting & Canary Models ---
-export interface TrafficSplitConfig {
+export interface CaddyDiagnosticsDTO {
+  status: 'online' | 'degraded' | 'offline' | string;
+  admin_url: string;
+  latency_ms: number;
+  active_routes: number;
+  config: any;
+}
+
+export interface CertificateRecord {
+  id: string;
   domain: string;
-  stable_upstream: string;
-  canary_upstream: string;
-  canary_percent: number;
-  headers?: Record<string, string>;
-  paths?: string[];
-  app_id?: string;
+  type: 'Wildcard' | 'Origin CA' | 'On-Demand' | "Let's Encrypt" | 'Custom';
+  issuer: string;
+  expires_at?: string;
+  expires_in_label: string;
+  auto_renew: boolean;
+  status: 'active' | 'expiring_soon' | 'expired' | 'pending';
 }
 
-export type TrafficSplitDTO = TrafficSplitConfig;
-export type SetTrafficSplitRequest = TrafficSplitConfig;
-
-export interface BlueGreenDeployRequest {
-  image: string;
-  domain?: string;
-  container_port?: number;
-  health_check_path?: string;
-  probe_timeout_sec?: number;
-  drain_period_sec?: number;
-  canary_steps?: number[];
-  environment?: Record<string, string>;
+export interface Dns01ConfigRequest {
+  wildcard_domain: string;
+  cloudflare_api_token: string;
+  propagation_timeout_sec?: number;
 }
 
-export interface BlueGreenDeployResponse {
-  app_id: string;
-  blue_container_id?: string;
-  green_container_id: string;
-  active_container_id: string;
-  domain: string;
-  status: string;
-  swapped_at: string;
-  duration_ms: number;
-}
 
 // --- Volume Models ---
 export interface Volume {
@@ -332,6 +503,22 @@ export interface Volume {
   size_bytes?: number;
   used_by_services?: string[];
   created_at: string;
+}
+
+export interface VolumeDTO {
+  id: string;
+  project_id: string;
+  name: string;
+  driver: string;
+  size_bytes?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateVolumeRequest {
+  project_id?: string;
+  name: string;
+  driver?: string;
 }
 
 // --- Registry Models ---

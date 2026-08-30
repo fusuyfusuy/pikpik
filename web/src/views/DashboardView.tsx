@@ -37,7 +37,7 @@ const mockTelemetry = Array.from({ length: 20 }, (_, i) => ({
 export function DashboardView({ onNavigate }: DashboardViewProps) {
   const { data: apps, refetch: refetchApps } = useQuery({
     queryKey: ['apps'],
-    queryFn: api.apps.list,
+    queryFn: () => api.apps.list(),
   });
 
   const { data: nodes, refetch: refetchNodes } = useQuery({

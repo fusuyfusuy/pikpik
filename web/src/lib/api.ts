@@ -18,6 +18,7 @@ import {
   DomainBinding,
   BindDomainRequest,
   CertificateUploadRequest,
+  CaddyDiagnosticsDTO,
   RegistryStatusResponse,
   RepositoryCatalogResponse,
   RobotCredentialsResponse,
@@ -37,9 +38,21 @@ import {
   BackupSchedule,
   CreateBackupScheduleRequest,
   UpdateBackupScheduleRequest,
-  TrafficSplitConfig,
-  BlueGreenDeployRequest,
-  BlueGreenDeployResponse,
+  Organization,
+  CreateOrgRequest,
+  Project,
+  CreateProjectRequest,
+  UpdateProjectRequest,
+  TagSummary,
+  InspectComposeResponse,
+  NetworkDTO,
+  CreateNetworkRequest,
+  VolumeDTO,
+  CreateVolumeRequest,
+  MachineDTO,
+  HostMetrics,
+  EnrollMachineResponse,
+  JoinSwarmRequest,
 } from './types';
 
 const TOKEN_KEY = 'pikpik_token';
@@ -154,14 +167,65 @@ export const api = {
       request(`/api/v1/auth/tokens/${id}`, { method: 'DELETE' }),
   },
 
+  // --- Organizations ---
+  orgs: {
+    list: (): Promise<Organization[]> => request<Organization[]>('/api/v1/orgs'),
+    create: (req: CreateOrgRequest): Promise<Organization> =>
+      request<Organization>('/api/v1/orgs', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  },
+
+  // --- Projects ---
+  projects: {
+    list: (params?: { org_id?: string; tag?: string }): Promise<Project[]> => {
+      const qs = new URLSearchParams();
+      if (params?.org_id) qs.set('org_id', params.org_id);
+      if (params?.tag) qs.set('tag', params.tag);
+      const query = qs.toString() ? `?${qs.toString()}` : '';
+      return request<Project[]>(`/api/v1/projects${query}`);
+    },
+    get: (id: string): Promise<Project> => request<Project>(`/api/v1/projects/${id}`),
+    create: (req: CreateProjectRequest): Promise<Project> =>
+      request<Project>('/api/v1/projects', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    update: (id: string, req: UpdateProjectRequest): Promise<Project> =>
+      request<Project>(`/api/v1/projects/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request(`/api/v1/projects/${id}`, { method: 'DELETE' }),
+  },
+
+  // --- Tags ---
+  tags: {
+    list: (): Promise<TagSummary[]> => request<TagSummary[]>('/api/v1/tags'),
+  },
+
   // --- Apps ---
   apps: {
-    list: (): Promise<App[]> => request<App[]>('/api/v1/apps'),
+    list: (params?: { project_id?: string; tag?: string; search?: string }): Promise<App[]> => {
+      const qs = new URLSearchParams();
+      if (params?.project_id) qs.set('project_id', params.project_id);
+      if (params?.tag) qs.set('tag', params.tag);
+      if (params?.search) qs.set('search', params.search);
+      const query = qs.toString() ? `?${qs.toString()}` : '';
+      return request<App[]>(`/api/v1/apps${query}`);
+    },
     get: (id: string): Promise<App> => request<App>(`/api/v1/apps/${id}`),
     create: (req: CreateAppRequest): Promise<App> =>
       request<App>('/api/v1/apps', {
         method: 'POST',
         body: JSON.stringify(req),
+      }),
+    inspectCompose: (composeYAML: string): Promise<InspectComposeResponse> =>
+      request<InspectComposeResponse>('/api/v1/apps/inspect-compose', {
+        method: 'POST',
+        body: JSON.stringify({ compose_yaml: composeYAML }),
       }),
     update: (id: string, req: UpdateAppRequest): Promise<App> =>
       request<App>(`/api/v1/apps/${id}`, {
@@ -206,8 +270,54 @@ export const api = {
       }),
     deploy: (id: string): Promise<{ status: string }> =>
       request(`/api/v1/stacks/${id}/deploy`, { method: 'POST' }),
+    restart: (id: string): Promise<{ status: string }> =>
+      request(`/api/v1/stacks/${id}/restart`, { method: 'POST' }),
+    stop: (id: string): Promise<{ status: string }> =>
+      request(`/api/v1/stacks/${id}/stop`, { method: 'POST' }),
+    logs: (id: string): Promise<any> =>
+      request(`/api/v1/stacks/${id}/logs`),
     delete: (id: string): Promise<{ message: string }> =>
       request(`/api/v1/stacks/${id}`, { method: 'DELETE' }),
+  },
+
+  // --- Networks ---
+  networks: {
+    list: (projectId?: string): Promise<NetworkDTO[]> => {
+      const qs = projectId ? `?project_id=${projectId}` : '';
+      return request<NetworkDTO[]>(`/api/v1/networks${qs}`);
+    },
+    get: (id: string): Promise<NetworkDTO> => request<NetworkDTO>(`/api/v1/networks/${id}`),
+    create: (req: CreateNetworkRequest): Promise<NetworkDTO> =>
+      request<NetworkDTO>('/api/v1/networks', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request(`/api/v1/networks/${id}`, { method: 'DELETE' }),
+    prune: (projectId?: string): Promise<{ deleted: string[] }> => {
+      const qs = projectId ? `?project_id=${projectId}` : '';
+      return request(`/api/v1/networks/prune${qs}`, { method: 'POST' });
+    },
+  },
+
+  // --- Volumes ---
+  volumes: {
+    list: (projectId?: string): Promise<VolumeDTO[]> => {
+      const qs = projectId ? `?project_id=${projectId}` : '';
+      return request<VolumeDTO[]>(`/api/v1/volumes${qs}`);
+    },
+    get: (id: string): Promise<VolumeDTO> => request<VolumeDTO>(`/api/v1/volumes/${id}`),
+    create: (req: CreateVolumeRequest): Promise<VolumeDTO> =>
+      request<VolumeDTO>('/api/v1/volumes', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request(`/api/v1/volumes/${id}`, { method: 'DELETE' }),
+    prune: (projectId?: string): Promise<{ deleted: string[]; space_reclaimed?: number }> => {
+      const qs = projectId ? `?project_id=${projectId}` : '';
+      return request(`/api/v1/volumes/prune${qs}`, { method: 'POST' });
+    },
   },
 
   // --- Swarm Nodes ---
@@ -223,6 +333,25 @@ export const api = {
       request(`/api/v1/nodes/${id}`, { method: 'DELETE' }),
     getJoinTokens: (): Promise<JoinTokensResponse> =>
       request<JoinTokensResponse>('/api/v1/nodes/join-tokens'),
+  },
+
+  // --- Managed Machines & Infrastructure ---
+  machines: {
+    list: (): Promise<MachineDTO[]> => request<MachineDTO[]>('/api/v1/machines'),
+    get: (id: string): Promise<MachineDTO> => request<MachineDTO>(`/api/v1/machines/${id}`),
+    delete: (id: string): Promise<{ message: string; id: string }> =>
+      request(`/api/v1/machines/${id}`, { method: 'DELETE' }),
+    getMetrics: (id: string): Promise<HostMetrics> =>
+      request<HostMetrics>(`/api/v1/machines/${id}/metrics`),
+    getEnrollCommand: (serverUrl?: string): Promise<EnrollMachineResponse> => {
+      const qs = serverUrl ? `?server_url=${encodeURIComponent(serverUrl)}` : '';
+      return request<EnrollMachineResponse>(`/api/v1/machines/enroll${qs}`);
+    },
+    joinSwarm: (id: string, req: JoinSwarmRequest): Promise<SwarmNode> =>
+      request<SwarmNode>(`/api/v1/machines/${id}/join-swarm`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
   },
 
   // --- Databases ---
@@ -288,6 +417,8 @@ export const api = {
       }),
     reconcile: (): Promise<{ status: string }> =>
       request('/api/v1/ingress/reconcile', { method: 'POST' }),
+    getCaddyConfig: (): Promise<CaddyDiagnosticsDTO> =>
+      request<CaddyDiagnosticsDTO>('/api/v1/ingress/caddy/config'),
   },
 
   // --- Registry ---
@@ -377,21 +508,5 @@ export const api = {
       }),
     delete: (id: string): Promise<{ message: string }> =>
       request(`/api/v1/backups/schedules/${id}`, { method: 'DELETE' }),
-  },
-
-  // --- Traffic Splitting & Canary ---
-  traffic: {
-    get: (appId: string): Promise<TrafficSplitConfig> =>
-      request<TrafficSplitConfig>(`/api/v1/apps/${appId}/traffic`),
-    set: (appId: string, req: Partial<TrafficSplitConfig>): Promise<TrafficSplitConfig> =>
-      request<TrafficSplitConfig>(`/api/v1/apps/${appId}/traffic`, {
-        method: 'POST',
-        body: JSON.stringify(req),
-      }),
-    deployBlueGreen: (appId: string, req: BlueGreenDeployRequest): Promise<BlueGreenDeployResponse> =>
-      request<BlueGreenDeployResponse>(`/api/v1/apps/${appId}/blue-green`, {
-        method: 'POST',
-        body: JSON.stringify(req),
-      }),
   },
 };
