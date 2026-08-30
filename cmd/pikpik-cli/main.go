@@ -42,14 +42,28 @@ func main() {
 		runInit(args)
 	case "login":
 		runLogin(args)
+	case "projects":
+		runProjects(args)
+	case "apps":
+		runApps(args)
+	case "tags":
+		runTags(args)
 	case "nodes":
 		runNodes(args)
+	case "machine", "machines":
+		runMachine(args)
 	case "deploy":
 		runDeploy(args)
 	case "logs":
 		runLogs(args)
 	case "stats":
 		runStats(args)
+	case "stack", "stacks":
+		runStack(args)
+	case "network", "networks":
+		runNetwork(args)
+	case "volume", "volumes":
+		runVolume(args)
 	case "db":
 		runDB(args)
 	case "prune":
@@ -73,8 +87,15 @@ Usage:
 Commands:
   init          Initialize a new project with .pikpik.yml
   login         Authenticate against a pikpik control plane instance
+  projects      Manage project workspaces and grouping
+  apps          List and inspect deployed applications
+  tags          List aggregated tag taxonomy and counts
   nodes         Inspect cluster nodes, allocation, and availability
+  machine       Manage remote agent hosts, telemetry, and swarm enrollment
   deploy        Trigger rolling deployment for active project or image
+  stack         Manage multi-container Compose v2 application stacks
+  network       Manage bridge, project-mesh, and overlay virtual networks
+  volume        Manage persistent data storage volumes
   logs          Stream aggregated real-time container logs
   stats         Display real-time CPU, RAM, Network and IO metrics
   db            Manage databases, snapshots, and S3 restores
@@ -256,6 +277,134 @@ func runLogin(args []string) {
 	fmt.Printf("Saved context %q (%s) to ~/.pikpik/config.json\n", contextKey, serverURL)
 }
 
+// 2b. pikpik projects
+func runProjects(args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "create":
+			fs := flag.NewFlagSet("projects create", flag.ExitOnError)
+			name := fs.StringP("name", "n", "", "Project name")
+			desc := fs.StringP("desc", "d", "", "Project description")
+			tags := fs.StringP("tags", "t", "", "Comma-separated tags")
+			_ = fs.Parse(args[1:])
+
+			if *name == "" {
+				fmt.Println("Usage: pikpik projects create -n <name> [-d <description>] [-t <tag1,tag2>]")
+				os.Exit(1)
+			}
+
+			var tagList []string
+			if *tags != "" {
+				for _, t := range strings.Split(*tags, ",") {
+					if trimmed := strings.TrimSpace(t); trimmed != "" {
+						tagList = append(tagList, trimmed)
+					}
+				}
+			}
+
+			client, _, _ := getClient()
+			p, err := client.CreateProject(context.Background(), api.CreateProjectRequest{
+				Name:        *name,
+				Description: *desc,
+				Tags:        tagList,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create project: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Project %q (%s) created successfully.\n", p.Name, p.ID)
+			return
+
+		case "rm", "delete":
+			if len(args) < 2 {
+				fmt.Println("Usage: pikpik projects rm <project_id>")
+				os.Exit(1)
+			}
+			client, _, _ := getClient()
+			if err := client.DeleteProject(context.Background(), args[1]); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to delete project: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Project %s deleted.\n", args[1])
+			return
+		}
+	}
+
+	fs := flag.NewFlagSet("projects list", flag.ExitOnError)
+	tag := fs.StringP("tag", "t", "", "Filter by tag")
+	_ = fs.Parse(args)
+
+	client, _, _ := getClient()
+	prjs, err := client.ListProjects(context.Background(), "", *tag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list projects: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%-16s %-20s %-8s %-24s %s\n", "ID", "NAME", "APPS", "TAGS", "DESCRIPTION")
+	for _, p := range prjs {
+		tagStr := strings.Join(p.Tags, ", ")
+		if len(tagStr) > 22 {
+			tagStr = tagStr[:20] + ".."
+		}
+		fmt.Printf("%-16s %-20s %-8d %-24s %s\n", p.ID, p.Name, p.AppCount, tagStr, p.Description)
+	}
+}
+
+// 2c. pikpik apps
+func runApps(args []string) {
+	fs := flag.NewFlagSet("apps", flag.ExitOnError)
+	tag := fs.StringP("tag", "t", "", "Filter by tag")
+	_ = fs.Parse(args)
+
+	client, _, _ := getClient()
+	apps, err := client.ListApps(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list apps: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%-20s %-16s %-18s %-10s %-20s %s\n", "ID", "NAME", "PROJECT", "STATUS", "TAGS", "IMAGE")
+	for _, a := range apps {
+		if *tag != "" {
+			matched := false
+			for _, t := range a.Tags {
+				if strings.EqualFold(t, *tag) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		tagStr := strings.Join(a.Tags, ", ")
+		if len(tagStr) > 18 {
+			tagStr = tagStr[:16] + ".."
+		}
+		projName := a.ProjectName
+		if projName == "" {
+			projName = a.ProjectID
+		}
+		fmt.Printf("%-20s %-16s %-18s %-10s %-20s %s\n", a.ID, a.Name, projName, a.Status, tagStr, a.Image)
+	}
+}
+
+// 2d. pikpik tags
+func runTags(args []string) {
+	client, _, _ := getClient()
+	tags, err := client.ListTags(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list tags: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%-24s %s\n", "TAG", "COUNT")
+	for _, t := range tags {
+		fmt.Printf("%-24s %d\n", t.Tag, t.Count)
+	}
+}
+
 // 3. pikpik nodes
 func runNodes(args []string) {
 	if len(args) > 0 {
@@ -309,9 +458,83 @@ func runDeploy(args []string) {
 	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
 	appFlag := fs.StringP("app", "a", "", "Application ID or name")
 	imageFlag := fs.StringP("image", "i", "", "Container image tag to deploy")
+	fileFlag := fs.StringP("file", "f", "", "Path to docker-compose.yml or stack file")
+	projFlag := fs.StringP("project", "p", "", "Project ID (default: prj_default)")
+	swarmFlag := fs.Bool("swarm", false, "Force deployment to Swarm cluster")
+	standaloneFlag := fs.Bool("standalone", false, "Force deployment to Standalone engine")
+	tagsFlag := fs.StringP("tags", "t", "", "Comma-separated tags")
 	_ = fs.Parse(args)
 
 	client, _, _ := getClient()
+
+	if *fileFlag != "" {
+		data, err := os.ReadFile(*fileFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read compose file %q: %v\n", *fileFlag, err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Analyzing blueprint %q...\n", *fileFlag)
+		inspect, err := client.InspectCompose(context.Background(), string(data))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Compose inspection failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		runtimeMode := inspect.SuggestedRuntime
+		if *swarmFlag {
+			runtimeMode = "swarm"
+		} else if *standaloneFlag {
+			runtimeMode = "standalone"
+		}
+
+		var svcNames []string
+		for _, s := range inspect.Services {
+			svcNames = append(svcNames, s.Name)
+		}
+
+		fmt.Printf("Blueprint verified: %d services (%s) | Runtime: %s | Exposed Ports: %v\n",
+			len(inspect.Services), strings.Join(svcNames, ", "), strings.ToUpper(runtimeMode), inspect.ExposedPorts)
+
+		appName := *appFlag
+		if appName == "" && len(inspect.Services) > 0 {
+			appName = inspect.Services[0].Name
+		}
+		if appName == "" {
+			appName = "stack-app"
+		}
+
+		var tagList []string
+		if *tagsFlag != "" {
+			for _, t := range strings.Split(*tagsFlag, ",") {
+				if trimmed := strings.TrimSpace(t); trimmed != "" {
+					tagList = append(tagList, trimmed)
+				}
+			}
+		}
+
+		primaryImage := ""
+		if len(inspect.Services) > 0 {
+			primaryImage = inspect.Services[0].Image
+		}
+
+		createdApp, err := client.CreateApp(context.Background(), api.CreateAppRequest{
+			ProjectID:   *projFlag,
+			Name:        appName,
+			Image:       primaryImage,
+			Replicas:    1,
+			Tags:        tagList,
+			RuntimeMode: runtimeMode,
+			ComposeYAML: string(data),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to deploy application: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Application %q (%s) deployed successfully in [%s] mode.\n", createdApp.Name, createdApp.ID, strings.ToUpper(runtimeMode))
+		return
+	}
 
 	targetApp := *appFlag
 	if targetApp == "" {
@@ -327,7 +550,9 @@ func runDeploy(args []string) {
 	}
 
 	if targetApp == "" {
-		fmt.Println("Usage: pikpik deploy [-a|--app <app_name>] [-i|--image <image_tag>]")
+		fmt.Println("Usage:")
+		fmt.Println("  pikpik deploy -a <app_name> [-i <image_tag>]")
+		fmt.Println("  pikpik deploy -f <compose.yml> [-p <project_id>] [--swarm|--standalone] [-t <tags>]")
 		os.Exit(1)
 	}
 
@@ -665,3 +890,576 @@ func runContext(args []string) {
 		fmt.Printf("Switched to context %q.\n", name)
 	}
 }
+
+// 11. pikpik stack
+func runStack(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	switch args[0] {
+	case "deploy":
+		fs := flag.NewFlagSet("stack deploy", flag.ExitOnError)
+		name := fs.StringP("name", "n", "", "Stack name")
+		project := fs.StringP("project", "p", "", "Project ID")
+		_ = fs.Parse(args[1:])
+
+		target := ""
+		if len(fs.Args()) > 0 {
+			target = fs.Args()[0]
+		}
+
+		if target == "" && *name == "" {
+			fmt.Println("Usage: pikpik stack deploy <compose-file.yml | stack-name> [-n name] [-p project]")
+			os.Exit(1)
+		}
+
+		client, _, _ := getClient()
+		ctx := context.Background()
+
+		// Check if target is a file on disk
+		if target != "" {
+			if data, err := os.ReadFile(target); err == nil {
+				stackName := *name
+				if stackName == "" {
+					base := filepath.Base(target)
+					stackName = strings.TrimSuffix(base, filepath.Ext(base))
+					if stackName == "docker-compose" || stackName == "compose" {
+						dir, _ := os.Getwd()
+						stackName = filepath.Base(dir)
+					}
+				}
+
+				stk, err := client.CreateStack(ctx, api.CreateStackRequest{
+					ProjectID:   *project,
+					Name:        stackName,
+					ComposeYAML: string(data),
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to create/update stack: %v\n", err)
+					os.Exit(1)
+				}
+				target = stk.ID
+			}
+		} else if *name != "" {
+			target = *name
+		}
+
+		fmt.Printf("Deploying stack %q...\n", target)
+		if err := client.DeployStack(ctx, target); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to deploy stack: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Stack %q deployed successfully.\n", target)
+
+	case "list", "ls":
+		fs := flag.NewFlagSet("stack list", flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "Output JSON format")
+		_ = fs.Parse(args[1:])
+
+		client, _, _ := getClient()
+		stacks, err := client.ListStacks(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list stacks: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(stacks, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("%-20s %-16s %-16s %-12s %-20s %s\n", "ID", "NAME", "PROJECT", "STATUS", "SERVICES", "CREATED")
+		for _, s := range stacks {
+			svcStr := strings.Join(s.Services, ", ")
+			if len(svcStr) > 18 {
+				svcStr = svcStr[:16] + ".."
+			}
+			proj := s.ProjectID
+			if proj == "" {
+				proj = "default"
+			}
+			fmt.Printf("%-20s %-16s %-16s %-12s %-20s %s\n", s.ID, s.Name, proj, s.Status, svcStr, s.CreatedAt.Format("2006-01-02 15:04"))
+		}
+
+	case "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik stack inspect <stack_id|name> [--json]")
+			os.Exit(1)
+		}
+		fs := flag.NewFlagSet("stack inspect", flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "Output JSON format")
+		_ = fs.Parse(args[2:])
+
+		client, _, _ := getClient()
+		stk, err := client.GetStack(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to inspect stack: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(stk, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("Stack: %s (%s)\n", stk.Name, stk.ID)
+		fmt.Printf("Project:  %s\n", stk.ProjectID)
+		fmt.Printf("Status:   %s\n", stk.Status)
+		fmt.Printf("Services: %s\n", strings.Join(stk.Services, ", "))
+		fmt.Printf("Created:  %s\n\n", stk.CreatedAt.Format(time.RFC3339))
+		fmt.Println("Compose YAML:")
+		fmt.Println("-------------")
+		fmt.Println(stk.ComposeYAML)
+
+	case "stop":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik stack stop <stack_id|name>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		if err := client.StopStack(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to stop stack: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Stack %q stopped.\n", args[1])
+
+	case "restart":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik stack restart <stack_id|name>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		if err := client.RestartStack(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to restart stack: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Stack %q restarted.\n", args[1])
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik stack rm <stack_id|name>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		if err := client.DeleteStack(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to delete stack: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Stack %q removed.\n", args[1])
+
+	case "logs":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik stack logs <stack_id|name>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		logs, err := client.GetStackLogs(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to fetch stack logs: %v\n", err)
+			os.Exit(1)
+		}
+		b, _ := json.MarshalIndent(logs, "", "  ")
+		fmt.Println(string(b))
+
+	case "help", "--help", "-h":
+		fmt.Println(`Usage: pikpik stack <command> [arguments]
+
+Commands:
+  deploy    Deploy a stack from compose file or name
+  list      List all application stacks
+  inspect   Show detailed stack blueprint and containers
+  stop      Stop running stack containers
+  restart   Restart stack containers
+  logs      Show runtime logs and status for stack
+  rm        Remove stack and associated containers`)
+		return
+
+	default:
+		fmt.Printf("Unknown stack command: %s. Use deploy, list, inspect, stop, restart, rm, logs\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// 12. pikpik network
+func runNetwork(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	switch args[0] {
+	case "help", "--help", "-h":
+		fmt.Println(`Usage: pikpik network <command> [arguments]
+
+Commands:
+  list      List managed networks
+  inspect   Show network details
+  create    Create a virtual bridge/overlay network
+  rm        Remove a managed network
+  prune     Prune unused networks`)
+		return
+	case "list", "ls":
+		fs := flag.NewFlagSet("network list", flag.ExitOnError)
+		project := fs.StringP("project", "p", "", "Filter by project ID")
+		jsonOut := fs.Bool("json", false, "Output JSON format")
+		_ = fs.Parse(args[1:])
+
+		client, _, _ := getClient()
+		nets, err := client.ListNetworks(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list networks: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(nets, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("%-20s %-24s %-16s %-10s %-10s %s\n", "ID", "NAME", "PROJECT", "DRIVER", "SCOPE", "EXTERNAL")
+		for _, n := range nets {
+			fmt.Printf("%-20s %-24s %-16s %-10s %-10s %v\n", n.ID, n.Name, n.ProjectID, n.Driver, n.Scope, n.IsExternal)
+		}
+
+	case "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik network inspect <network_id>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		net, err := client.GetNetwork(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to inspect network: %v\n", err)
+			os.Exit(1)
+		}
+		b, _ := json.MarshalIndent(net, "", "  ")
+		fmt.Println(string(b))
+
+	case "create":
+		fs := flag.NewFlagSet("network create", flag.ExitOnError)
+		driver := fs.StringP("driver", "d", "bridge", "Network driver (bridge/overlay)")
+		scope := fs.StringP("scope", "s", "project", "Network scope (project/stack/custom)")
+		project := fs.StringP("project", "p", "", "Project ID")
+		_ = fs.Parse(args[1:])
+
+		if len(fs.Args()) == 0 {
+			fmt.Println("Usage: pikpik network create <name> [-d driver] [-s scope] [-p project]")
+			os.Exit(1)
+		}
+		name := fs.Args()[0]
+
+		client, _, _ := getClient()
+		net, err := client.CreateNetwork(context.Background(), api.CreateNetworkRequest{
+			ProjectID: *project,
+			Name:      name,
+			Driver:    *driver,
+			Scope:     *scope,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create network: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Network %q (%s) created.\n", net.Name, net.ID)
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik network rm <network_id>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		if err := client.DeleteNetwork(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to delete network: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Network %q removed.\n", args[1])
+
+	case "prune":
+		fs := flag.NewFlagSet("network prune", flag.ExitOnError)
+		project := fs.StringP("project", "p", "", "Project ID")
+		_ = fs.Parse(args[1:])
+
+		client, _, _ := getClient()
+		res, err := client.PruneNetworks(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to prune networks: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Pruned %d unused networks.\n", len(res.Deleted))
+		for _, name := range res.Deleted {
+			fmt.Printf(" - %s\n", name)
+		}
+
+	default:
+		fmt.Printf("Unknown network command: %s. Use list, inspect, create, rm, prune\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// 13. pikpik volume
+func runVolume(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	switch args[0] {
+	case "help", "--help", "-h":
+		fmt.Println(`Usage: pikpik volume <command> [arguments]
+
+Commands:
+  list      List persistent storage volumes
+  inspect   Show volume details
+  create    Create a managed volume
+  rm        Remove a managed volume
+  prune     Prune unused volumes`)
+		return
+	case "list", "ls":
+		fs := flag.NewFlagSet("volume list", flag.ExitOnError)
+		project := fs.StringP("project", "p", "", "Filter by project ID")
+		jsonOut := fs.Bool("json", false, "Output JSON format")
+		_ = fs.Parse(args[1:])
+
+		client, _, _ := getClient()
+		vols, err := client.ListVolumes(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list volumes: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(vols, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("%-20s %-28s %-16s %-10s %s\n", "ID", "NAME", "PROJECT", "DRIVER", "CREATED")
+		for _, v := range vols {
+			fmt.Printf("%-20s %-28s %-16s %-10s %s\n", v.ID, v.Name, v.ProjectID, v.Driver, v.CreatedAt.Format("2006-01-02 15:04"))
+		}
+
+	case "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik volume inspect <volume_id>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		vol, err := client.GetVolume(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to inspect volume: %v\n", err)
+			os.Exit(1)
+		}
+		b, _ := json.MarshalIndent(vol, "", "  ")
+		fmt.Println(string(b))
+
+	case "create":
+		fs := flag.NewFlagSet("volume create", flag.ExitOnError)
+		driver := fs.StringP("driver", "d", "local", "Volume driver")
+		project := fs.StringP("project", "p", "", "Project ID")
+		_ = fs.Parse(args[1:])
+
+		if len(fs.Args()) == 0 {
+			fmt.Println("Usage: pikpik volume create <name> [-d driver] [-p project]")
+			os.Exit(1)
+		}
+		name := fs.Args()[0]
+
+		client, _, _ := getClient()
+		vol, err := client.CreateVolume(context.Background(), api.CreateVolumeRequest{
+			ProjectID: *project,
+			Name:      name,
+			Driver:    *driver,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create volume: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Volume %q (%s) created.\n", vol.Name, vol.ID)
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik volume rm <volume_id>")
+			os.Exit(1)
+		}
+		client, _, _ := getClient()
+		if err := client.DeleteVolume(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to delete volume: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Volume %q removed.\n", args[1])
+
+	case "prune":
+		fs := flag.NewFlagSet("volume prune", flag.ExitOnError)
+		project := fs.StringP("project", "p", "", "Project ID")
+		_ = fs.Parse(args[1:])
+
+		client, _, _ := getClient()
+		res, err := client.PruneVolumes(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to prune volumes: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Pruned %d unused volumes (Reclaimed: %d bytes).\n", len(res.Deleted), res.SpaceReclaimed)
+		for _, name := range res.Deleted {
+			fmt.Printf(" - %s\n", name)
+		}
+
+	default:
+		fmt.Printf("Unknown volume command: %s. Use list, inspect, create, rm, prune\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// 12. pikpik machine
+func runMachine(args []string) {
+	if len(args) == 0 || args[0] == "list" || strings.HasPrefix(args[0], "-") {
+		subArgs := args
+		if len(args) > 0 && args[0] == "list" {
+			subArgs = args[1:]
+		}
+		fs := flag.NewFlagSet("machine list", flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "Output in JSON format")
+		_ = fs.Parse(subArgs)
+
+		client, _, _ := getClient()
+		machines, err := client.ListMachines(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list machines: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(machines, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("%-18s %-20s %-10s %-10s %-16s %-12s %-10s %s\n",
+			"ID", "HOSTNAME", "ROLE", "STATUS", "PUBLIC IP", "OS/ARCH", "DOCKER", "LAST SEEN")
+		for _, m := range machines {
+			osArch := m.OSKernel
+			if m.CPUArch != "" {
+				osArch = m.CPUArch
+			}
+			lastSeenStr := "Never"
+			if m.LastSeen != nil {
+				lastSeenStr = m.LastSeen.Format(time.RFC3339)
+			}
+			fmt.Printf("%-18s %-20s %-10s %-10s %-16s %-12s %-10s %s\n",
+				m.ID, m.Hostname, m.Role, m.Status, m.PublicIP, osArch, m.DockerVersion, lastSeenStr)
+		}
+		return
+	}
+
+	sub := args[0]
+	client, _, _ := getClient()
+
+	switch sub {
+	case "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik machine inspect <machine_id> [--json]")
+			os.Exit(1)
+		}
+		fs := flag.NewFlagSet("machine inspect", flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "Output in JSON format")
+		_ = fs.Parse(args[2:])
+
+		m, err := client.GetMachine(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to inspect machine: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOut {
+			b, _ := json.MarshalIndent(m, "", "  ")
+			fmt.Println(string(b))
+			return
+		}
+
+		fmt.Printf("Machine ID:      %s\n", m.ID)
+		fmt.Printf("Hostname:        %s\n", m.Hostname)
+		fmt.Printf("Role:            %s\n", m.Role)
+		fmt.Printf("Status:          %s\n", m.Status)
+		fmt.Printf("Public IP:       %s\n", m.PublicIP)
+		fmt.Printf("Private IP:      %s\n", m.PrivateIP)
+		fmt.Printf("OS Kernel:       %s\n", m.OSKernel)
+		fmt.Printf("CPU Arch:        %s\n", m.CPUArch)
+		fmt.Printf("Docker Version:  %s\n", m.DockerVersion)
+		fmt.Printf("Agent Version:   %s\n", m.AgentVersion)
+		if m.LastSeen != nil {
+			fmt.Printf("Last Seen:       %s\n", m.LastSeen.Format(time.RFC3339))
+		}
+		if m.Metrics != nil {
+			fmt.Printf("CPU Usage:       %.2f%% (%d cores)\n", m.Metrics.CPUPercent, m.Metrics.CPUCores)
+			fmt.Printf("Memory Usage:    %.2f%% (%d / %d bytes)\n", m.Metrics.MemPercent, m.Metrics.MemUsedBytes, m.Metrics.MemTotalBytes)
+		}
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik machine rm <machine_id>")
+			os.Exit(1)
+		}
+		if err := client.DeleteMachine(context.Background(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to remove machine: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Machine %q removed successfully.\n", args[1])
+
+	case "join-swarm":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik machine join-swarm <machine_id> [--role worker|manager] [--token <token>]")
+			os.Exit(1)
+		}
+		machineID := args[1]
+		fs := flag.NewFlagSet("machine join-swarm", flag.ExitOnError)
+		role := fs.StringP("role", "r", "worker", "Node role (worker or manager)")
+		token := fs.StringP("token", "t", "", "Swarm join token override")
+		_ = fs.Parse(args[2:])
+
+		node, err := client.JoinSwarmMachine(context.Background(), machineID, api.JoinSwarmRequest{
+			Role:      *role,
+			JoinToken: *token,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to join machine to Swarm cluster: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Machine %s joined Swarm cluster as %s (Status: %s, Availability: %s).\n",
+			node.ID, node.Role, node.Status, node.Availability)
+
+	case "enroll":
+		resp, err := client.GetMachineEnrollCommand(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get machine enrollment command: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("=== Remote Host Machine Enrollment ===")
+		fmt.Printf("Enrollment Token: %s\n", resp.Token)
+		fmt.Printf("Control Plane:    %s\n\n", resp.ServerURL)
+		fmt.Println("Run this command on your remote server to install pikpik-agent:")
+		fmt.Printf("  %s\n", resp.Command)
+
+	case "metrics":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik machine metrics <machine_id>")
+			os.Exit(1)
+		}
+		m, err := client.GetMachineMetrics(context.Background(), args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get machine metrics: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("=== Host Metrics (%s) ===\n", m.NodeID)
+		fmt.Printf("CPU:     %.2f%% (%d cores)\n", m.CPUPercent, m.CPUCores)
+		fmt.Printf("Memory:  %.2f%% (Used: %d bytes, Total: %d bytes)\n", m.MemPercent, m.MemUsedBytes, m.MemTotalBytes)
+		fmt.Printf("Net RX:  %d B/s | TX: %d B/s\n", m.NetRxBps, m.NetTxBps)
+		fmt.Printf("Disk RD: %d B/s | WR: %d B/s\n", m.DiskReadBps, m.DiskWriteBps)
+
+	default:
+		fmt.Printf("Unknown machine command: %s. Available: list, inspect, rm, join-swarm, enroll, metrics\n", sub)
+		os.Exit(1)
+	}
+}
+
+

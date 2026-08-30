@@ -169,6 +169,82 @@ func TestAPIClient_Endpoints(t *testing.T) {
 	if prune == nil {
 		t.Fatalf("expected non-nil prune result")
 	}
+
+	// 8. Stacks CLI Client Methods
+	stk, err := client.CreateStack(context.Background(), api.CreateStackRequest{
+		Name: "cli-stack",
+		ComposeYAML: "version: '3.8'\nservices:\n  app:\n    image: nginx:alpine\n",
+	})
+	if err != nil {
+		t.Fatalf("client create stack failed: %v", err)
+	}
+	if stk.Name != "cli-stack" {
+		t.Errorf("expected stack name cli-stack, got %s", stk.Name)
+	}
+
+	stks, err := client.ListStacks(context.Background())
+	if err != nil || len(stks) == 0 {
+		t.Fatalf("client list stacks failed: %v, count: %d", err, len(stks))
+	}
+
+	if err := client.DeployStack(context.Background(), stk.ID); err != nil {
+		t.Fatalf("client deploy stack failed: %v", err)
+	}
+	if err := client.RestartStack(context.Background(), stk.ID); err != nil {
+		t.Fatalf("client restart stack failed: %v", err)
+	}
+	if err := client.StopStack(context.Background(), stk.ID); err != nil {
+		t.Fatalf("client stop stack failed: %v", err)
+	}
+	if err := client.DeleteStack(context.Background(), stk.ID); err != nil {
+		t.Fatalf("client delete stack failed: %v", err)
+	}
+
+	// 9. Networks CLI Client Methods
+	net, err := client.CreateNetwork(context.Background(), api.CreateNetworkRequest{
+		Name: "cli-net",
+	})
+	if err != nil {
+		t.Fatalf("client create network failed: %v", err)
+	}
+	if net.Name != "cli-net" {
+		t.Errorf("expected network name cli-net, got %s", net.Name)
+	}
+
+	nets, err := client.ListNetworks(context.Background(), "")
+	if err != nil || len(nets) == 0 {
+		t.Fatalf("client list networks failed: %v", err)
+	}
+
+	if _, err := client.PruneNetworks(context.Background(), ""); err != nil {
+		t.Fatalf("client prune networks failed: %v", err)
+	}
+	if err := client.DeleteNetwork(context.Background(), net.ID); err != nil {
+		t.Fatalf("client delete network failed: %v", err)
+	}
+
+	// 10. Volumes CLI Client Methods
+	vol, err := client.CreateVolume(context.Background(), api.CreateVolumeRequest{
+		Name: "cli-vol",
+	})
+	if err != nil {
+		t.Fatalf("client create volume failed: %v", err)
+	}
+	if vol.Name != "cli-vol" {
+		t.Errorf("expected volume name cli-vol, got %s", vol.Name)
+	}
+
+	vols, err := client.ListVolumes(context.Background(), "")
+	if err != nil || len(vols) == 0 {
+		t.Fatalf("client list volumes failed: %v", err)
+	}
+
+	if _, err := client.PruneVolumes(context.Background(), ""); err != nil {
+		t.Fatalf("client prune volumes failed: %v", err)
+	}
+	if err := client.DeleteVolume(context.Background(), vol.ID); err != nil {
+		t.Fatalf("client delete volume failed: %v", err)
+	}
 }
 
 // 4. Test Init Command
