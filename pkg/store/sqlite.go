@@ -33,8 +33,10 @@ type SQLiteStore struct {
 	envVars     EnvVarStore
 	volumes     VolumeStore
 	deployments DeploymentStore
-	backups     BackupStore
-	audit       AuditStore
+	backups             BackupStore
+	audit               AuditStore
+	builds              BuildStore
+	githubInstallations GitHubInstallationStore
 }
 
 // Open initializes a SQLite database connection with production WAL pragmas and executes migrations.
@@ -101,22 +103,26 @@ func newStoreWithExecutor(exec dbExecutor, writeMu *sync.Mutex, isTx bool) *SQLi
 	s.deployments = &sqlDeploymentStore{db: exec, writeMu: writeMu}
 	s.backups = &sqlBackupStore{db: exec, writeMu: writeMu}
 	s.audit = &sqlAuditStore{db: exec, writeMu: writeMu}
+	s.builds = &sqlBuildStore{db: exec, writeMu: writeMu}
+	s.githubInstallations = &sqlGitHubInstallationStore{db: exec, writeMu: writeMu}
 
 	return s
 }
 
-func (s *SQLiteStore) Organizations() OrganizationStore { return s.orgs }
-func (s *SQLiteStore) Users() UserStore                 { return s.users }
-func (s *SQLiteStore) Sessions() SessionStore           { return s.sessions }
-func (s *SQLiteStore) APITokens() APITokenStore         { return s.tokens }
-func (s *SQLiteStore) Projects() ProjectStore           { return s.projects }
-func (s *SQLiteStore) Stages() StageStore               { return s.stages }
-func (s *SQLiteStore) Services() ServiceStore           { return s.services }
-func (s *SQLiteStore) EnvVars() EnvVarStore             { return s.envVars }
-func (s *SQLiteStore) Volumes() VolumeStore             { return s.volumes }
-func (s *SQLiteStore) Deployments() DeploymentStore     { return s.deployments }
-func (s *SQLiteStore) Backups() BackupStore             { return s.backups }
-func (s *SQLiteStore) Audit() AuditStore                { return s.audit }
+func (s *SQLiteStore) Organizations() OrganizationStore                 { return s.orgs }
+func (s *SQLiteStore) Users() UserStore                                 { return s.users }
+func (s *SQLiteStore) Sessions() SessionStore                           { return s.sessions }
+func (s *SQLiteStore) APITokens() APITokenStore                         { return s.tokens }
+func (s *SQLiteStore) Projects() ProjectStore                           { return s.projects }
+func (s *SQLiteStore) Stages() StageStore                               { return s.stages }
+func (s *SQLiteStore) Services() ServiceStore                           { return s.services }
+func (s *SQLiteStore) EnvVars() EnvVarStore                             { return s.envVars }
+func (s *SQLiteStore) Volumes() VolumeStore                             { return s.volumes }
+func (s *SQLiteStore) Deployments() DeploymentStore                     { return s.deployments }
+func (s *SQLiteStore) Backups() BackupStore                             { return s.backups }
+func (s *SQLiteStore) Audit() AuditStore                                { return s.audit }
+func (s *SQLiteStore) Builds() BuildStore                               { return s.builds }
+func (s *SQLiteStore) GitHubInstallations() GitHubInstallationStore     { return s.githubInstallations }
 
 func (s *SQLiteStore) DB() *sql.DB {
 	return s.db

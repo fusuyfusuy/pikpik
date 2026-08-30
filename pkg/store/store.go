@@ -38,6 +38,8 @@ type Store interface {
 	Deployments() DeploymentStore
 	Backups() BackupStore
 	Audit() AuditStore
+	Builds() BuildStore
+	GitHubInstallations() GitHubInstallationStore
 
 	// WithTx executes the supplied operation inside an atomic database transaction.
 	WithTx(ctx context.Context, fn func(tx Store) error) error

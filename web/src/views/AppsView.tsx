@@ -1,7 +1,7 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { App, CreateAppRequest } from '../lib/types';
+import { App, CreateAppRequest, Build } from '../lib/types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
@@ -10,8 +10,9 @@ import { Modal } from '../components/ui/Modal';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { Tabs } from '../components/ui/Tabs';
 import { useToast } from '../components/ui/Toast';
-import { formatDate } from '../lib/utils';
+import { formatDate, formatDuration } from '../lib/utils';
 import { usePTY } from '../hooks/usePTY';
+import { useSSE } from '../hooks/useSSE';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AnsiUp } from 'ansi_up';
 import {
@@ -25,6 +26,15 @@ import {
   FileText,
   Key,
   Globe,
+  Hammer,
+  GitBranch,
+  GitCommit,
+  Copy,
+  Check,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Radio,
 } from 'lucide-react';
 
 const ansi = new AnsiUp();
@@ -35,13 +45,20 @@ export function AppsView() {
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<App | null>(null);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'terminal' | 'env'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'builds' | 'logs' | 'terminal' | 'env'>('details');
 
   // Form states
+  const [sourceType, setSourceType] = useState<'image' | 'git'>('image');
   const [name, setName] = useState('');
   const [image, setImage] = useState('');
   const [replicas, setReplicas] = useState(1);
   const [domains, setDomains] = useState('');
+  const [gitRepoUrl, setGitRepoUrl] = useState('');
+  const [gitBranch, setGitBranch] = useState('main');
+  const [buildStrategy, setBuildStrategy] = useState<'dockerfile' | 'nixpacks' | 'compose'>('dockerfile');
+  const [dockerfilePath, setDockerfilePath] = useState('Dockerfile');
+  const [webhookSecret, setWebhookSecret] = useState('');
+
   const [envKey, setEnvKey] = useState('');
   const [envValue, setEnvValue] = useState('');
   const [envMap, setEnvMap] = useState<Record<string, string>>({});
@@ -127,6 +144,12 @@ export function AppsView() {
     setImage('');
     setReplicas(1);
     setDomains('');
+    setGitRepoUrl('');
+    setGitBranch('main');
+    setBuildStrategy('dockerfile');
+    setDockerfilePath('Dockerfile');
+    setWebhookSecret('');
+    setSourceType('image');
   };
 
   const handleCreateSubmit = (e: React.FormEvent) => {
@@ -136,12 +159,26 @@ export function AppsView() {
       .map((d) => d.trim())
       .filter(Boolean);
 
-    createMutation.mutate({
-      name,
-      image,
-      replicas: Number(replicas) || 1,
-      domains: domainList,
-    });
+    if (sourceType === 'git') {
+      createMutation.mutate({
+        name,
+        image: image.trim() || `${name}:latest`,
+        replicas: Number(replicas) || 1,
+        domains: domainList,
+        git_repo_url: gitRepoUrl.trim(),
+        git_branch: gitBranch.trim() || 'main',
+        build_strategy: buildStrategy,
+        dockerfile_path: buildStrategy === 'dockerfile' ? (dockerfilePath.trim() || 'Dockerfile') : undefined,
+        webhook_secret: webhookSecret.trim() || undefined,
+      });
+    } else {
+      createMutation.mutate({
+        name,
+        image: image.trim(),
+        replicas: Number(replicas) || 1,
+        domains: domainList,
+      });
+    }
   };
 
   const handleAddEnv = () => {
@@ -174,14 +211,17 @@ export function AppsView() {
             <span>Applications</span>
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Docker Swarm services with zero-downtime rolling deploys
+            Docker Swarm services with zero-downtime rolling deploys & Git integration
           </p>
         </div>
 
         <Button
           variant="primary"
           size="sm"
-          onClick={() => setIsCreateModalOpen(true)}
+          onClick={() => {
+            resetForm();
+            setIsCreateModalOpen(true);
+          }}
           leftIcon={<Plus className="h-4 w-4" />}
         >
           Create App
@@ -194,7 +234,7 @@ export function AppsView() {
           <TableHeader>
             <TableRow>
               <TableHead>Service Name</TableHead>
-              <TableHead>Image Tag</TableHead>
+              <TableHead>Source / Image</TableHead>
               <TableHead>Replicas</TableHead>
               <TableHead>Domains</TableHead>
               <TableHead>Status</TableHead>
@@ -232,7 +272,20 @@ export function AppsView() {
                       <span>{app.name}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-zinc-400">{app.image}</TableCell>
+                  <TableCell className="font-mono text-xs text-zinc-400">
+                    {app.git_repo_url ? (
+                      <div className="flex items-center gap-1.5 text-emerald-400">
+                        <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate max-w-[160px]" title={app.git_repo_url}>
+                          {app.git_repo_url.replace(/https?:\/\/[^/]+\//, '').replace(/\.git$/, '')}:{app.git_branch || 'main'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="truncate max-w-[180px] block" title={app.image}>
+                        {app.image}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-zinc-300">
                     {app.replicas}
                   </TableCell>
@@ -352,6 +405,7 @@ export function AppsView() {
             <Tabs
               tabs={[
                 { id: 'details', label: 'Overview', icon: <Box className="h-3.5 w-3.5" /> },
+                { id: 'builds', label: 'Builds & CI', icon: <Hammer className="h-3.5 w-3.5" /> },
                 { id: 'logs', label: 'Streaming Logs', icon: <FileText className="h-3.5 w-3.5" /> },
                 { id: 'terminal', label: 'Live Shell (PTY)', icon: <TerminalIcon className="h-3.5 w-3.5" /> },
                 { id: 'env', label: 'Environment & Secrets', icon: <Key className="h-3.5 w-3.5" /> },
@@ -384,6 +438,23 @@ export function AppsView() {
                   </div>
                 </div>
 
+                {selectedApp.git_repo_url && (
+                  <div className="p-3 bg-zinc-950/80 rounded-lg border border-zinc-800 space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-400 font-medium flex items-center gap-1.5">
+                        <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+                        Git Integration Active
+                      </span>
+                      <Badge variant="outline" className="font-mono text-[10px]">
+                        {selectedApp.build_strategy || 'dockerfile'}
+                      </Badge>
+                    </div>
+                    <div className="text-zinc-300 font-mono text-xs truncate">
+                      {selectedApp.git_repo_url} ({selectedApp.git_branch || 'main'})
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-2 pt-3 border-t border-zinc-800">
                   <Button
                     variant="primary"
@@ -403,6 +474,9 @@ export function AppsView() {
                 </div>
               </div>
             )}
+
+            {/* Tab: Builds & CI */}
+            {activeTab === 'builds' && <AppBuildsTab app={selectedApp} />}
 
             {/* Tab: Virtualized Logs */}
             {activeTab === 'logs' && <AppLogsViewer appId={selectedApp.id} />}
@@ -464,9 +538,37 @@ export function AppsView() {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         title="Deploy New Application"
-        description="Deploy a containerized application to the Swarm cluster"
+        description="Deploy a containerized application or build directly from Git"
       >
         <form onSubmit={handleCreateSubmit} className="space-y-4">
+          {/* Source Toggle */}
+          <div className="flex p-1 bg-zinc-950 rounded-lg border border-zinc-800">
+            <button
+              type="button"
+              onClick={() => setSourceType('image')}
+              className={`flex-1 py-1.5 px-3 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${
+                sourceType === 'image'
+                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Box className="h-3.5 w-3.5 text-cyan-400" />
+              <span>Pre-built Image</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSourceType('git')}
+              className={`flex-1 py-1.5 px-3 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${
+                sourceType === 'git'
+                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <GitBranch className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Git Repository</span>
+            </button>
+          </div>
+
           <Input
             label="Service Name"
             placeholder="api-service"
@@ -475,13 +577,70 @@ export function AppsView() {
             required
           />
 
-          <Input
-            label="Container Image Tag"
-            placeholder="ghcr.io/org/repo:latest or nginx:alpine"
-            value={image}
-            onChange={(e) => setImage(e.target.value)}
-            required
-          />
+          {sourceType === 'image' ? (
+            <Input
+              label="Container Image Tag"
+              placeholder="ghcr.io/org/repo:latest or nginx:alpine"
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              required
+            />
+          ) : (
+            <div className="space-y-4">
+              <Input
+                label="Git Repository URL"
+                placeholder="https://github.com/org/repo.git"
+                value={gitRepoUrl}
+                onChange={(e) => setGitRepoUrl(e.target.value)}
+                leftIcon={<GitBranch className="h-3.5 w-3.5" />}
+                required
+                helperText="HTTPS Git URL with public access or webhook integration"
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Branch"
+                  placeholder="main"
+                  value={gitBranch}
+                  onChange={(e) => setGitBranch(e.target.value)}
+                  leftIcon={<GitCommit className="h-3.5 w-3.5" />}
+                />
+                <div className="w-full space-y-1.5">
+                  <label className="block text-xs font-medium text-zinc-300">
+                    Build Strategy
+                  </label>
+                  <select
+                    value={buildStrategy}
+                    onChange={(e) => setBuildStrategy(e.target.value as any)}
+                    className="w-full rounded-lg border border-zinc-800 bg-zinc-950/60 px-3.5 py-2 text-sm text-zinc-100 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 focus:outline-none"
+                  >
+                    <option value="dockerfile">Dockerfile (Standard)</option>
+                    <option value="nixpacks">Nixpacks (Auto-detect)</option>
+                    <option value="compose">Docker Compose</option>
+                  </select>
+                </div>
+              </div>
+
+              {buildStrategy === 'dockerfile' && (
+                <Input
+                  label="Dockerfile Path"
+                  placeholder="Dockerfile"
+                  value={dockerfilePath}
+                  onChange={(e) => setDockerfilePath(e.target.value)}
+                  helperText="Path relative to the root of the repository"
+                />
+              )}
+
+              <Input
+                label="Webhook Secret / Token (Optional)"
+                placeholder="Custom secret for webhook verification"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+                type="password"
+                helperText="Used to verify HMAC signatures or webhook token query param"
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <Input
@@ -517,12 +676,549 @@ export function AppsView() {
               size="sm"
               isLoading={createMutation.isPending}
             >
-              Create & Deploy
+              {sourceType === 'git' ? 'Create & Build' : 'Create & Deploy'}
             </Button>
           </div>
         </form>
       </Modal>
     </div>
+  );
+}
+
+// Subcomponent: Builds & CI Tab
+function AppBuildsTab({ app }: { app: App }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
+  const [selectedBuildForStream, setSelectedBuildForStream] = useState<Build | null>(null);
+
+  const { data: builds, isLoading } = useQuery({
+    queryKey: ['builds', app.id],
+    queryFn: () => api.builds.list(app.id),
+    refetchInterval: 4000,
+  });
+
+  const rebuildMutation = useMutation({
+    mutationFn: (buildId: string) => api.builds.rebuild(buildId),
+    onSuccess: (newBuild) => {
+      queryClient.invalidateQueries({ queryKey: ['builds', app.id] });
+      toast.success('Build Queued', `Rebuild initiated for ${newBuild.commit_sha?.slice(0, 7) || newBuild.id}`);
+      setSelectedBuildForStream(newBuild);
+    },
+    onError: (err: Error) => toast.error('Rebuild Failed', err.message),
+  });
+
+  const deployCommitMutation = useMutation({
+    mutationFn: (image: string) => api.apps.deploy(app.id, { image }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apps'] });
+      toast.success('Deployment Started', 'Rolling update triggered for selected build');
+    },
+    onError: (err: Error) => toast.error('Deploy Failed', err.message),
+  });
+
+  const webhookUrl = `${window.location.origin}/api/v1/webhooks/git/${app.id}${
+    app.webhook_secret ? `?token=${encodeURIComponent(app.webhook_secret)}` : ''
+  }`;
+
+  const handleCopyWebhook = () => {
+    navigator.clipboard.writeText(webhookUrl);
+    setCopied(true);
+    toast.info('Webhook Copied', 'Generic Git webhook endpoint copied to clipboard');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status?.toLowerCase()) {
+      case 'success':
+        return (
+          <Badge variant="success" dot>
+            success
+          </Badge>
+        );
+      case 'cloning':
+      case 'building':
+      case 'deploying':
+        return (
+          <Badge variant="warning" dot className="animate-pulse">
+            {status}
+          </Badge>
+        );
+      case 'queued':
+        return (
+          <Badge variant="default" dot>
+            queued
+          </Badge>
+        );
+      case 'failed':
+        return (
+          <Badge variant="error" dot>
+            failed
+          </Badge>
+        );
+      case 'cancelled':
+        return (
+          <Badge variant="default">
+            cancelled
+          </Badge>
+        );
+      default:
+        return <Badge variant="default">{status}</Badge>;
+    }
+  };
+
+  return (
+    <div className="space-y-4 pt-2">
+      {/* Webhook Endpoint Info Card */}
+      <div className="p-3.5 bg-zinc-950/80 rounded-lg border border-zinc-800 space-y-2.5 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+            <Radio className="h-3.5 w-3.5 text-cyan-400" />
+            Git Push Webhook Endpoint
+          </span>
+          <span className="text-[11px] text-zinc-500 font-mono">POST /api/v1/webhooks/git/:id</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 truncate select-all">
+            {webhookUrl}
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleCopyWebhook}
+            leftIcon={copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1 border-t border-zinc-900">
+          <span>GitHub Webhooks also supported at <code className="text-zinc-300 font-mono">/api/v1/webhooks/github</code></span>
+          {app.git_repo_url && (
+            <span className="font-mono text-zinc-400 truncate max-w-[200px]" title={app.git_repo_url}>
+              {app.git_branch || 'main'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Builds Table */}
+      <Card className="p-0 overflow-hidden border-zinc-800">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Status</TableHead>
+              <TableHead>Commit / Branch</TableHead>
+              <TableHead>Message & Author</TableHead>
+              <TableHead>Duration</TableHead>
+              <TableHead>Time</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-8 text-zinc-500">
+                  Loading build history...
+                </TableCell>
+              </TableRow>
+            ) : (!builds || builds.length === 0) ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center py-10 text-zinc-500">
+                  No builds recorded yet. Push to your repository or trigger a rebuild.
+                </TableCell>
+              </TableRow>
+            ) : (
+              builds.map((b) => {
+                const authorName = b.commit_author || b.author || 'system';
+                const shortSha = b.commit_sha ? b.commit_sha.slice(0, 7) : b.id.slice(0, 7);
+                const isLive = ['queued', 'cloning', 'building', 'deploying'].includes(b.status?.toLowerCase());
+
+                return (
+                  <TableRow
+                    key={b.id}
+                    className="cursor-pointer hover:bg-zinc-900/50"
+                    onClick={() => setSelectedBuildForStream(b)}
+                  >
+                    <TableCell>{getStatusBadge(b.status)}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-mono text-xs font-semibold text-cyan-300 flex items-center gap-1">
+                          <GitCommit className="h-3 w-3 text-zinc-500" />
+                          {shortSha}
+                        </span>
+                        <span className="text-[11px] text-zinc-400 flex items-center gap-1 font-mono">
+                          <GitBranch className="h-2.5 w-2.5 text-zinc-500" />
+                          {b.branch || 'main'}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[220px]">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-zinc-200 truncate font-medium">
+                          {b.commit_message || 'Manual trigger / Generic webhook build'}
+                        </span>
+                        <span className="text-[11px] text-zinc-500">
+                          {authorName}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-zinc-400">
+                      {formatDuration(b.duration_ms)}
+                    </TableCell>
+                    <TableCell className="text-xs text-zinc-500">
+                      {formatDate(b.created_at || b.started_at || '')}
+                    </TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="subtle"
+                          size="sm"
+                          title="Live Build Stream"
+                          onClick={() => setSelectedBuildForStream(b)}
+                          leftIcon={isLive ? <Loader2 className="h-3 w-3 animate-spin text-cyan-400" /> : <FileText className="h-3 w-3" />}
+                        >
+                          {isLive ? 'Stream' : 'Logs'}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          title="Re-run Build"
+                          onClick={() => rebuildMutation.mutate(b.id)}
+                          isLoading={rebuildMutation.isPending && rebuildMutation.variables === b.id}
+                        >
+                          <RotateCw className="h-3 w-3" />
+                        </Button>
+                        {b.status === 'success' && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            title="Deploy this Commit"
+                            onClick={() => deployCommitMutation.mutate(b.image_tag || b.commit_sha)}
+                            isLoading={deployCommitMutation.isPending}
+                          >
+                            <Play className="h-3 w-3 text-emerald-400" />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+
+      {/* Live Stream & Log Modal */}
+      {selectedBuildForStream && (
+        <LiveBuildStreamModal
+          build={selectedBuildForStream}
+          onClose={() => setSelectedBuildForStream(null)}
+          onRebuild={(buildId) => rebuildMutation.mutate(buildId)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Subcomponent: Live Build Stream Modal with Stage Indicators and SSE logs
+const STAGES = [
+  { id: 'queued', label: 'Queued' },
+  { id: 'cloning', label: 'Cloning' },
+  { id: 'building', label: 'Building' },
+  { id: 'deploying', label: 'Deploying' },
+  { id: 'success', label: 'Success' },
+] as const;
+
+function getStageIndex(status: string): number {
+  switch (status?.toLowerCase()) {
+    case 'queued':
+      return 0;
+    case 'cloning':
+      return 1;
+    case 'building':
+      return 2;
+    case 'deploying':
+      return 3;
+    case 'success':
+      return 4;
+    case 'failed':
+    case 'cancelled':
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+function LiveBuildStreamModal({
+  build,
+  onClose,
+  onRebuild,
+}: {
+  build: Build;
+  onClose: () => void;
+  onRebuild?: (buildId: string) => void;
+}) {
+  const toast = useToast();
+  const [logs, setLogs] = useState<string[]>(() => {
+    if (build.logs) {
+      return build.logs.split('\n');
+    }
+    return [];
+  });
+  const [currentStatus, setCurrentStatus] = useState<string>(build.status || 'queued');
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [copiedLogs, setCopiedLogs] = useState(false);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // Poll build status until complete
+  const { data: latestBuild } = useQuery({
+    queryKey: ['build', build.id],
+    queryFn: () => api.builds.get(build.id),
+    refetchInterval: (query) => {
+      const bld = query.state.data;
+      const st = (bld?.status || currentStatus).toLowerCase();
+      if (['success', 'failed', 'cancelled'].includes(st)) {
+        return false;
+      }
+      return 2000;
+    },
+  });
+
+  useEffect(() => {
+    if (latestBuild) {
+      setCurrentStatus(latestBuild.status);
+      if (latestBuild.logs && logs.length === 0) {
+        setLogs(latestBuild.logs.split('\n'));
+      }
+    }
+  }, [latestBuild]);
+
+  // SSE Stream handler
+  const handleSSEMessage = useCallback((data: unknown) => {
+    if (!data) return;
+    if (typeof data === 'string') {
+      setLogs((prev) => [...prev, data]);
+    } else if (typeof data === 'object') {
+      const obj = data as Record<string, any>;
+      if (typeof obj.data === 'string') {
+        setLogs((prev) => [...prev, obj.data]);
+      } else if (typeof obj.line === 'string') {
+        setLogs((prev) => [...prev, obj.line]);
+      } else if (typeof obj.message === 'string') {
+        setLogs((prev) => [...prev, obj.message]);
+      } else if (typeof obj.log === 'string') {
+        setLogs((prev) => [...prev, obj.log]);
+      } else {
+        setLogs((prev) => [...prev, JSON.stringify(obj)]);
+      }
+
+      if (obj.status && typeof obj.status === 'string') {
+        setCurrentStatus(obj.status);
+      }
+    }
+  }, []);
+
+  const streamActive = ['queued', 'cloning', 'building', 'deploying'].includes(currentStatus.toLowerCase());
+
+  useSSE({
+    endpoint: api.builds.streamUrl(build.id),
+    enabled: Boolean(build.id),
+    onMessage: handleSSEMessage,
+  });
+
+  // Autoscroll effect
+  useEffect(() => {
+    if (autoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs, autoScroll]);
+
+  const handleCopyAllLogs = () => {
+    navigator.clipboard.writeText(logs.join('\n'));
+    setCopiedLogs(true);
+    toast.info('Logs Copied', 'Build log output copied to clipboard');
+    setTimeout(() => setCopiedLogs(false), 2000);
+  };
+
+  const currentStageIdx = getStageIndex(currentStatus);
+  const isFailed = currentStatus.toLowerCase() === 'failed';
+  const isCancelled = currentStatus.toLowerCase() === 'cancelled';
+  const isComplete = currentStatus.toLowerCase() === 'success';
+
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={
+        <div className="flex items-center gap-2">
+          <Hammer className="h-5 w-5 text-cyan-400" />
+          <span>Build #{build.id.slice(-8)}</span>
+          <Badge
+            variant={
+              isComplete
+                ? 'success'
+                : isFailed
+                ? 'error'
+                : isCancelled
+                ? 'default'
+                : 'warning'
+            }
+            dot
+            className={streamActive ? 'animate-pulse' : ''}
+          >
+            {currentStatus}
+          </Badge>
+        </div>
+      }
+      description={`Commit: ${build.commit_sha ? build.commit_sha.slice(0, 7) : 'Manual'} • Branch: ${
+        build.branch || 'main'
+      } • ${build.commit_message || 'Generic Build Execution'}`}
+      size="xl"
+    >
+      <div className="space-y-4">
+        {/* Stage Progression Bar */}
+        <div className="p-3.5 bg-zinc-950 rounded-lg border border-zinc-800">
+          <div className="grid grid-cols-5 gap-2 relative">
+            {STAGES.map((stg, idx) => {
+              let isStepActive = false;
+              let isStepDone = false;
+              let isStepFailed = false;
+
+              if (isFailed && idx === currentStageIdx) {
+                isStepFailed = true;
+              } else if (idx < currentStageIdx || (isComplete && idx <= 4)) {
+                isStepDone = true;
+              } else if (idx === currentStageIdx && !isComplete && !isFailed && !isCancelled) {
+                isStepActive = true;
+              }
+
+              return (
+                <div key={stg.id} className="flex flex-col items-center text-center gap-1.5">
+                  <div
+                    className={`h-7 w-7 rounded-full flex items-center justify-center text-xs font-semibold transition-all ${
+                      isStepDone
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm shadow-emerald-500/10'
+                        : isStepActive
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400 animate-pulse ring-2 ring-cyan-500/30'
+                        : isStepFailed
+                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500'
+                        : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                    }`}
+                  >
+                    {isStepDone ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : isStepFailed ? (
+                      <XCircle className="h-4 w-4" />
+                    ) : isStepActive ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <span>{idx + 1}</span>
+                    )}
+                  </div>
+                  <span
+                    className={`text-[11px] font-medium ${
+                      isStepActive
+                        ? 'text-cyan-300 font-semibold'
+                        : isStepDone
+                        ? 'text-emerald-400'
+                        : isStepFailed
+                        ? 'text-rose-400'
+                        : 'text-zinc-500'
+                    }`}
+                  >
+                    {stg.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Live Terminal Output */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-zinc-400 px-1">
+            <div className="flex items-center gap-2">
+              <span className="font-mono">Output Log Stream ({logs.length} lines)</span>
+              {streamActive && (
+                <span className="text-cyan-400 flex items-center gap-1.5 text-[11px]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  Streaming Live
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 cursor-pointer text-zinc-400 hover:text-zinc-200">
+                <input
+                  type="checkbox"
+                  checked={autoScroll}
+                  onChange={(e) => setAutoScroll(e.target.checked)}
+                  className="rounded bg-zinc-900 border-zinc-700 text-cyan-500 focus:ring-0 h-3 w-3"
+                />
+                <span className="text-[11px]">Auto-scroll</span>
+              </label>
+
+              <button
+                onClick={handleCopyAllLogs}
+                className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-[11px]"
+              >
+                {copiedLogs ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                <span>{copiedLogs ? 'Copied' : 'Copy Logs'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div
+            ref={logContainerRef}
+            className="h-88 w-full bg-zinc-950 rounded-lg border border-zinc-800 p-3.5 overflow-y-auto font-mono text-xs leading-relaxed select-text space-y-1"
+          >
+            {logs.length === 0 ? (
+              <div className="text-zinc-600 text-center py-12">
+                {streamActive ? 'Waiting for build runner output...' : 'No logs recorded for this build.'}
+              </div>
+            ) : (
+              logs.map((line, idx) => (
+                <div
+                  key={idx}
+                  className="text-zinc-300 whitespace-pre-wrap break-all"
+                  dangerouslySetInnerHTML={{
+                    __html: ansi.ansi_to_html(line),
+                  }}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex items-center justify-between pt-3 border-t border-zinc-800">
+          <div className="text-xs text-zinc-500 font-mono">
+            Duration: {formatDuration(latestBuild?.duration_ms || build.duration_ms)}
+          </div>
+          <div className="flex items-center gap-2">
+            {onRebuild && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  onRebuild(build.id);
+                  onClose();
+                }}
+                leftIcon={<RotateCw className="h-3.5 w-3.5" />}
+              >
+                Re-run Build
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

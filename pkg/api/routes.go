@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/auth"
+	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/deploy"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
@@ -53,6 +55,16 @@ func getPathParam(r *http.Request, key string) string {
 	if v := r.PathValue(key); v != "" {
 		return v
 	}
+	if key == "app_id" {
+		if v := r.PathValue("id"); v != "" {
+			return v
+		}
+	}
+	if key == "build_id" {
+		if v := r.PathValue("id"); v != "" {
+			return v
+		}
+	}
 	// Fallback to URL path token splitting
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) > 0 {
@@ -72,6 +84,7 @@ func RegisterRoutes(
 	ptyHandler *PTYHandler,
 	nudgeHandler *deploy.DefaultDeployWebhookHandler,
 	rateLimiter *RateLimiter,
+	buildMgr *build.BuildManager,
 ) {
 	authWrap := func(role string, h http.HandlerFunc) http.Handler {
 		mw := AuthMiddleware(authSvc, st, role)
@@ -763,6 +776,99 @@ func RegisterRoutes(
 
 		mux.Handle("GET /api/v1/stats/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			sseBroadcaster.ServeStatsStream(w, r)
+		}))
+	}
+
+	// --- 12. Build & Webhook Endpoints ---
+	// POST /api/v1/webhooks/github (Public HMAC verified webhook receiver)
+	mux.HandleFunc("POST /api/v1/webhooks/github", func(w http.ResponseWriter, r *http.Request) {
+		reqID := GenerateRequestID()
+		sig := r.Header.Get("X-Hub-Signature-256")
+		if sig == "" {
+			sig = r.Header.Get("X-Hub-Signature")
+		}
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, 5*1024*1024))
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Failed to read webhook payload", nil, reqID)
+			return
+		}
+
+		secret := os.Getenv("GITHUB_WEBHOOK_SECRET")
+		bld, err := ctrl.HandleGitHubWebhook(r.Context(), secret, sig, body)
+		if err != nil {
+			if strings.Contains(err.Error(), "signature") || strings.Contains(err.Error(), "unauthorized") {
+				WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, err.Error(), nil, reqID)
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
+			return
+		}
+		WriteJSON(w, http.StatusAccepted, bld, reqID)
+	})
+
+	// POST /api/v1/webhooks/git/{app_id} (Generic token verified webhook)
+	mux.HandleFunc("POST /api/v1/webhooks/git/{app_id}", func(w http.ResponseWriter, r *http.Request) {
+		reqID := GenerateRequestID()
+		appID := getPathParam(r, "app_id")
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = r.Header.Get("X-Webhook-Token")
+		}
+		if token == "" {
+			token = ExtractToken(r)
+		}
+
+		bld, err := ctrl.HandleGenericGitWebhook(r.Context(), appID, token, r)
+		if err != nil {
+			if strings.Contains(err.Error(), "unauthorized") {
+				WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, err.Error(), nil, reqID)
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
+			return
+		}
+		WriteJSON(w, http.StatusAccepted, bld, reqID)
+	})
+
+	// GET /api/v1/apps/{app_id}/builds (List app builds)
+	mux.Handle("GET /api/v1/apps/{app_id}/builds", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		appID := getPathParam(r, "app_id")
+		builds, err := ctrl.ListAppBuilds(r.Context(), appID, 50)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, builds, GetRequestID(r.Context()))
+	}))
+
+	// GET /api/v1/builds/{build_id} (Get build details)
+	mux.Handle("GET /api/v1/builds/{build_id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		buildID := getPathParam(r, "build_id")
+		bld, err := ctrl.GetBuild(r.Context(), buildID)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Build not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, bld, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/builds/{build_id}/rebuild (Trigger manual rebuild)
+	mux.Handle("POST /api/v1/builds/{build_id}/rebuild", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		buildID := getPathParam(r, "build_id")
+		bld, err := ctrl.Rebuild(r.Context(), buildID)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusAccepted, bld, GetRequestID(r.Context()))
+	}))
+
+	// GET /api/v1/builds/{build_id}/stream (SSE live build log stream via SSEBroadcaster)
+	if sseBroadcaster != nil {
+		mux.Handle("GET /api/v1/builds/{build_id}/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			buildID := getPathParam(r, "build_id")
+			sseBroadcaster.ServeLogsStream(w, r, buildID)
 		}))
 	}
 }

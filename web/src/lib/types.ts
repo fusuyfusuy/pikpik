@@ -36,16 +36,26 @@ export interface App {
   domains: string[];
   env?: Record<string, string>;
   status: 'running' | 'stopped' | 'deploying' | 'error' | 'pending' | string;
+  git_repo_url?: string;
+  git_branch?: string;
+  dockerfile_path?: string;
+  build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
+  webhook_secret?: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface CreateAppRequest {
   name: string;
-  image: string;
+  image?: string;
   replicas: number;
   domains?: string[];
   env?: Record<string, string>;
+  git_repo_url?: string;
+  git_branch?: string;
+  dockerfile_path?: string;
+  build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
+  webhook_secret?: string;
 }
 
 export interface UpdateAppRequest {
@@ -54,10 +64,62 @@ export interface UpdateAppRequest {
   replicas?: number;
   domains?: string[];
   env?: Record<string, string>;
+  git_repo_url?: string;
+  git_branch?: string;
+  dockerfile_path?: string;
+  build_strategy?: 'dockerfile' | 'nixpacks' | 'compose';
+  webhook_secret?: string;
 }
 
 export interface DeployAppRequest {
   image?: string;
+}
+
+// --- Git & Build Models ---
+export type BuildStatus =
+  | 'queued'
+  | 'cloning'
+  | 'building'
+  | 'deploying'
+  | 'success'
+  | 'failed'
+  | 'cancelled'
+  | string;
+
+export interface Build {
+  id: string;
+  app_id: string;
+  service_id?: string;
+  deployment_id?: string;
+  repo_url?: string;
+  commit_sha: string;
+  commit_message?: string;
+  commit_author?: string;
+  author?: string;
+  commit_avatar_url?: string;
+  branch: string;
+  status: 'queued' | 'cloning' | 'building' | 'deploying' | 'success' | 'failed' | 'cancelled' | string;
+  logs?: string;
+  logs_path?: string;
+  duration_ms: number;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  image_tag?: string;
+  error_message?: string;
+  strategy?: 'dockerfile' | 'nixpacks' | 'compose' | string;
+}
+
+export interface GitHubInstallation {
+  id: string;
+  org_id: string;
+  installation_id: number;
+  account_name: string;
+  account_type: 'User' | 'Organization' | string;
+  repository_selection: 'all' | 'selected' | string;
+  permissions?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // --- Swarm Node Models ---

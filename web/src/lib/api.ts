@@ -30,6 +30,7 @@ import {
   LoginResponse,
   APIToken,
   CreateTokenRequest,
+  Build,
 } from './types';
 
 const TOKEN_KEY = 'pikpik_token';
@@ -308,5 +309,22 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(req),
       }),
+  },
+
+  // --- Builds ---
+  builds: {
+    list: (appId: string): Promise<Build[]> =>
+      request<Build[]>(`/api/v1/apps/${appId}/builds`),
+    get: (buildId: string): Promise<Build> =>
+      request<Build>(`/api/v1/builds/${buildId}`),
+    rebuild: (buildId: string): Promise<Build> =>
+      request<Build>(`/api/v1/builds/${buildId}/rebuild`, {
+        method: 'POST',
+      }),
+    cancel: (buildId: string): Promise<void> =>
+      request<void>(`/api/v1/builds/${buildId}/cancel`, {
+        method: 'POST',
+      }),
+    streamUrl: (buildId: string): string => `/api/v1/builds/${buildId}/stream`,
   },
 };

@@ -7,6 +7,7 @@ import (
 
 	dockerclient "github.com/docker/docker/client"
 	"github.com/fusuycorp/pikpik/pkg/auth"
+	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/deploy"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
@@ -21,6 +22,7 @@ type APIGatewayOptions struct {
 	DockerClient   dockerclient.CommonAPIClient
 	DeployWebhook  *deploy.DefaultDeployWebhookHandler
 	RateLimiter    *RateLimiter
+	BuildManager   *build.BuildManager
 	EnableCors     bool
 	AllowedOrigins []string
 }
@@ -33,6 +35,7 @@ type APIGateway struct {
 	ptyHandler     *PTYHandler
 	nudgeHandler   *deploy.DefaultDeployWebhookHandler
 	rateLimiter    *RateLimiter
+	buildMgr       *build.BuildManager
 	router         *http.ServeMux
 	handler        http.Handler
 }
@@ -71,6 +74,7 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 		pty,
 		opts.DeployWebhook,
 		opts.RateLimiter,
+		opts.BuildManager,
 	)
 
 	// Wrap mux with standard CORS and Request ID middleware
@@ -94,6 +98,7 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 		ptyHandler:     pty,
 		nudgeHandler:   opts.DeployWebhook,
 		rateLimiter:    opts.RateLimiter,
+		buildMgr:       opts.BuildManager,
 		router:         mux,
 		handler:        handler,
 	}
@@ -117,6 +122,11 @@ func (gw *APIGateway) SSEBroadcaster() *SSEBroadcaster {
 // PTYHandler returns the underlying PTYHandler instance.
 func (gw *APIGateway) PTYHandler() *PTYHandler {
 	return gw.ptyHandler
+}
+
+// BuildManager returns the underlying BuildManager instance.
+func (gw *APIGateway) BuildManager() *build.BuildManager {
+	return gw.buildMgr
 }
 
 // RunBackground starts background workers (e.g. WebSocketHub run loop).

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/fusuycorp/pikpik/pkg/auth"
 	"github.com/fusuycorp/pikpik/pkg/backup"
+	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/config"
+	"github.com/fusuycorp/pikpik/pkg/git"
 	"github.com/fusuycorp/pikpik/pkg/ingress"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/registry"
@@ -93,6 +96,13 @@ type Controller interface {
 	GetSystemInfo(ctx context.Context) (*SystemInfo, error)
 	GetDiskUsage(ctx context.Context) (*DiskUsageInfo, error)
 	PruneSystem(ctx context.Context, req *PruneRequest) (*PruneResult, error)
+
+	// Builds & Webhooks
+	ListAppBuilds(ctx context.Context, appID string, limit int) ([]*store.Build, error)
+	GetBuild(ctx context.Context, buildID string) (*store.Build, error)
+	Rebuild(ctx context.Context, buildID string) (*store.Build, error)
+	HandleGitHubWebhook(ctx context.Context, secret string, signature string, payload []byte) (*store.Build, error)
+	HandleGenericGitWebhook(ctx context.Context, appID, token string, r *http.Request) (*store.Build, error)
 }
 
 // ControllerDependencies bundles underlying pikpik core subsystems.
@@ -106,6 +116,7 @@ type ControllerDependencies struct {
 	ConfigManager  config.ConfigManager
 	WSHub          *WebSocketHub
 	SSEBroadcaster *SSEBroadcaster
+	BuildManager   *build.BuildManager
 }
 
 // DefaultController implements Controller.
@@ -119,6 +130,7 @@ type DefaultController struct {
 	configMgr      config.ConfigManager
 	wsHub          *WebSocketHub
 	sseBroadcaster *SSEBroadcaster
+	buildMgr       *build.BuildManager
 
 	// In-memory fallbacks / caches for standalone or testing modes
 	mu           sync.RWMutex
@@ -128,6 +140,7 @@ type DefaultController struct {
 	backups      map[string]*Backup
 	destinations map[string]*BackupDestination
 	domains      map[string]*DomainBinding
+	builds       map[string]*store.Build
 }
 
 // NewDefaultController constructs a new DefaultController.
@@ -142,12 +155,14 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		configMgr:      deps.ConfigManager,
 		wsHub:          deps.WSHub,
 		sseBroadcaster: deps.SSEBroadcaster,
+		buildMgr:       deps.BuildManager,
 		apps:           make(map[string]*App),
 		stacks:         make(map[string]*Stack),
 		databases:      make(map[string]*Database),
 		backups:        make(map[string]*Backup),
 		destinations:   make(map[string]*BackupDestination),
 		domains:        make(map[string]*DomainBinding),
+		builds:         make(map[string]*store.Build),
 	}
 }
 
@@ -1146,3 +1161,220 @@ func (c *DefaultController) PruneSystem(ctx context.Context, req *PruneRequest) 
 		VolumesDeleted:      []string{},
 	}, nil
 }
+
+// --- Build Operations ---
+
+func (c *DefaultController) ListAppBuilds(ctx context.Context, appID string, limit int) ([]*store.Build, error) {
+	if c.st != nil {
+		return c.st.Builds().ListByService(ctx, appID, limit)
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []*store.Build
+	for _, b := range c.builds {
+		if b.ServiceID == appID || appID == "" || appID == "*" {
+			result = append(result, b)
+		}
+	}
+	if len(result) == 0 {
+		return []*store.Build{}, nil
+	}
+	return result, nil
+}
+
+func (c *DefaultController) GetBuild(ctx context.Context, buildID string) (*store.Build, error) {
+	if c.st != nil {
+		return c.st.Builds().GetByID(ctx, buildID)
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if b, ok := c.builds[buildID]; ok {
+		return b, nil
+	}
+	return nil, errors.New("build not found")
+}
+
+func (c *DefaultController) Rebuild(ctx context.Context, buildID string) (*store.Build, error) {
+	orig, err := c.GetBuild(ctx, buildID)
+	if err != nil {
+		return nil, err
+	}
+
+	newID := store.NewID("bld")
+	job := &build.BuildJob{
+		ID:            newID,
+		AppID:         orig.ServiceID,
+		RepoURL:       orig.RepoURL,
+		Branch:        orig.Branch,
+		CommitSHA:     orig.CommitSHA,
+		CommitMessage: orig.CommitMessage,
+		Author:        orig.Author,
+		Status:        build.StatusQueued,
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	if c.buildMgr != nil {
+		if err := c.buildMgr.Enqueue(ctx, job); err != nil {
+			return nil, err
+		}
+	}
+
+	newBuild := &store.Build{
+		ID:            newID,
+		ServiceID:     orig.ServiceID,
+		RepoURL:       orig.RepoURL,
+		Branch:        orig.Branch,
+		CommitSHA:     orig.CommitSHA,
+		CommitMessage: orig.CommitMessage,
+		Author:        orig.Author,
+		Status:        string(build.StatusQueued),
+		StartedAt:     time.Now().UTC(),
+	}
+
+	c.mu.Lock()
+	c.builds[newID] = newBuild
+	c.mu.Unlock()
+
+	if c.st != nil && c.buildMgr == nil {
+		_ = c.st.Builds().Create(ctx, newBuild)
+	}
+
+	return newBuild, nil
+}
+
+func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret string, signature string, payload []byte) (*store.Build, error) {
+	if secret != "" && signature != "" {
+		if !git.VerifyGitHubSignature(secret, payload, signature) {
+			return nil, errors.New("invalid webhook signature")
+		}
+	}
+
+	event, err := git.ParseGitHubPushEvent(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	appID := event.Repository
+	if c.st != nil {
+		if db := c.st.DB(); db != nil {
+			row := db.QueryRowContext(ctx, `SELECT id FROM services WHERE slug = ? OR name = ? LIMIT 1`, strings.ToLower(event.Repository), event.Repository)
+			var foundID string
+			if scanErr := row.Scan(&foundID); scanErr == nil && foundID != "" {
+				appID = foundID
+			}
+		}
+	}
+	if appID == "" {
+		appID = "app_default"
+	}
+
+	newID := store.NewID("bld")
+	job := &build.BuildJob{
+		ID:                   newID,
+		AppID:                appID,
+		RepoURL:              event.CloneURL,
+		Branch:               event.Branch,
+		CommitSHA:            event.CommitSHA,
+		CommitMessage:        event.CommitMessage,
+		Author:               event.Author,
+		AuthorEmail:          event.AuthorEmail,
+		GitHubInstallationID: event.InstallationID,
+		Status:               build.StatusQueued,
+		CreatedAt:            time.Now().UTC(),
+	}
+
+	if c.buildMgr != nil {
+		if err := c.buildMgr.Enqueue(ctx, job); err != nil {
+			return nil, err
+		}
+	}
+
+	bld := &store.Build{
+		ID:            newID,
+		ServiceID:     appID,
+		RepoURL:       event.CloneURL,
+		Branch:        event.Branch,
+		CommitSHA:     event.CommitSHA,
+		CommitMessage: event.CommitMessage,
+		Author:        event.Author,
+		Status:        string(build.StatusQueued),
+		StartedAt:     time.Now().UTC(),
+	}
+
+	c.mu.Lock()
+	c.builds[newID] = bld
+	c.mu.Unlock()
+
+	if c.st != nil && c.buildMgr == nil {
+		_ = c.st.Builds().Create(ctx, bld)
+	}
+
+	return bld, nil
+}
+
+func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, token string, r *http.Request) (*store.Build, error) {
+	if appID == "" {
+		return nil, errors.New("app_id is required")
+	}
+
+	if c.st != nil {
+		svc, err := c.st.Services().GetByID(ctx, appID)
+		if err == nil && svc != nil && svc.DeployTokenHash != "" {
+			if token == "" || auth.HashToken(token) != svc.DeployTokenHash {
+				return nil, errors.New("unauthorized git webhook token")
+			}
+		}
+	}
+
+	event, err := git.ParseGenericGitPush(r)
+	if err != nil {
+		return nil, err
+	}
+
+	newID := store.NewID("bld")
+	job := &build.BuildJob{
+		ID:            newID,
+		AppID:         appID,
+		RepoURL:       event.CloneURL,
+		Branch:        event.Branch,
+		CommitSHA:     event.CommitSHA,
+		CommitMessage: event.CommitMessage,
+		Author:        event.Author,
+		AuthorEmail:   event.AuthorEmail,
+		Status:        build.StatusQueued,
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	if c.buildMgr != nil {
+		if err := c.buildMgr.Enqueue(ctx, job); err != nil {
+			return nil, err
+		}
+	}
+
+	bld := &store.Build{
+		ID:            newID,
+		ServiceID:     appID,
+		RepoURL:       event.CloneURL,
+		Branch:        event.Branch,
+		CommitSHA:     event.CommitSHA,
+		CommitMessage: event.CommitMessage,
+		Author:        event.Author,
+		Status:        string(build.StatusQueued),
+		StartedAt:     time.Now().UTC(),
+	}
+
+	c.mu.Lock()
+	c.builds[newID] = bld
+	c.mu.Unlock()
+
+	if c.st != nil && c.buildMgr == nil {
+		_ = c.st.Builds().Create(ctx, bld)
+	}
+
+	return bld, nil
+}
+

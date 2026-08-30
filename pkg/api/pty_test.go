@@ -200,7 +200,7 @@ func TestPTY_HostMachine_SIGINT(t *testing.T) {
 	server := httptest.NewServer(ptyHandler)
 	defer server.Close()
 
-	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh"
+	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh+-i"
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {

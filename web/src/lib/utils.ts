@@ -31,3 +31,14 @@ export function formatDate(dateString: string): string {
     return dateString;
   }
 }
+
+export function formatDuration(ms: number): string {
+  if (!ms || ms <= 0) return '0s';
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const mins = Math.floor(sec / 60);
+  const remSec = Math.round(sec % 60);
+  return `${mins}m ${remSec}s`;
+}
+
