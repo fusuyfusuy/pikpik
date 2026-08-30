@@ -8,12 +8,14 @@ import { Modal } from '../components/ui/Modal';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
 import { formatBytes, formatDate } from '../lib/utils';
+import { usePTY } from '../hooks/usePTY';
 import {
   Server,
   Key,
   Copy,
   Check,
   Crown,
+  Terminal as TerminalIcon,
 } from 'lucide-react';
 
 export function NodesView() {
@@ -22,6 +24,13 @@ export function NodesView() {
 
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
   const [copiedType, setCopiedType] = useState<'worker' | 'manager' | null>(null);
+  const [terminalNodeId, setTerminalNodeId] = useState<string | null>(null);
+
+  const { containerRef: terminalRef, status: ptyStatus } = usePTY({
+    targetType: 'host_machine',
+    targetId: terminalNodeId || undefined,
+  });
+  const isPTYConnected = ptyStatus === 'connected';
 
   const { data: nodes, isLoading } = useQuery({
     queryKey: ['nodes'],
@@ -162,18 +171,29 @@ export function NodesView() {
                     {formatDate(node.updated_at)}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        updateNodeMutation.mutate({
-                          id: node.id,
-                          availability: node.availability === 'drain' ? 'active' : 'drain',
-                        })
-                      }
-                    >
-                      {node.availability === 'drain' ? 'Activate' : 'Drain'}
-                    </Button>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        variant="subtle"
+                        size="sm"
+                        onClick={() => setTerminalNodeId(node.id)}
+                        className="text-cyan-400 hover:text-cyan-300"
+                      >
+                        <TerminalIcon className="h-3.5 w-3.5 mr-1" />
+                        <span>Shell</span>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          updateNodeMutation.mutate({
+                            id: node.id,
+                            availability: node.availability === 'drain' ? 'active' : 'drain',
+                          })
+                        }
+                      >
+                        {node.availability === 'drain' ? 'Activate' : 'Drain'}
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -181,6 +201,34 @@ export function NodesView() {
           </TableBody>
         </Table>
       </Card>
+
+      {/* Host Terminal PTY Modal */}
+      <Modal
+        isOpen={!!terminalNodeId}
+        onClose={() => setTerminalNodeId(null)}
+        title={`Host OS Terminal: ${terminalNodeId || ''}`}
+        description="Interactive root host shell session over secure outbound WebSocket tunnel"
+        size="xl"
+      >
+        <div className="space-y-3">
+          <div className="flex items-center justify-between px-1 text-xs">
+            <div className="flex items-center gap-2">
+              <span className={`inline-block h-2 w-2 rounded-full ${isPTYConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`} />
+              <span className="text-zinc-400 font-mono">
+                {isPTYConnected ? 'Connected (60 FPS PTY)' : 'Disconnected'}
+              </span>
+            </div>
+            <span className="text-zinc-500 font-mono text-[11px]">
+              Type exit or Ctrl+D to terminate
+            </span>
+          </div>
+
+          <div
+            ref={terminalRef}
+            className="w-full h-[450px] bg-zinc-950 rounded-lg p-3 border border-zinc-800 font-mono text-sm overflow-hidden"
+          />
+        </div>
+      </Modal>
 
       {/* Join Tokens Modal */}
       <Modal
