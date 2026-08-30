@@ -3,6 +3,11 @@
 > **A Minimalist, High-Reliability Open-Source Self-Hosted Alternative to Vercel, Netlify, and Heroku.**  
 > *Architecture at the Boundary, Ruthless Minimalism in the Core.*
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/fusuyfusuy/pikpik?style=flat-square)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Pre-Alpha WIP](https://img.shields.io/badge/Status-Pre--Alpha%20WIP-orange?style=flat-square)](README.md)
+[![Race Tested](https://img.shields.io/badge/Tests-100%25%20Race--Free-brightgreen?style=flat-square)](cmd/pikpik)
+
 ---
 
 > [!CAUTION]
@@ -53,7 +58,7 @@ graph TD
 - 📦 **Embedded OCI Registry (`registry:2`) & CI Nudge**: Built-in private registry with automated robot credentials and authenticated deployment webhook redeploys (`POST /api/deploy/nudge/{token}`).
 - 🗄️ **Pure Streaming S3 Database Backups**: Stream live PostgreSQL backups directly to AWS S3, Cloudflare R2, MinIO, or Backblaze B2 (`pg_dump | gzip | S3`) without writing a single byte to disk.
 - 📊 **Real-time Telemetry & Host Metrics**: Direct Linux `/proc` scraper (`/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, `/proc/net/dev`) with in-memory 24-hour circular ring buffers.
-- 💻 **Standalone Developer CLI (`pikpik-cli`)**: Full terminal management suite for nodes, deployments, interactive Docker Exec PTY sessions, live log streams, and database backups.
+- 💻 **Standalone Developer CLI (`pikpik-cli`)**: Full terminal management suite with standard POSIX/GNU flags for nodes, deployments, interactive Docker Exec PTY sessions, live log streams, and database backups.
 
 ---
 
@@ -69,17 +74,32 @@ graph TD
 
 ---
 
-## 4. Documentation & Specifications
+## 4. Documentation & Engineering Handbook
 
+### Engineering Handbook & Architecture Blueprints
 | Document | Topic & Focus Area |
 | :--- | :--- |
-| **[`specs/01-CORE-AND-STORE-SPEC.md`](specs/01-CORE-AND-STORE-SPEC.md)** | SQLite WAL, Litestream, Argon2id, API Tokens, AES-256-GCM Vault, and 4-tier DAG. |
-| **[`specs/02-ORCHESTRATION-AND-SWARM-SPEC.md`](specs/02-ORCHESTRATION-AND-SWARM-SPEC.md)** | Docker Socket API, Dual-Mode Engine, Placement Grammar Parser, and StdCopy demux. |
-| **[`specs/03-INGRESS-AND-CADDY-SPEC.md`](specs/03-INGRESS-AND-CADDY-SPEC.md)** | Caddy Admin REST API (<15ms), Cloudflare Wildcards, and On-Demand TLS security ask. |
-| **[`specs/04-AGENT-AND-TELEMETRY-SPEC.md`](specs/04-AGENT-AND-TELEMETRY-SPEC.md)** | `pikpik-agent` (<10MB), Inverted mTLS/WSS connection, `/proc` scraper, and 24h Ring Buffer. |
-| **[`specs/05-REGISTRY-AND-STREAMING-BACKUPS-SPEC.md`](specs/05-REGISTRY-AND-STREAMING-BACKUPS-SPEC.md)** | Embedded Registry:2, GHA Redeploy Webhook, and Pure Streaming S3 Pipelines (<32MB RAM). |
-| **[`specs/06-API-AND-CLI-SPEC.md`](specs/06-API-AND-CLI-SPEC.md)** | HTTP REST routes, WebSocket Multiplexer, PTY terminal bridge, and `pikpik-cli`. |
-| **[`09-DECISION-RECORDS-ADRS.md`](09-DECISION-RECORDS-ADRS.md)** | Formal Architectural Decision Records ADR-001 through ADR-007. |
+| **[`docs/handbook/PIKPIK-BLUEPRINT.md`](docs/handbook/PIKPIK-BLUEPRINT.md)** | Production multi-server Swarm deployment topology & Cloudflare TLS. |
+| **[`docs/handbook/01-SYSTEM-TOPOLOGY.md`](docs/handbook/01-SYSTEM-TOPOLOGY.md)** | End-to-end architecture, component layout, and protocols. |
+| **[`docs/handbook/02-INGRESS-AND-ROUTING.md`](docs/handbook/02-INGRESS-AND-ROUTING.md)** | Caddy dynamic Admin API, automated Let's Encrypt TLS, and wildcard certificates. |
+| **[`docs/handbook/03-ORCHESTRATION-AND-RUNTIME.md`](docs/handbook/03-ORCHESTRATION-AND-RUNTIME.md)** | Docker Socket engine, rolling zero-downtime restarts, and network isolation. |
+| **[`docs/handbook/04-BUILD-PIPELINES.md`](docs/handbook/04-BUILD-PIPELINES.md)** | Streaming logs, secret injection, and image cache management. |
+| **[`docs/handbook/05-STORAGE-AND-BACKUPS.md`](docs/handbook/05-STORAGE-AND-BACKUPS.md)** | SQLite WAL + Litestream state, and pure streaming S3 database backups. |
+| **[`docs/handbook/06-SECURITY-AND-RBAC.md`](docs/handbook/06-SECURITY-AND-RBAC.md)** | Eliminating command injection, AES-256-GCM vault, and PTY terminal security. |
+| **[`docs/handbook/07-TELEMETRY-AND-HEALTH.md`](docs/handbook/07-TELEMETRY-AND-HEALTH.md)** | Linux `/proc` scraper, 24h circular ring buffer, and SSRF-safe webhooks. |
+| **[`docs/handbook/08-FRONTEND-AND-CLIENTS.md`](docs/handbook/08-FRONTEND-AND-CLIENTS.md)** | Headless API, multiplexed WebSockets, and terminal client interfaces. |
+| **[`docs/handbook/09-DECISION-RECORDS-ADRS.md`](docs/handbook/09-DECISION-RECORDS-ADRS.md)** | Formal Architectural Decision Records ADR-001 through ADR-007. |
+| **[`docs/handbook/10-VOLUMES-NETWORKS-AND-ENV-HIERARCHY.md`](docs/handbook/10-VOLUMES-NETWORKS-AND-ENV-HIERARCHY.md)** | Volume slugging, Swarm overlays, and 4-tier DAG variable hierarchy. |
+| **[`docs/handbook/11-DOKPLOY-FEATURE-CATALOG-AND-PARITY-MATRIX.md`](docs/handbook/11-DOKPLOY-FEATURE-CATALOG-AND-PARITY-MATRIX.md)** | Exhaustive feature catalog and clean reimplementation matrix. |
+| **[`docs/LAUNCH-AND-DISTRIBUTION-GUIDE.md`](docs/LAUNCH-AND-DISTRIBUTION-GUIDE.md)** | Positioning, Product Hunt launch, Hacker News strategy, and community registry. |
+
+### Formal Package Specifications
+- **[`specs/01-CORE-AND-STORE-SPEC.md`](specs/01-CORE-AND-STORE-SPEC.md)**: SQLite WAL, Litestream, Argon2id, API Tokens, AES-256-GCM Vault, and 4-tier DAG.
+- **[`specs/02-ORCHESTRATION-AND-SWARM-SPEC.md`](specs/02-ORCHESTRATION-AND-SWARM-SPEC.md)**: Docker Socket API, Dual-Mode Engine, Placement Grammar Parser, and StdCopy demux.
+- **[`specs/03-INGRESS-AND-CADDY-SPEC.md`](specs/03-INGRESS-AND-CADDY-SPEC.md)**: Caddy Admin REST API (<15ms), Cloudflare Wildcards, and On-Demand TLS security ask.
+- **[`specs/04-AGENT-AND-TELEMETRY-SPEC.md`](specs/04-AGENT-AND-TELEMETRY-SPEC.md)**: `pikpik-agent` (<10MB), Inverted mTLS/WSS connection, `/proc` scraper, and 24h Ring Buffer.
+- **[`specs/05-REGISTRY-AND-STREAMING-BACKUPS-SPEC.md`](specs/05-REGISTRY-AND-STREAMING-BACKUPS-SPEC.md)**: Embedded Registry:2, GHA Redeploy Webhook, and Pure Streaming S3 Pipelines (<32MB RAM).
+- **[`specs/06-API-AND-CLI-SPEC.md`](specs/06-API-AND-CLI-SPEC.md)**: HTTP REST routes, WebSocket Multiplexer, PTY terminal bridge, and `pikpik-cli`.
 
 ---
 
@@ -102,9 +122,9 @@ go build -ldflags="-s -w" -o bin/pikpik-agent ./cmd/pikpik-agent
 go test -count=1 -race ./...
 ```
 
-### Starting pikpik Control Plane
+### Starting pikpik Control Plane (POSIX/GNU Flags)
 ```bash
-./bin/pikpik -listen :8080 -data-dir ./data -admin-email admin@example.com -admin-pass supersecretpassword
+./bin/pikpik --listen :8080 --data-dir ./data --admin-email admin@example.com --admin-password supersecretpassword
 ```
 
 ---
