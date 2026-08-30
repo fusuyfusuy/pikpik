@@ -314,3 +314,92 @@ func TestAgentServerAuthenticationFailure(t *testing.T) {
 		assert.False(t, exists, "unauthenticated worker must not be registered")
 	}
 }
+
+func TestAgentLogStreamMessage(t *testing.T) {
+	enrollmentToken := "log_stream_test_token"
+	nodeID := "node_log_producer"
+
+	var logMu sync.Mutex
+	var receivedLogs []*telemetry.StreamMessage
+	wsHub := telemetry.NewWebSocketHub()
+
+	serverOpts := agent.AgentServerOptions{
+		EnrollmentToken: enrollmentToken,
+		OnLog: func(nID string, msg *telemetry.StreamMessage) {
+			logMu.Lock()
+			receivedLogs = append(receivedLogs, msg)
+			logMu.Unlock()
+		},
+		WebSocketHub: wsHub,
+	}
+	agentServer := agent.NewAgentServer(serverOpts)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if srvImpl, ok := agentServer.(interface{ HandleHTTP(http.ResponseWriter, *http.Request) }); ok {
+			srvImpl.HandleHTTP(w, r)
+		}
+	}))
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+
+	cfg := agent.AgentConfig{
+		NodeID:                  nodeID,
+		ControlPlaneURL:         wsURL,
+		EnrollmentToken:         enrollmentToken,
+		HostMetricInterval:      500 * time.Millisecond,
+		ContainerMetricInterval: 500 * time.Millisecond,
+	}
+
+	client, err := agent.NewAgentClient(cfg, &mockProcReader{}, nil, nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = client.Start(ctx)
+	require.NoError(t, err)
+	defer client.Close()
+
+	// Wait for connection
+	require.Eventually(t, func() bool {
+		if srvImpl, ok := agentServer.(interface {
+			GetNodeSession(string) (*agent.NodeSession, bool)
+		}); ok {
+			_, exists := srvImpl.GetNodeSession(nodeID)
+			return exists
+		}
+		return false
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// Send a "log" StreamMessage
+	logMsg := &telemetry.StreamMessage{
+		Type:      "log",
+		Channel:   "container",
+		TargetID:  "c_app_web",
+		Timestamp: time.Now().UTC().Unix(),
+		Payload: agent.LogPayload{
+			Source:    "stdout",
+			Line:      "Server started on port 8080",
+			Timestamp: time.Now().UTC().Unix(),
+		},
+	}
+
+	err = client.SendTelemetry(ctx, logMsg)
+	require.NoError(t, err)
+
+	// Verify log message is received by OnLog callback
+	require.Eventually(t, func() bool {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return len(receivedLogs) > 0
+	}, 3*time.Second, 50*time.Millisecond)
+
+	logMu.Lock()
+	defer logMu.Unlock()
+	require.Len(t, receivedLogs, 1)
+	assert.Equal(t, "log", receivedLogs[0].Type)
+	assert.Equal(t, "container", receivedLogs[0].Channel)
+	assert.Equal(t, "c_app_web", receivedLogs[0].TargetID)
+}
+

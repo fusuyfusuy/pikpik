@@ -22,6 +22,7 @@ type AgentServerOptions struct {
 	EnrollmentToken string
 	TokenValidator  TokenValidatorFunc
 	OnTelemetry     TelemetryCallback
+	OnLog           LogCallback
 	RingBuffers     map[string]telemetry.RingBuffer
 	WebSocketHub    telemetry.WebSocketHub
 }
@@ -31,6 +32,7 @@ type defaultAgentServer struct {
 	sessions     map[string]*NodeSession
 	tokenVal     TokenValidatorFunc
 	onTelemetry  TelemetryCallback
+	onLog        LogCallback
 	ringBuffers  map[string]telemetry.RingBuffer
 	ringMu       sync.RWMutex
 	webSocketHub telemetry.WebSocketHub
@@ -55,6 +57,7 @@ func NewAgentServer(opts AgentServerOptions) telemetry.AgentServer {
 		sessions:     make(map[string]*NodeSession),
 		tokenVal:     val,
 		onTelemetry:  opts.OnTelemetry,
+		onLog:        opts.OnLog,
 		ringBuffers:  rb,
 		webSocketHub: opts.WebSocketHub,
 	}
@@ -283,6 +286,18 @@ func (s *defaultAgentServer) readLoop(ctx context.Context, session *NodeSession)
 			}
 			// Store in Ring Buffer
 			s.recordToRingBuffer(&msg)
+
+		case "log":
+			// Forward to log callback if configured, otherwise fallback to onTelemetry
+			if s.onLog != nil {
+				s.onLog(session.NodeID, &msg)
+			} else if s.onTelemetry != nil {
+				s.onTelemetry(session.NodeID, &msg)
+			}
+			// Forward to WebSocket Hub for UI clients
+			if s.webSocketHub != nil {
+				s.webSocketHub.Broadcast(&msg)
+			}
 
 		case "command_response":
 			s.handleCommandResponse(session, &msg)

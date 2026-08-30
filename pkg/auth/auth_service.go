@@ -11,8 +11,9 @@ import (
 )
 
 type authServiceImpl struct {
-	store  store.Store
-	hasher *crypto.Argon2Hasher
+	store     store.Store
+	hasher    *crypto.Argon2Hasher
+	dummyHash string
 }
 
 // NewAuthService creates a new AuthService instance.
@@ -20,9 +21,11 @@ func NewAuthService(st store.Store, hasher *crypto.Argon2Hasher) AuthService {
 	if hasher == nil {
 		hasher = crypto.DefaultArgon2Hasher()
 	}
+	dummyHash, _ := hasher.Hash("pikpik-timing-sidechannel-mitigation-dummy-password")
 	return &authServiceImpl{
-		store:  st,
-		hasher: hasher,
+		store:     st,
+		hasher:    hasher,
+		dummyHash: dummyHash,
 	}
 }
 
@@ -59,6 +62,13 @@ func (s *authServiceImpl) AuthenticateUser(ctx context.Context, email, password 
 	user, err := s.store.Users().GetByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
+			// Mitigate user-enumeration timing side-channels by performing a dummy Argon2id verification
+			if s.dummyHash != "" {
+				_, _ = s.hasher.Verify(password, s.dummyHash)
+			} else {
+				dHash, _ := s.hasher.Hash(password)
+				_, _ = s.hasher.Verify(password, dHash)
+			}
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("auth: failed to retrieve user: %w", err)

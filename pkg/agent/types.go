@@ -112,3 +112,14 @@ func (ns *NodeSession) SafeWrite(ctx context.Context, typ websocket.MessageType,
 
 // TelemetryCallback defines the function signature for receiving telemetry frames on the control plane.
 type TelemetryCallback func(nodeID string, msg *telemetry.StreamMessage)
+
+// LogCallback defines the function signature for receiving log stream messages on the control plane.
+type LogCallback func(nodeID string, msg *telemetry.StreamMessage)
+
+// LogPayload represents a structured container or service log entry sent in a "log" StreamMessage.
+type LogPayload struct {
+	Source    string `json:"source,omitempty"` // "stdout" | "stderr" | "system"
+	Line      string `json:"line"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+}
+

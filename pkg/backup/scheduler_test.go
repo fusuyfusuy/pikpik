@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/backup"
+	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -300,16 +301,150 @@ func TestCronScheduler_StartStopLifecycle(t *testing.T) {
 		PollInterval: 10 * time.Millisecond,
 	})
 
+	assert.False(t, scheduler.IsRunning())
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 1. First Start
 	err := scheduler.Start(ctx)
 	require.NoError(t, err)
+	assert.True(t, scheduler.IsRunning())
 
-	// Second start should return error
+	// 2. Second start should return error
 	err = scheduler.Start(ctx)
 	assert.Error(t, err)
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+
+	// 3. Stop
 	scheduler.Stop()
+	assert.False(t, scheduler.IsRunning())
+
+	// 4. Multiple calls to Stop should be safe and no-op
+	scheduler.Stop()
+	assert.False(t, scheduler.IsRunning())
+
+	// 5. Restart after stop
+	err = scheduler.Start(ctx)
+	require.NoError(t, err)
+	assert.True(t, scheduler.IsRunning())
+
+	scheduler.Stop()
+	assert.False(t, scheduler.IsRunning())
 }
+
+func TestCronScheduler_TriggerMethod(t *testing.T) {
+	ctx := context.Background()
+	st := newSchedulerTestStore(t)
+
+	org := &store.Organization{Name: "Org Trigger", Slug: "org-trigger"}
+	require.NoError(t, st.Organizations().Create(ctx, org))
+	proj := &store.Project{OrgID: org.ID, Name: "Proj Trigger", Slug: "proj-trigger"}
+	require.NoError(t, st.Projects().Create(ctx, proj))
+	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
+	require.NoError(t, st.Stages().Create(ctx, stage))
+	svc := &store.Service{
+		ProjectID: proj.ID,
+		StageID:   stage.ID,
+		Name:      "Redis Service",
+		Slug:      "redis-svc",
+		Type:      "database",
+		Image:     "redis:7.4",
+	}
+	require.NoError(t, st.Services().Create(ctx, svc))
+
+	pastTime := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+	sch := &store.BackupSchedule{
+		ServiceID:    svc.ID,
+		CronExpr:     "0 0 * * *",
+		Engine:       "redis:7.4",
+		DatabaseName: "dump.rdb",
+		S3Bucket:     "trigger-bucket",
+		IsEnabled:    true,
+		NextRunAt:    &pastTime,
+	}
+	require.NoError(t, st.Schedules().Create(ctx, sch))
+
+	mockEngine := &mockSchedulerBackupEngine{}
+	scheduler := backup.NewCronScheduler(st, mockEngine, nil)
+
+	// Explicit manual trigger
+	results, errs := scheduler.Trigger(ctx)
+	require.Empty(t, errs)
+	require.Len(t, results, 1)
+	assert.Equal(t, 1, mockEngine.calledCount)
+	assert.Equal(t, "dump.rdb", mockEngine.lastJobCfg.DatabaseName)
+}
+
+func TestCronScheduler_PerScheduleS3CredentialsAndVault(t *testing.T) {
+	ctx := context.Background()
+	st := newSchedulerTestStore(t)
+
+	vault, err := crypto.NewAESVault("master-secret-for-testing-vault-32b!")
+	require.NoError(t, err)
+
+	encDbPass, err := vault.EncryptString(ctx, "my-super-db-pass")
+	require.NoError(t, err)
+
+	encS3Secret, err := vault.EncryptString(ctx, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	require.NoError(t, err)
+
+	org := &store.Organization{Name: "Org S3", Slug: "org-s3"}
+	require.NoError(t, st.Organizations().Create(ctx, org))
+	proj := &store.Project{OrgID: org.ID, Name: "Proj S3", Slug: "proj-s3"}
+	require.NoError(t, st.Projects().Create(ctx, proj))
+	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
+	require.NoError(t, st.Stages().Create(ctx, stage))
+	svc := &store.Service{
+		ProjectID: proj.ID,
+		StageID:   stage.ID,
+		Name:      "Secure Postgres",
+		Slug:      "secure-pg",
+		Type:      "database",
+		Image:     "postgres:17-alpine",
+	}
+	require.NoError(t, st.Services().Create(ctx, svc))
+
+	pastTime := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+	sch := &store.BackupSchedule{
+		ServiceID:            svc.ID,
+		CronExpr:             "@daily",
+		Engine:               "postgres:17",
+		DatabaseName:         "secure_db",
+		Username:             "secuser",
+		PasswordEncrypted:    encDbPass,
+		S3Bucket:             "tenant-isolated-bucket",
+		S3Endpoint:           "https://minio.custom-tenant.com:9000",
+		S3Region:             "us-west-2",
+		S3AccessKey:          "AKIAIOSFODNN7EXAMPLE",
+		S3SecretKeyEncrypted: encS3Secret,
+		RetentionHourly:      12,
+		RetentionDaily:       3,
+		MaxBackups:           10,
+		IsEnabled:            true,
+		NextRunAt:            &pastTime,
+	}
+	require.NoError(t, st.Schedules().Create(ctx, sch))
+
+	mockEngine := &mockSchedulerBackupEngine{}
+	scheduler := backup.NewCronScheduler(st, mockEngine, nil, backup.CronSchedulerConfig{
+		Vault: vault,
+	})
+
+	now := time.Date(2026, 8, 30, 0, 5, 0, 0, time.UTC)
+	results, errs := scheduler.RunDueJobs(ctx, now)
+	require.Empty(t, errs)
+	require.Len(t, results, 1)
+
+	// Verify decrypted passwords and per-schedule S3 config were passed to engine job config
+	assert.Equal(t, 1, mockEngine.calledCount)
+	assert.Equal(t, "my-super-db-pass", mockEngine.lastJobCfg.Password)
+	assert.Equal(t, "tenant-isolated-bucket", mockEngine.lastJobCfg.S3Bucket)
+	assert.Equal(t, "https://minio.custom-tenant.com:9000", mockEngine.lastJobCfg.S3Endpoint)
+	assert.Equal(t, "us-west-2", mockEngine.lastJobCfg.S3Region)
+	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", mockEngine.lastJobCfg.S3AccessKey)
+	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", mockEngine.lastJobCfg.S3SecretKey)
+	assert.NotNil(t, mockEngine.lastJobCfg.S3Client)
+}
+

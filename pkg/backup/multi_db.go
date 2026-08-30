@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -190,8 +191,44 @@ func BuildRestoreCommand(cfg RestoreJobConfig) (cmd []string, env []string, isPr
 	}
 }
 
+// resolveS3Client determines the appropriate S3Client based on per-schedule options or default client.
+func resolveS3Client(defaultClient s3.S3Client, bucket, endpoint, region, accessKey, secretKey string, customClient s3.S3Client) (s3.S3Client, error) {
+	if customClient != nil {
+		return customClient, nil
+	}
+	if accessKey != "" || endpoint != "" || secretKey != "" || (defaultClient == nil && bucket != "") {
+		opts := s3.ClientOptions{
+			Bucket:          bucket,
+			Endpoint:        endpoint,
+			Region:          region,
+			AccessKeyID:     accessKey,
+			SecretAccessKey: secretKey,
+		}
+		if strings.Contains(endpoint, "r2.cloudflarestorage.com") {
+			opts.Provider = s3.ProviderR2
+		} else if strings.Contains(endpoint, "backblazeb2.com") {
+			opts.Provider = s3.ProviderBackblaze
+		} else if endpoint != "" {
+			opts.Provider = s3.ProviderMinIO
+			opts.ForcePathStyle = true
+		} else {
+			opts.Provider = s3.ProviderAWS
+		}
+		return s3.NewClient(opts)
+	}
+	if defaultClient != nil {
+		return defaultClient, nil
+	}
+	return nil, errors.New("s3 client is not configured")
+}
+
 // ExecuteMultiDBBackup coordinates a zero-disk memory-bounded streaming backup to S3.
 func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s3.S3Client, cfg BackupJobConfig) (*BackupResult, error) {
+	targetS3, err := resolveS3Client(s3Client, cfg.S3Bucket, cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Client)
+	if err != nil {
+		return nil, err
+	}
+
 	startTime := time.Now()
 	nowUTC := startTime.UTC()
 
@@ -280,7 +317,7 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 		},
 	}
 
-	objInfo, uploadErr := s3Client.UploadStreamMultipart(ctx, s3Key, pipeReader, uploadOpts)
+	objInfo, uploadErr := targetS3.UploadStreamMultipart(ctx, s3Key, pipeReader, uploadOpts)
 	<-execDone
 
 	if execErr != nil {
@@ -296,7 +333,7 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 	// 5. Grandfather-Father-Son Retention Pruning
 	if cfg.RetentionRules.KeepHourly > 0 || cfg.RetentionRules.KeepDaily > 0 || cfg.RetentionRules.MaxBackups > 0 {
 		prefix := fmt.Sprintf("backups/%s/%s/", projectSlug, serviceSlug)
-		_, _ = s3Client.PruneRetention(ctx, prefix, s3.RetentionPolicy{
+		_, _ = targetS3.PruneRetention(ctx, prefix, s3.RetentionPolicy{
 			KeepHourly:  cfg.RetentionRules.KeepHourly,
 			KeepDaily:   cfg.RetentionRules.KeepDaily,
 			KeepWeekly:  cfg.RetentionRules.KeepWeekly,
@@ -320,13 +357,18 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 
 // ExecuteMultiDBRestore downloads an S3 backup stream, decompresses it in memory (if needed), and pipes to container stdin.
 func ExecuteMultiDBRestore(ctx context.Context, exec DockerExecRunner, s3Client s3.S3Client, cfg RestoreJobConfig) error {
+	targetS3, err := resolveS3Client(s3Client, cfg.S3Bucket, cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Client)
+	if err != nil {
+		return err
+	}
+
 	cmd, env, isPreCompressed, err := BuildRestoreCommand(cfg)
 	if err != nil {
 		return err
 	}
 
 	// 1. Download stream directly from S3
-	body, _, err := s3Client.DownloadStream(ctx, cfg.S3Key)
+	body, _, err := targetS3.DownloadStream(ctx, cfg.S3Key)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrS3ObjectNotFound, err)
 	}

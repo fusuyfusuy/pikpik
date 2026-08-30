@@ -57,7 +57,7 @@ func (m *configManagerImpl) ResolveHierarchy(
 
 		for _, v := range vars {
 			decryptedValue := v.ValueEncrypted
-			if strings.HasPrefix(v.ValueEncrypted, "v1:") && m.vault != nil {
+			if v.IsSecret && strings.HasPrefix(v.ValueEncrypted, "v1:") && m.vault != nil {
 				decrypted, err := m.vault.DecryptString(ctx, v.ValueEncrypted)
 				if err != nil {
 					return nil, fmt.Errorf("config: failed to decrypt secret key %q: %w", v.Key, err)

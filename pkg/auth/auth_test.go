@@ -204,3 +204,39 @@ func TestAuth_ScopeMatching(t *testing.T) {
 		})
 	}
 }
+
+func TestAuth_AuthenticateUser_TimingResistance(t *testing.T) {
+	svc, _ := newTestAuth(t)
+	ctx := context.Background()
+
+	// Bootstrap real user
+	realEmail := "realuser@pikpik.io"
+	realPass := "CorrectPassword123!"
+	_, err := svc.BootstrapAdmin(ctx, realEmail, realPass)
+	if err != nil {
+		t.Fatalf("BootstrapAdmin failed: %v", err)
+	}
+
+	// 1. Authenticate with wrong password for existing user
+	start1 := time.Now()
+	_, err1 := svc.AuthenticateUser(ctx, realEmail, "WrongPassword")
+	durExisting := time.Since(start1)
+	if !errors.Is(err1, auth.ErrInvalidCredentials) {
+		t.Fatalf("Expected ErrInvalidCredentials, got %v", err1)
+	}
+
+	// 2. Authenticate non-existent user
+	start2 := time.Now()
+	_, err2 := svc.AuthenticateUser(ctx, "nonexistent@pikpik.io", "WrongPassword")
+	durNonExisting := time.Since(start2)
+	if !errors.Is(err2, auth.ErrInvalidCredentials) {
+		t.Fatalf("Expected ErrInvalidCredentials, got %v", err2)
+	}
+
+	// Both operations should have taken non-trivial time due to Argon2id computation
+	if durNonExisting < 100*time.Microsecond {
+		t.Errorf("Non-existing user lookup was suspiciously fast (%v), dummy verification likely skipped", durNonExisting)
+	}
+	t.Logf("Existing user wrong pass time: %v, Non-existing user time: %v", durExisting, durNonExisting)
+}
+

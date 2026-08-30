@@ -337,3 +337,47 @@ func TestMultiDB_UnsupportedEngineError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported database engine")
 }
+
+func TestMultiDB_CustomS3ClientResolution(t *testing.T) {
+	ctx := context.Background()
+	globalS3 := &mockS3MultipartClient{storage: make(map[string][]byte), storeData: true}
+	customS3 := &mockS3MultipartClient{storage: make(map[string][]byte), storeData: true}
+
+	rawDump := []byte("PG_CUSTOM_DUMP_CONTENT")
+	runner := &multiDBMockRunner{dumpPayload: rawDump}
+
+	// 1. Backup using custom S3Client explicitly injected via BackupJobConfig.S3Client
+	res, err := backup.ExecuteMultiDBBackup(ctx, runner, globalS3, backup.BackupJobConfig{
+		BackupID:     "bk_custom_s3",
+		ProjectSlug:  "tenant-proj",
+		ServiceSlug:  "custom-db",
+		ContainerID:  "cnt_custom_1",
+		Engine:       backup.EnginePostgres17,
+		DatabaseName: "custom_db",
+		S3Bucket:     "custom-bucket",
+		S3Client:     customS3,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "bk_custom_s3", res.BackupID)
+
+	// Verify customS3 received the upload, not globalS3
+	assert.Empty(t, globalS3.storage)
+	assert.NotEmpty(t, customS3.storage)
+	assert.Contains(t, customS3.storage, res.S3Key)
+
+	// 2. Restore using custom S3Client
+	err = backup.ExecuteMultiDBRestore(ctx, runner, globalS3, backup.RestoreJobConfig{
+		RestoreID:    "rst_custom_s3",
+		ProjectSlug:  "tenant-proj",
+		ServiceSlug:  "custom-db",
+		ContainerID:  "cnt_custom_1",
+		Engine:       backup.EnginePostgres17,
+		DatabaseName: "custom_db",
+		S3Bucket:     "custom-bucket",
+		S3Key:        res.S3Key,
+		S3Client:     customS3,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, rawDump, runner.capturedIn)
+}
+

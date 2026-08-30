@@ -133,3 +133,43 @@ func TestConfigManager_4TierCascadingResolution(t *testing.T) {
 		t.Errorf("Masker output mismatch: got %q, want %q", maskedLog, expectedLog)
 	}
 }
+
+func TestConfigManager_NonSecretWithV1Prefix(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "config_v1_test.db"))
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	vault, err := crypto.NewAESVault("master-secret-key-32-chars-length!")
+	if err != nil {
+		t.Fatalf("Failed to create vault: %v", err)
+	}
+
+	mgr := config.NewConfigManager(st, vault)
+	svcID := "svc_v1_test"
+
+	// Non-secret variable with v1: prefix (e.g. API version or schema identifier)
+	_ = st.EnvVars().Set(ctx, &store.EnvVar{
+		ScopeTier:      store.TierService,
+		ResourceID:     svcID,
+		Key:            "API_VERSION",
+		ValueEncrypted: "v1:alpha:2026",
+		IsSecret:       false,
+	})
+
+	resolved, err := mgr.ResolveHierarchy(ctx, "", "", "", svcID)
+	if err != nil {
+		t.Fatalf("ResolveHierarchy failed for non-secret with v1: prefix: %v", err)
+	}
+
+	if resolved.Variables["API_VERSION"] != "v1:alpha:2026" {
+		t.Errorf("Expected 'v1:alpha:2026', got %q", resolved.Variables["API_VERSION"])
+	}
+	if resolved.Secrets["API_VERSION"] != false {
+		t.Errorf("Expected API_VERSION IsSecret=false, got true")
+	}
+}
+

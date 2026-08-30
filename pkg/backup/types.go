@@ -3,6 +3,8 @@ package backup
 import (
 	"context"
 	"time"
+
+	"github.com/fusuycorp/pikpik/pkg/backup/s3"
 )
 
 // DatabaseEngine enumerates supported database engines.
@@ -27,6 +29,11 @@ type BackupJobConfig struct {
 	Username       string         `json:"username"`
 	Password       string         `json:"-"` // injected via exec env, never logged
 	S3Bucket       string         `json:"s3Bucket"`
+	S3Endpoint     string         `json:"s3Endpoint,omitempty"`
+	S3Region       string         `json:"s3Region,omitempty"`
+	S3AccessKey    string         `json:"s3AccessKey,omitempty"`
+	S3SecretKey    string         `json:"-"`
+	S3Client       s3.S3Client    `json:"-"`
 	Compression    string         `json:"compression"` // "gzip" or "zstd"
 	RetentionRules RetentionRules `json:"retentionRules"`
 }
@@ -63,6 +70,11 @@ type RestoreJobConfig struct {
 	Username     string         `json:"username"`
 	Password     string         `json:"-"`
 	S3Bucket     string         `json:"s3Bucket"`
+	S3Endpoint   string         `json:"s3Endpoint,omitempty"`
+	S3Region     string         `json:"s3Region,omitempty"`
+	S3AccessKey  string         `json:"s3AccessKey,omitempty"`
+	S3SecretKey  string         `json:"-"`
+	S3Client     s3.S3Client    `json:"-"`
 	S3Key        string         `json:"s3Key"`
 	Compression  string         `json:"compression"` // "gzip" or "zstd"
 }
