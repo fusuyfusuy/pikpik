@@ -1,7 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"time"
+
+	"github.com/fusuycorp/pikpik/pkg/orchestration"
+	"github.com/fusuycorp/pikpik/pkg/telemetry"
 )
 
 // Standard Response Envelope
@@ -43,10 +47,59 @@ const (
 	ErrCodeInternalError           = "INTERNAL_ERROR"
 )
 
+// Organization Models
+type OrganizationDTO struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type CreateOrgRequest struct {
+	Name string `json:"name"`
+	Slug string `json:"slug,omitempty"`
+}
+
+// Project Models
+type ProjectDTO struct {
+	ID          string    `json:"id"`
+	OrgID       string    `json:"org_id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description string    `json:"description"`
+	Tags        []string  `json:"tags"`
+	AppCount    int       `json:"app_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type CreateProjectRequest struct {
+	OrgID       string   `json:"org_id,omitempty"`
+	Name        string   `json:"name"`
+	Slug        string   `json:"slug,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
+type UpdateProjectRequest struct {
+	Name        string    `json:"name,omitempty"`
+	Slug        string    `json:"slug,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	Tags        *[]string `json:"tags,omitempty"`
+}
+
+// Tag Summary Model
+type TagSummary struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
 // App Models
 type App struct {
 	ID               string            `json:"id"`
-	ProjectID        string            `json:"project_id,omitempty"`
+	ProjectID        string            `json:"project_id"`
+	ProjectName      string            `json:"project_name,omitempty"`
 	StageID          string            `json:"stage_id,omitempty"`
 	Name             string            `json:"name"`
 	Image            string            `json:"image"`
@@ -54,6 +107,9 @@ type App struct {
 	ContainerPort    int               `json:"container_port,omitempty"`
 	Domains          []string          `json:"domains"`
 	Env              map[string]string `json:"env,omitempty"`
+	Tags             []string          `json:"tags"`
+	RuntimeMode      string            `json:"runtime_mode"` // "swarm" or "standalone"
+	ComposeYAML      string            `json:"compose_yaml,omitempty"`
 	Status           string            `json:"status"`
 	GitRepoURL       string            `json:"git_repo_url,omitempty"`
 	GitBranch        string            `json:"git_branch,omitempty"`
@@ -65,11 +121,16 @@ type App struct {
 }
 
 type CreateAppRequest struct {
+	ProjectID        string            `json:"project_id,omitempty"`
+	StageID          string            `json:"stage_id,omitempty"`
 	Name             string            `json:"name"`
 	Image            string            `json:"image"`
 	Replicas         uint64            `json:"replicas"`
 	ContainerPort    int               `json:"container_port,omitempty"`
 	Domains          []string          `json:"domains,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	RuntimeMode      string            `json:"runtime_mode,omitempty"`
+	ComposeYAML      string            `json:"compose_yaml,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	GitRepoURL       string            `json:"git_repo_url,omitempty"`
 	GitBranch        string            `json:"git_branch,omitempty"`
@@ -79,11 +140,16 @@ type CreateAppRequest struct {
 }
 
 type UpdateAppRequest struct {
+	ProjectID        *string           `json:"project_id,omitempty"`
+	StageID          *string           `json:"stage_id,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	Image            string            `json:"image,omitempty"`
 	Replicas         *uint64           `json:"replicas,omitempty"`
 	ContainerPort    *int              `json:"container_port,omitempty"`
 	Domains          []string          `json:"domains,omitempty"`
+	Tags             *[]string         `json:"tags,omitempty"`
+	RuntimeMode      *string           `json:"runtime_mode,omitempty"`
+	ComposeYAML      *string           `json:"compose_yaml,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	GitRepoURL       string            `json:"git_repo_url,omitempty"`
 	GitBranch        string            `json:"git_branch,omitempty"`
@@ -96,48 +162,19 @@ type DeployAppRequest struct {
 	Image string `json:"image,omitempty"`
 }
 
-// Traffic Splitting Models
-type TrafficSplitDTO struct {
-	AppID          string            `json:"app_id"`
-	Domain         string            `json:"domain"`
-	StableUpstream string            `json:"stable_upstream"`
-	CanaryUpstream string            `json:"canary_upstream"`
-	CanaryPercent  int               `json:"canary_percent"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Paths          []string          `json:"paths,omitempty"`
+type InspectComposeRequest struct {
+	ComposeYAML string `json:"compose_yaml"`
 }
 
-type SetTrafficSplitRequest struct {
-	Domain         string            `json:"domain,omitempty"`
-	StableUpstream string            `json:"stable_upstream,omitempty"`
-	CanaryUpstream string            `json:"canary_upstream,omitempty"`
-	CanaryPercent  int               `json:"canary_percent"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Paths          []string          `json:"paths,omitempty"`
+type InspectComposeResponse struct {
+	Services         []orchestration.ComposeServiceInspection `json:"services"`
+	Variables        []orchestration.ComposeVariableDef       `json:"variables"`
+	ExposedPorts     []uint32                                 `json:"exposed_ports"`
+	DeclaredVolumes  []string                                 `json:"declared_volumes"`
+	DeclaredNetworks []string                                 `json:"declared_networks"`
+	SuggestedRuntime string                                   `json:"suggested_runtime"`
 }
 
-// Blue-Green Deployment Models
-type BlueGreenDeployRequest struct {
-	Image           string            `json:"image"`
-	Domain          string            `json:"domain,omitempty"`
-	ContainerPort   uint32            `json:"container_port,omitempty"`
-	HealthCheckPath string            `json:"health_check_path,omitempty"`
-	ProbeTimeoutSec int               `json:"probe_timeout_sec,omitempty"`
-	DrainPeriodSec  int               `json:"drain_period_sec,omitempty"`
-	CanarySteps     []int             `json:"canary_steps,omitempty"`
-	Environment     map[string]string `json:"environment,omitempty"`
-}
-
-type BlueGreenDeployResponse struct {
-	AppID             string    `json:"app_id"`
-	BlueContainerID   string    `json:"blue_container_id,omitempty"`
-	GreenContainerID  string    `json:"green_container_id"`
-	ActiveContainerID string    `json:"active_container_id"`
-	Domain            string    `json:"domain"`
-	Status            string    `json:"status"`
-	SwappedAt         time.Time `json:"swapped_at"`
-	DurationMs        int64     `json:"duration_ms"`
-}
 
 // Swarm Node Models
 type SwarmNode struct {
@@ -163,20 +200,97 @@ type JoinTokensResponse struct {
 	Worker  string `json:"worker"`
 }
 
+// Managed Machine Models
+type MachineDTO struct {
+	ID              string                 `json:"id"`
+	Hostname        string                 `json:"hostname"`
+	Role            string                 `json:"role"` // "worker", "manager", "standalone"
+	PublicIP        string                 `json:"public_ip"`
+	PrivateIP       string                 `json:"private_ip"`
+	OSKernel        string                 `json:"os_kernel"`
+	CPUArch         string                 `json:"cpu_arch"`
+	DockerVersion   string                 `json:"docker_version"`
+	AgentVersion    string                 `json:"agent_version"`
+	Status          string                 `json:"status"` // "online", "degraded", "offline"
+	LastSeen        *time.Time             `json:"last_seen,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+	Metrics         *telemetry.HostMetrics `json:"metrics,omitempty"`
+	ContainersCount int                    `json:"containers_count,omitempty"`
+}
+
+type EnrollMachineResponse struct {
+	Command     string `json:"command"`
+	Token       string `json:"token"`
+	ServerURL   string `json:"server_url"`
+	InstallBash string `json:"install_bash"`
+}
+
+type JoinSwarmRequest struct {
+	Role        string   `json:"role"` // "worker" | "manager"
+	RemoteAddrs []string `json:"remote_addrs,omitempty"`
+	JoinToken   string   `json:"join_token,omitempty"`
+}
+
 // Stack Models
 type Stack struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	ComposeYAML string    `json:"compose_yaml"`
-	Services    []string  `json:"services"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string                          `json:"id"`
+	ProjectID   string                          `json:"project_id"`
+	Name        string                          `json:"name"`
+	ComposeYAML string                          `json:"compose_yaml"`
+	Services    []string                        `json:"services"`
+	Status      string                          `json:"status"`
+	Containers  []orchestration.ContainerStatus `json:"containers,omitempty"`
+	CreatedAt   time.Time                       `json:"created_at"`
+	UpdatedAt   time.Time                       `json:"updated_at"`
 }
 
 type CreateStackRequest struct {
+	ProjectID   string `json:"project_id,omitempty"`
 	Name        string `json:"name"`
 	ComposeYAML string `json:"compose_yaml"`
+}
+
+type UpdateStackRequest struct {
+	Name        string `json:"name,omitempty"`
+	ComposeYAML string `json:"compose_yaml"`
+}
+
+// Network Models
+type NetworkDTO struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"project_id"`
+	Name       string    `json:"name"`
+	Driver     string    `json:"driver"`
+	Scope      string    `json:"scope"` // "stack", "project", "custom"
+	IsExternal bool      `json:"is_external"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type CreateNetworkRequest struct {
+	ProjectID  string `json:"project_id,omitempty"`
+	Name       string `json:"name"`
+	Driver     string `json:"driver,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	IsExternal bool   `json:"is_external,omitempty"`
+}
+
+// Volume Models
+type VolumeDTO struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Name      string    `json:"name"`
+	Driver    string    `json:"driver"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type CreateVolumeRequest struct {
+	ProjectID string `json:"project_id,omitempty"`
+	Name      string `json:"name"`
+	Driver    string `json:"driver,omitempty"`
 }
 
 // Database Models
@@ -309,6 +423,14 @@ type CertificateUploadRequest struct {
 	KeyPEM  string `json:"key_pem"`
 }
 
+type CaddyDiagnosticsDTO struct {
+	Status       string          `json:"status"`
+	AdminURL     string          `json:"admin_url"`
+	LatencyMs    int64           `json:"latency_ms"`
+	ActiveRoutes int             `json:"active_routes"`
+	Config       json.RawMessage `json:"config"`
+}
+
 // Registry Models
 type RegistryStatusResponse struct {
 	IsRunning     bool      `json:"is_running"`
@@ -364,9 +486,12 @@ type PruneRequest struct {
 
 type PruneResult struct {
 	SpaceReclaimedBytes int64    `json:"space_reclaimed_bytes"`
+	SpaceReclaimed      int64    `json:"space_reclaimed,omitempty"`
+	Deleted             []string `json:"deleted,omitempty"`
 	ImagesDeleted       []string `json:"images_deleted,omitempty"`
 	ContainersDeleted   []string `json:"containers_deleted,omitempty"`
 	VolumesDeleted      []string `json:"volumes_deleted,omitempty"`
+	NetworksDeleted     []string `json:"networks_deleted,omitempty"`
 }
 
 // Auth Models

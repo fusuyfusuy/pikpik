@@ -260,7 +260,7 @@ func TestIngressManager_ReconcileFromStore(t *testing.T) {
 	}
 }
 
-func TestIngressManager_ReconcilePreservesActiveCanarySplits(t *testing.T) {
+func TestIngressManager_ReconcilePreservesActiveDirectRouting(t *testing.T) {
 	var lastConfig ingress.CaddyConfig
 	var mu sync.Mutex
 	routesStore := make(map[string]ingress.CaddyRoute)
@@ -295,12 +295,10 @@ func TestIngressManager_ReconcilePreservesActiveCanarySplits(t *testing.T) {
 	mgr := ingress.NewIngressManager(client, nil)
 	ctx := context.Background()
 
-	// 1. Set active canary split (80% stable, 20% canary) on api.example.com
+	// 1. Set active direct route on api.example.com
 	splitCfg := ingress.TrafficSplitConfig{
 		Domain:         "api.example.com",
 		StableUpstream: "api_blue:8080",
-		CanaryUpstream: "api_green:8080",
-		CanaryPercent:  20,
 	}
 	if err := mgr.SetTrafficSplit(ctx, "api.example.com", splitCfg); err != nil {
 		t.Fatalf("SetTrafficSplit failed: %v", err)
@@ -352,7 +350,7 @@ func TestIngressManager_ReconcilePreservesActiveCanarySplits(t *testing.T) {
 		t.Errorf("expected split route ID %s, got %s", ingress.GenerateTrafficSplitRouteID("api.example.com"), apiRoute.ID)
 	}
 
-	// Check upstreams inside subroute handler
+	// Check upstream inside subroute handler
 	subroute := apiRoute.Handle[0]
 	innerRoute := subroute.Routes[0]
 	var rpHandler *ingress.CaddyRouteHandler
@@ -366,14 +364,11 @@ func TestIngressManager_ReconcilePreservesActiveCanarySplits(t *testing.T) {
 	if rpHandler == nil {
 		t.Fatalf("reverse_proxy handler not found on split route")
 	}
-	if len(rpHandler.Upstreams) != 2 {
-		t.Fatalf("expected 2 upstreams on split route, got %d", len(rpHandler.Upstreams))
-	}
-	if rpHandler.Upstreams[0].Weight != 80 || rpHandler.Upstreams[1].Weight != 20 {
-		t.Errorf("unexpected upstreams weights: %+v", rpHandler.Upstreams)
+	if len(rpHandler.Upstreams) != 1 || rpHandler.Upstreams[0].Dial != "api_blue:8080" {
+		t.Fatalf("expected 1 upstream api_blue:8080 on split route, got %+v", rpHandler.Upstreams)
 	}
 
-	// 3. Remove traffic split explicitly and reconcile again
+	// 3. Remove traffic route explicitly and reconcile again
 	if err := mgr.RemoveTrafficSplit(ctx, "api.example.com"); err != nil {
 		t.Fatalf("RemoveTrafficSplit failed: %v", err)
 	}

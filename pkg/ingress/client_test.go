@@ -252,3 +252,28 @@ func TestCaddyClient_ErrorHandling(t *testing.T) {
 		t.Errorf("expected ErrInvalidRoutePayload for empty id, got: %v", err)
 	}
 }
+
+// TestCaddyClient_GetRawConfig verifies retrieval of raw JSON config.
+func TestCaddyClient_GetRawConfig(t *testing.T) {
+	mockJSON := `{"admin":{"listen":"127.0.0.1:2019"},"apps":{}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/config/" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(mockJSON))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := ingress.NewCaddyClient(server.URL, 2*time.Second)
+	ctx := context.Background()
+
+	raw, err := client.GetRawConfig(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error getting raw config: %v", err)
+	}
+	if string(raw) != mockJSON {
+		t.Errorf("expected %s, got %s", mockJSON, string(raw))
+	}
+}

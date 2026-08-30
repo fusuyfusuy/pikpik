@@ -169,6 +169,14 @@ func (m *DefaultIngressManager) HealthCheck(ctx context.Context) error {
 	return m.client.Ping(ctx)
 }
 
+// GetRawConfig returns the raw active Caddy JSON configuration.
+func (m *DefaultIngressManager) GetRawConfig(ctx context.Context) (json.RawMessage, error) {
+	if m.client == nil {
+		return nil, ErrCaddyUnreachable
+	}
+	return m.client.GetRawConfig(ctx)
+}
+
 // ReconcileFromStore synchronizes all active services and domains from a store.Store into the IngressManager.
 func ReconcileFromStore(ctx context.Context, mgr IngressManager, st store.Store, tlsCfg GlobalTLSConfig) error {
 	var routes []RouteSpec

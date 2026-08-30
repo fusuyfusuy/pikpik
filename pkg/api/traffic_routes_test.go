@@ -57,15 +57,15 @@ func authedJSONRequest(t *testing.T, serverURL, token, method, path string, body
 	return resp
 }
 
-// TestAPIRoutes_TrafficSplitting verifies GET and POST /api/v1/apps/{app_id}/traffic
-func TestAPIRoutes_TrafficSplitting(t *testing.T) {
+// TestAPIRoutes_AppDeploy verifies in-place rolling deployment via POST /api/v1/apps/{app_id}/deploy
+func TestAPIRoutes_AppDeploy(t *testing.T) {
 	server, ctrl, token := setupAPITestServer()
 	defer server.Close()
 
-	ctx := contextBackground()
+	ctx := context.Background()
 	app, err := ctrl.CreateApp(ctx, &api.CreateAppRequest{
 		Name:     "web-service",
-		Image:    "web:v1",
+		Image:    "web:v1.0.0",
 		Replicas: 1,
 		Domains:  []string{"web.example.com"},
 	})
@@ -73,130 +73,61 @@ func TestAPIRoutes_TrafficSplitting(t *testing.T) {
 		t.Fatalf("failed to create test app: %v", err)
 	}
 
-	// 1. GET /api/v1/apps/{app_id}/traffic (Initial / Default)
-	getResp := authedJSONRequest(t, server.URL, token, "GET", "/api/v1/apps/"+app.ID+"/traffic", nil)
-	if getResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", getResp.StatusCode)
+	// Trigger in-place deployment with new image
+	deployReq := api.DeployAppRequest{
+		Image: "web:v2.0.0",
 	}
-	var getResult api.Response[api.TrafficSplitDTO]
-	_ = json.NewDecoder(getResp.Body).Decode(&getResult)
-	if getResult.Data.CanaryPercent != 0 {
-		t.Errorf("expected default canary percent 0, got %d", getResult.Data.CanaryPercent)
-	}
-
-	// 2. POST /api/v1/apps/{app_id}/traffic (Update split to 30% Canary)
-	setReq := api.SetTrafficSplitRequest{
-		Domain:         "web.example.com",
-		StableUpstream: "web_blue:3000",
-		CanaryUpstream: "web_green:3000",
-		CanaryPercent:  30,
-		Headers: map[string]string{
-			"X-Canary": "true",
-		},
-	}
-	postResp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/"+app.ID+"/traffic", setReq)
-	if postResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK for set traffic, got %d", postResp.StatusCode)
-	}
-	var postResult api.Response[api.TrafficSplitDTO]
-	_ = json.NewDecoder(postResp.Body).Decode(&postResult)
-	if postResult.Data.CanaryPercent != 30 {
-		t.Errorf("expected 30%% canary, got %d", postResult.Data.CanaryPercent)
-	}
-	if postResult.Data.StableUpstream != "web_blue:3000" {
-		t.Errorf("expected stable upstream web_blue:3000, got %s", postResult.Data.StableUpstream)
-	}
-
-	// 3. GET /api/v1/apps/{app_id}/traffic (Verify persisted state)
-	getResp2 := authedJSONRequest(t, server.URL, token, "GET", "/api/v1/apps/"+app.ID+"/traffic", nil)
-	if getResp2.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", getResp2.StatusCode)
-	}
-	var getResult2 api.Response[api.TrafficSplitDTO]
-	_ = json.NewDecoder(getResp2.Body).Decode(&getResult2)
-	if getResult2.Data.CanaryPercent != 30 {
-		t.Errorf("expected 30%% canary, got %d", getResult2.Data.CanaryPercent)
-	}
-
-	// 4. POST with invalid canary percent (< 0) -> 400 Bad Request
-	badReq := api.SetTrafficSplitRequest{
-		CanaryPercent: -10,
-	}
-	badResp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/"+app.ID+"/traffic", badReq)
-	if badResp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for negative canary percent, got %d", badResp.StatusCode)
-	}
-
-	// 5. POST with invalid canary percent (> 100) -> 400 Bad Request
-	badReq2 := api.SetTrafficSplitRequest{
-		CanaryPercent: 150,
-	}
-	badResp2 := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/"+app.ID+"/traffic", badReq2)
-	if badResp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for canary percent > 100, got %d", badResp2.StatusCode)
-	}
-}
-
-// TestAPIRoutes_BlueGreen verifies POST /api/v1/apps/{app_id}/blue-green
-func TestAPIRoutes_BlueGreen(t *testing.T) {
-	server, ctrl, token := setupAPITestServer()
-	defer server.Close()
-
-	ctx := contextBackground()
-	app, err := ctrl.CreateApp(ctx, &api.CreateAppRequest{
-		Name:     "bg-service",
-		Image:    "bg:v1.0.0",
-		Replicas: 1,
-		Domains:  []string{"bg.example.com"},
-	})
-	if err != nil {
-		t.Fatalf("failed to create test app: %v", err)
-	}
-
-	// Trigger Blue-Green rollout
-	bgReq := api.BlueGreenDeployRequest{
-		Image:           "bg:v2.0.0",
-		Domain:          "bg.example.com",
-		ContainerPort:   8080,
-		HealthCheckPath: "/healthz",
-		ProbeTimeoutSec: 10,
-		DrainPeriodSec:  1,
-	}
-
-	resp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/"+app.ID+"/blue-green", bgReq)
+	resp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/"+app.ID+"/deploy", deployReq)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK for blue-green deploy, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 OK for deploy, got %d", resp.StatusCode)
 	}
 
-	var result api.Response[api.BlueGreenDeployResponse]
-	_ = json.NewDecoder(resp.Body).Decode(&result)
-
-	if result.Data.AppID != app.ID {
-		t.Errorf("expected AppID %s, got %s", app.ID, result.Data.AppID)
-	}
-	if result.Data.Status != "success" {
-		t.Errorf("expected status success, got %s", result.Data.Status)
-	}
-	if result.Data.ActiveContainerID == "" {
-		t.Errorf("expected non-empty active container ID")
-	}
-
-	// Verify app image was updated
+	// Verify app status and image updated
 	updatedApp, err := ctrl.GetApp(ctx, app.ID)
 	if err != nil {
 		t.Fatalf("failed to get app: %v", err)
 	}
-	if updatedApp.Image != "bg:v2.0.0" {
-		t.Errorf("expected app image bg:v2.0.0, got %s", updatedApp.Image)
+	if updatedApp.Image != "web:v2.0.0" {
+		t.Errorf("expected updated image web:v2.0.0, got %s", updatedApp.Image)
+	}
+	if updatedApp.Status != "running" {
+		t.Errorf("expected app status 'running', got %s", updatedApp.Status)
 	}
 
 	// Error case: Non-existent app
-	notFoundResp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/non-existent-id/blue-green", bgReq)
-	if notFoundResp.StatusCode != http.StatusInternalServerError && notFoundResp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404/500 for missing app, got %d", notFoundResp.StatusCode)
+	notFoundResp := authedJSONRequest(t, server.URL, token, "POST", "/api/v1/apps/non-existent-id/deploy", deployReq)
+	if notFoundResp.StatusCode != http.StatusNotFound && notFoundResp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected 404 or 500 for missing app, got %d", notFoundResp.StatusCode)
 	}
 }
 
-func contextBackground() context.Context {
-	return context.Background()
+func TestAPIRoutes_CaddyDiagnosticsAndAsk(t *testing.T) {
+	server, _, token := setupAPITestServer()
+	defer server.Close()
+
+	// 1. GET /api/v1/ingress/caddy/config
+	resp := authedJSONRequest(t, server.URL, token, "GET", "/api/v1/ingress/caddy/config", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for caddy config, got %d", resp.StatusCode)
+	}
+
+	var diagResp api.Response[api.CaddyDiagnosticsDTO]
+	if err := json.NewDecoder(resp.Body).Decode(&diagResp); err != nil {
+		t.Fatalf("failed to decode caddy diagnostics: %v", err)
+	}
+	if diagResp.Data.Status != "online" {
+		t.Errorf("expected online status, got %s", diagResp.Data.Status)
+	}
+	if diagResp.Data.AdminURL != "http://127.0.0.1:2019" {
+		t.Errorf("expected admin URL http://127.0.0.1:2019, got %s", diagResp.Data.AdminURL)
+	}
+
+	// 2. GET /api/v1/ingress/ask (empty domain should return 403)
+	askResp, err := http.Get(server.URL + "/api/v1/ingress/ask")
+	if err != nil {
+		t.Fatalf("ask request failed: %v", err)
+	}
+	if askResp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for empty domain ask, got %d", askResp.StatusCode)
+	}
 }

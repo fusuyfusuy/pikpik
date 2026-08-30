@@ -222,8 +222,12 @@ func TestPTY_HostMachine_SIGINT(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Wait for process readiness
+	time.Sleep(50 * time.Millisecond)
+
 	// Send SIGINT frame 0x02
 	_ = conn.WriteMessage(websocket.BinaryMessage, []byte{0x02})
+	time.Sleep(50 * time.Millisecond)
 
 	// Follow up with echo test
 	_ = conn.WriteMessage(websocket.BinaryMessage, append([]byte{0x00}, []byte("echo after_interrupt\n")...))

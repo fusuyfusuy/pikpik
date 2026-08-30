@@ -11,6 +11,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/auth"
 	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/deploy"
+	"github.com/fusuycorp/pikpik/pkg/ingress"
 	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/fusuycorp/pikpik/pkg/templates"
 )
@@ -233,6 +234,110 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, map[string]string{"message": "token deleted"}, GetRequestID(r.Context()))
 	}))
 
+	// --- 1b. Organizations & Projects Endpoints ---
+	mux.Handle("GET /api/v1/orgs", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		orgs, err := ctrl.ListOrganizations(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, orgs, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/orgs", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateOrgRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid organization payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		org, err := ctrl.CreateOrganization(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, org, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/projects", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		orgID := r.URL.Query().Get("org_id")
+		tagFilter := r.URL.Query().Get("tag")
+		prjs, err := ctrl.ListProjects(r.Context(), orgID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		if tagFilter != "" {
+			var filtered []ProjectDTO
+			for _, p := range prjs {
+				for _, t := range p.Tags {
+					if strings.EqualFold(t, tagFilter) {
+						filtered = append(filtered, p)
+						break
+					}
+				}
+			}
+			prjs = filtered
+		}
+		WriteJSON(w, http.StatusOK, prjs, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/projects", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateProjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid project payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		prj, err := ctrl.CreateProject(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, prj, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/projects/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		prj, err := ctrl.GetProject(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Project not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, prj, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("PATCH /api/v1/projects/{id}", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateProjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid project patch payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		prj, err := ctrl.UpdateProject(r.Context(), id, &req)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, prj, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("DELETE /api/v1/projects/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteProject(r.Context(), id); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "project deleted"}, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/tags", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		tags, err := ctrl.ListTags(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, tags, GetRequestID(r.Context()))
+	}))
+
 	// --- 2. Apps Endpoints ---
 	mux.Handle("GET /api/v1/apps", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 		apps, err := ctrl.ListApps(r.Context())
@@ -240,6 +345,37 @@ func RegisterRoutes(
 			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
 			return
 		}
+
+		projectID := r.URL.Query().Get("project_id")
+		tagFilter := r.URL.Query().Get("tag")
+		search := r.URL.Query().Get("search")
+
+		if projectID != "" || tagFilter != "" || search != "" {
+			var filtered []App
+			for _, a := range apps {
+				if projectID != "" && a.ProjectID != projectID {
+					continue
+				}
+				if tagFilter != "" {
+					tagMatch := false
+					for _, t := range a.Tags {
+						if strings.EqualFold(t, tagFilter) {
+							tagMatch = true
+							break
+						}
+					}
+					if !tagMatch {
+						continue
+					}
+				}
+				if search != "" && !strings.Contains(strings.ToLower(a.Name), strings.ToLower(search)) {
+					continue
+				}
+				filtered = append(filtered, a)
+			}
+			apps = filtered
+		}
+
 		WriteJSON(w, http.StatusOK, apps, GetRequestID(r.Context()))
 	}))
 
@@ -255,6 +391,20 @@ func RegisterRoutes(
 			return
 		}
 		WriteJSON(w, http.StatusCreated, app, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/apps/inspect-compose", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		var req InspectComposeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid inspect compose payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		res, err := ctrl.InspectCompose(r.Context(), req.ComposeYAML)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
 	}))
 
 	mux.Handle("GET /api/v1/apps/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
@@ -353,48 +503,6 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, env, GetRequestID(r.Context()))
 	}))
 
-	// GET /api/v1/apps/{app_id}/traffic
-	mux.Handle("GET /api/v1/apps/{app_id}/traffic", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
-		appID := getPathParam(r, "app_id")
-		traffic, err := ctrl.GetAppTraffic(r.Context(), appID)
-		if err != nil {
-			WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
-			return
-		}
-		WriteJSON(w, http.StatusOK, traffic, GetRequestID(r.Context()))
-	}))
-
-	// POST /api/v1/apps/{app_id}/traffic
-	mux.Handle("POST /api/v1/apps/{app_id}/traffic", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
-		appID := getPathParam(r, "app_id")
-		var req SetTrafficSplitRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed traffic split payload", nil, GetRequestID(r.Context()))
-			return
-		}
-		traffic, err := ctrl.SetAppTraffic(r.Context(), appID, &req)
-		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
-			return
-		}
-		WriteJSON(w, http.StatusOK, traffic, GetRequestID(r.Context()))
-	}))
-
-	// POST /api/v1/apps/{app_id}/blue-green
-	mux.Handle("POST /api/v1/apps/{app_id}/blue-green", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
-		appID := getPathParam(r, "app_id")
-		var req BlueGreenDeployRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed blue-green payload", nil, GetRequestID(r.Context()))
-			return
-		}
-		res, err := ctrl.DeployBlueGreen(r.Context(), appID, &req)
-		if err != nil {
-			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
-			return
-		}
-		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
-	}))
 
 	// Nudge Webhook endpoint
 	if nudgeHandler != nil {
@@ -471,6 +579,45 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "deploying", "stack_id": id}, GetRequestID(r.Context()))
 	}))
 
+	mux.Handle("POST /api/v1/stacks/{id}/restart", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.RestartStack(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "restarted", "stack_id": id}, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/stacks/{id}/stop", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.StopStack(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "stopped", "stack_id": id}, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/stacks/{id}/logs", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		stack, err := ctrl.GetStack(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Stack not found", nil, GetRequestID(r.Context()))
+			return
+		}
+
+		if r.URL.Query().Get("follow") == "true" && sseBroadcaster != nil {
+			sseBroadcaster.ServeLogsStream(w, r, stack.Name)
+			return
+		}
+
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"stack_id":   stack.ID,
+			"stack_name": stack.Name,
+			"status":     stack.Status,
+			"containers": stack.Containers,
+		}, GetRequestID(r.Context()))
+	}))
+
 	mux.Handle("DELETE /api/v1/stacks/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
 		id := getPathParam(r, "id")
 		if err := ctrl.DeleteStack(r.Context(), id); err != nil {
@@ -478,6 +625,114 @@ func RegisterRoutes(
 			return
 		}
 		WriteJSON(w, http.StatusOK, map[string]string{"message": "stack deleted"}, GetRequestID(r.Context()))
+	}))
+
+	// --- 3b. Networks Endpoints ---
+	mux.Handle("GET /api/v1/networks", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		projID := r.URL.Query().Get("project_id")
+		nets, err := ctrl.ListNetworks(r.Context(), projID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, nets, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/networks", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateNetworkRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		net, err := ctrl.CreateNetwork(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, net, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/networks/prune", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		projID := r.URL.Query().Get("project_id")
+		res, err := ctrl.PruneNetworks(r.Context(), projID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/networks/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		net, err := ctrl.GetNetwork(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Network not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, net, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("DELETE /api/v1/networks/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteNetwork(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "network deleted"}, GetRequestID(r.Context()))
+	}))
+
+	// --- 3c. Volumes Endpoints ---
+	mux.Handle("GET /api/v1/volumes", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		projID := r.URL.Query().Get("project_id")
+		vols, err := ctrl.ListVolumes(r.Context(), projID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, vols, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/volumes", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateVolumeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		vol, err := ctrl.CreateVolume(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, vol, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/volumes/prune", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		projID := r.URL.Query().Get("project_id")
+		res, err := ctrl.PruneVolumes(r.Context(), projID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/volumes/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		vol, err := ctrl.GetVolume(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Volume not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, vol, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("DELETE /api/v1/volumes/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteVolume(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "volume deleted"}, GetRequestID(r.Context()))
 	}))
 
 	// --- 4. Nodes Endpoints ---
@@ -530,6 +785,76 @@ func RegisterRoutes(
 			return
 		}
 		WriteJSON(w, http.StatusOK, tokens, GetRequestID(r.Context()))
+	}))
+
+	// --- 4.1 Remote Managed Machines Endpoints ---
+	mux.Handle("GET /api/v1/machines", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		machines, err := ctrl.ListMachines(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, machines, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/machines/enroll", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		serverURL := r.URL.Query().Get("server_url")
+		if serverURL == "" {
+			scheme := "http"
+			if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+				scheme = "https"
+			}
+			serverURL = scheme + "://" + r.Host
+		}
+		resp, err := ctrl.GetMachineEnrollCommand(r.Context(), serverURL)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, resp, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/machines/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		machine, err := ctrl.GetMachine(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Machine not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, machine, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("DELETE /api/v1/machines/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteMachine(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "machine deleted", "id": id}, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/machines/{id}/metrics", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		metrics, err := ctrl.GetMachineMetrics(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, metrics, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/machines/{id}/join-swarm", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req JoinSwarmRequest
+		if r.ContentLength > 0 {
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+		node, err := ctrl.JoinSwarmCluster(r.Context(), id, &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, node, GetRequestID(r.Context()))
 	}))
 
 	// --- 5. Databases Endpoints ---
@@ -810,6 +1135,33 @@ func RegisterRoutes(
 		}
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "reconciled"}, GetRequestID(r.Context()))
 	}))
+
+	mux.Handle("GET /api/v1/ingress/caddy/config", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		diag, err := ctrl.GetCaddyConfig(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, diag, GetRequestID(r.Context()))
+	}))
+
+	mux.HandleFunc("GET /api/v1/ingress/ask", func(w http.ResponseWriter, r *http.Request) {
+		domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+		if domain == "" {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		if st != nil && st.DB() != nil {
+			validator := ingress.NewStoreDomainValidator(st)
+			allowed, err := validator.VerifyDomain(r.Context(), domain)
+			if err != nil || !allowed {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
 	// --- 8. Registry Endpoints ---
 	mux.Handle("GET /api/v1/registry/status", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {

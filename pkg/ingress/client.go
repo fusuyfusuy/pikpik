@@ -236,3 +236,29 @@ func (c *HTTPCaddyClient) Ping(ctx context.Context) error {
 	}
 	return nil
 }
+
+// GetRawConfig retrieves the raw JSON configuration from Caddy Admin API (GET /config/).
+func (c *HTTPCaddyClient) GetRawConfig(ctx context.Context) (json.RawMessage, error) {
+	url := fmt.Sprintf("%s/config/", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCaddyUnreachable, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w: status %d: %s", ErrCaddyMutationFailed, resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(body), nil
+}

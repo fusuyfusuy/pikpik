@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -88,23 +89,22 @@ type IngressManager interface {
 	// HealthCheck returns nil if Caddy Admin API is responding within SLA (<5ms).
 	HealthCheck(ctx context.Context) error
 
-	// SetTrafficSplit updates Caddy reverse proxy upstream load balancing weights.
+	// GetRawConfig returns the raw active Caddy JSON configuration.
+	GetRawConfig(ctx context.Context) (json.RawMessage, error)
+
+	// SetTrafficSplit updates Caddy reverse proxy direct 1:1 upstream routing for a domain.
 	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
 
-	// SetCanaryWeight instantly updates dynamic traffic split canary percent (0-100).
-	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
-
-	// GetTrafficSplit returns the current traffic split config for a domain.
+	// GetTrafficSplit returns the current routing config for a domain.
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
 
-	// RemoveTrafficSplit removes the traffic split route for a domain.
+	// RemoveTrafficSplit removes the direct route for a domain.
 	RemoveTrafficSplit(ctx context.Context, domain string) error
 }
 
-// TrafficSplitter defines the contract for canary traffic shifting.
+// TrafficSplitter defines the contract for direct 1:1 upstream ingress routing.
 type TrafficSplitter interface {
 	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
-	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
 	RemoveTrafficSplit(ctx context.Context, domain string) error
 }
@@ -117,8 +117,8 @@ type CaddyClient interface {
 	ListRoutes(ctx context.Context) ([]CaddyRoute, error)
 	LoadFullConfig(ctx context.Context, config CaddyConfig) error
 	Ping(ctx context.Context) error
+	GetRawConfig(ctx context.Context) (json.RawMessage, error)
 	SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error
-	SetCanaryWeight(ctx context.Context, domain string, canaryPercent int) error
 	GetTrafficSplit(ctx context.Context, domain string) (*TrafficSplitConfig, error)
 	RemoveTrafficSplit(ctx context.Context, domain string) error
 }

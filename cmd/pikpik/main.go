@@ -253,6 +253,7 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		EnrollmentToken: cfg.EnrollmentToken,
 		WebSocketHub:    telemetryWSHub,
 		RingBuffers:     ringBuffers,
+		MachineStore:    st.Machines(),
 		OnTelemetry: func(nodeID string, msg *telemetry.StreamMessage) {
 			if msg != nil {
 				apiWSHub.Broadcast(api.WSMessage{

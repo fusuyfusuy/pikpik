@@ -184,8 +184,8 @@ func TestAppGitFields_Persistence(t *testing.T) {
 	}
 }
 
-// 3. P2.11: Test Traffic Split upstream formatting and port preservation
-func TestTrafficSplit_UpstreamFormattingAndPorts(t *testing.T) {
+// 3. P2.11: Test App Deployment and Container Port Preservation
+func TestAppDeploy_PortAndImagePreservation(t *testing.T) {
 	ctx := context.Background()
 	ctrl := api.NewDefaultController(api.ControllerDependencies{})
 
@@ -200,31 +200,28 @@ func TestTrafficSplit_UpstreamFormattingAndPorts(t *testing.T) {
 		t.Fatalf("failed to create app: %v", err)
 	}
 
-	// GET default traffic split
-	split, err := ctrl.GetAppTraffic(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("failed to get traffic split: %v", err)
-	}
-	expectedStable := fmt.Sprintf("%s:8080", app.ID)
-	if split.StableUpstream != expectedStable {
-		t.Errorf("expected default stable upstream '%s', got '%s'", expectedStable, split.StableUpstream)
+	if app.ContainerPort != 8080 {
+		t.Errorf("expected container port 8080, got %d", app.ContainerPort)
 	}
 
-	// SET traffic split with target without explicit port -> port formatted
-	updatedSplit, err := ctrl.SetAppTraffic(ctx, app.ID, &api.SetTrafficSplitRequest{
-		Domain:         "api.example.com",
-		StableUpstream: "web_blue",
-		CanaryUpstream: "web_green",
-		CanaryPercent:  25,
-	})
+	// Deploy new image
+	err = ctrl.DeployApp(ctx, app.ID, "web:v2")
 	if err != nil {
-		t.Fatalf("failed to set traffic split: %v", err)
+		t.Fatalf("failed to deploy app: %v", err)
 	}
-	if updatedSplit.StableUpstream != "web_blue:8080" {
-		t.Errorf("expected formatted stable upstream 'web_blue:8080', got '%s'", updatedSplit.StableUpstream)
+
+	updated, err := ctrl.GetApp(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("failed to get app: %v", err)
 	}
-	if updatedSplit.CanaryUpstream != "web_green:8080" {
-		t.Errorf("expected formatted canary upstream 'web_green:8080', got '%s'", updatedSplit.CanaryUpstream)
+	if updated.Image != "web:v2" {
+		t.Errorf("expected image 'web:v2', got '%s'", updated.Image)
+	}
+	if updated.Status != "running" {
+		t.Errorf("expected status 'running', got '%s'", updated.Status)
+	}
+	if updated.ContainerPort != 8080 {
+		t.Errorf("expected container port 8080 preserved, got %d", updated.ContainerPort)
 	}
 }
 
@@ -288,6 +285,16 @@ func TestBackupScheduleRoutes_CRUD(t *testing.T) {
 	gw := api.NewAPIGatewayWithOptions(api.APIGatewayOptions{
 		Controller: ctrl,
 		Store:      st,
+	})
+
+	_ = st.Services().Create(ctx, &store.Service{
+		ID:        "postgres-db-1",
+		ProjectID: "prj_default",
+		StageID:   "stg_default_prod",
+		Name:      "postgres-db-1",
+		Slug:      "postgres-db-1",
+		Type:      "database",
+		Image:     "postgres:16",
 	})
 
 	server := httptest.NewServer(gw)

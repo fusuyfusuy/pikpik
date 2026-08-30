@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/fusuycorp/pikpik/pkg/auth"
 	"github.com/fusuycorp/pikpik/pkg/backup"
 	"github.com/fusuycorp/pikpik/pkg/build"
@@ -22,6 +26,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/registry"
 	"github.com/fusuycorp/pikpik/pkg/store"
+	"github.com/fusuycorp/pikpik/pkg/telemetry"
 	"github.com/fusuycorp/pikpik/pkg/templates"
 )
 
@@ -35,6 +40,16 @@ type Controller interface {
 	CreateAPIToken(ctx context.Context, userID, name string, scopes []string, expiresAt *time.Time) (*APITokenDTO, error)
 	DeleteAPIToken(ctx context.Context, tokenID string) error
 
+	// Orgs, Projects & Tags
+	ListOrganizations(ctx context.Context) ([]OrganizationDTO, error)
+	CreateOrganization(ctx context.Context, req *CreateOrgRequest) (*OrganizationDTO, error)
+	ListProjects(ctx context.Context, orgID string) ([]ProjectDTO, error)
+	GetProject(ctx context.Context, id string) (*ProjectDTO, error)
+	CreateProject(ctx context.Context, req *CreateProjectRequest) (*ProjectDTO, error)
+	UpdateProject(ctx context.Context, id string, req *UpdateProjectRequest) (*ProjectDTO, error)
+	DeleteProject(ctx context.Context, id string) error
+	ListTags(ctx context.Context) ([]TagSummary, error)
+
 	// Apps
 	ListApps(ctx context.Context) ([]App, error)
 	GetApp(ctx context.Context, id string) (*App, error)
@@ -47,9 +62,7 @@ type Controller interface {
 	StartApp(ctx context.Context, id string) error
 	GetAppEnv(ctx context.Context, id string) (map[string]string, error)
 	SetAppEnv(ctx context.Context, id string, env map[string]string) error
-	GetAppTraffic(ctx context.Context, appID string) (*TrafficSplitDTO, error)
-	SetAppTraffic(ctx context.Context, appID string, req *SetTrafficSplitRequest) (*TrafficSplitDTO, error)
-	DeployBlueGreen(ctx context.Context, appID string, req *BlueGreenDeployRequest) (*BlueGreenDeployResponse, error)
+	InspectCompose(ctx context.Context, composeYAML string) (*InspectComposeResponse, error)
 
 	// Stacks
 	ListStacks(ctx context.Context) ([]Stack, error)
@@ -57,7 +70,23 @@ type Controller interface {
 	GetStack(ctx context.Context, id string) (*Stack, error)
 	UpdateStack(ctx context.Context, id string, composeYAML string) (*Stack, error)
 	DeployStack(ctx context.Context, id string) error
+	StopStack(ctx context.Context, id string) error
+	RestartStack(ctx context.Context, id string) error
 	DeleteStack(ctx context.Context, id string) error
+
+	// Networks
+	ListNetworks(ctx context.Context, projectID string) ([]NetworkDTO, error)
+	GetNetwork(ctx context.Context, id string) (*NetworkDTO, error)
+	CreateNetwork(ctx context.Context, req *CreateNetworkRequest) (*NetworkDTO, error)
+	DeleteNetwork(ctx context.Context, id string) error
+	PruneNetworks(ctx context.Context, projectID string) (*PruneResult, error)
+
+	// Volumes
+	ListVolumes(ctx context.Context, projectID string) ([]VolumeDTO, error)
+	GetVolume(ctx context.Context, id string) (*VolumeDTO, error)
+	CreateVolume(ctx context.Context, req *CreateVolumeRequest) (*VolumeDTO, error)
+	DeleteVolume(ctx context.Context, id string) error
+	PruneVolumes(ctx context.Context, projectID string) (*PruneResult, error)
 
 	// Nodes
 	ListNodes(ctx context.Context) ([]SwarmNode, error)
@@ -65,6 +94,14 @@ type Controller interface {
 	UpdateNodeAvailability(ctx context.Context, id, avail string) error
 	DeleteNode(ctx context.Context, id string) error
 	GetJoinTokens(ctx context.Context) (*JoinTokensResponse, error)
+
+	// Machines & Infrastructure
+	ListMachines(ctx context.Context) ([]MachineDTO, error)
+	GetMachine(ctx context.Context, id string) (*MachineDTO, error)
+	DeleteMachine(ctx context.Context, id string) error
+	JoinSwarmCluster(ctx context.Context, id string, req *JoinSwarmRequest) (*SwarmNode, error)
+	GetMachineMetrics(ctx context.Context, id string) (*telemetry.HostMetrics, error)
+	GetMachineEnrollCommand(ctx context.Context, serverURL string) (*EnrollMachineResponse, error)
 
 	// Databases
 	ListDatabases(ctx context.Context) ([]Database, error)
@@ -94,6 +131,7 @@ type Controller interface {
 	DeleteDomain(ctx context.Context, id string) error
 	UploadCertificate(ctx context.Context, req *CertificateUploadRequest) error
 	ReconcileIngress(ctx context.Context) error
+	GetCaddyConfig(ctx context.Context) (*CaddyDiagnosticsDTO, error)
 
 	// Registry
 	GetRegistryStatus(ctx context.Context) (*RegistryStatusResponse, error)
@@ -133,6 +171,7 @@ type ControllerDependencies struct {
 	SSEBroadcaster *SSEBroadcaster
 	BuildManager   *build.BuildManager
 	Deployer       templates.Deployer
+	AgentServer    telemetry.AgentServer
 }
 
 // DefaultController implements Controller.
@@ -148,6 +187,7 @@ type DefaultController struct {
 	sseBroadcaster *SSEBroadcaster
 	buildMgr       *build.BuildManager
 	deployer       templates.Deployer
+	agentServer    telemetry.AgentServer
 
 	// In-memory fallbacks / caches for standalone or testing modes
 	mu           sync.RWMutex
@@ -158,8 +198,10 @@ type DefaultController struct {
 	destinations map[string]*BackupDestination
 	domains      map[string]*DomainBinding
 	builds       map[string]*store.Build
-	splits       map[string]*TrafficSplitDTO
 	schedules    map[string]*store.BackupSchedule
+	networks     map[string]*NetworkDTO
+	volumes      map[string]*VolumeDTO
+	machines     map[string]*MachineDTO
 }
 
 // NewDefaultController constructs a new DefaultController.
@@ -180,6 +222,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		sseBroadcaster: deps.SSEBroadcaster,
 		buildMgr:       deps.BuildManager,
 		deployer:       deployer,
+		agentServer:    deps.AgentServer,
 		apps:           make(map[string]*App),
 		stacks:         make(map[string]*Stack),
 		databases:      make(map[string]*Database),
@@ -187,8 +230,10 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		destinations:   make(map[string]*BackupDestination),
 		domains:        make(map[string]*DomainBinding),
 		builds:         make(map[string]*store.Build),
-		splits:         make(map[string]*TrafficSplitDTO),
 		schedules:      make(map[string]*store.BackupSchedule),
+		networks:       make(map[string]*NetworkDTO),
+		volumes:        make(map[string]*VolumeDTO),
+		machines:       make(map[string]*MachineDTO),
 	}
 }
 
@@ -311,6 +356,335 @@ func (c *DefaultController) DeleteAPIToken(ctx context.Context, tokenID string) 
 	return c.st.APITokens().Delete(ctx, tokenID)
 }
 
+// --- Organization Operations ---
+
+func (c *DefaultController) ListOrganizations(ctx context.Context) ([]OrganizationDTO, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []OrganizationDTO
+	if c.st != nil {
+		orgs, err := c.st.Organizations().List(ctx)
+		if err == nil && len(orgs) > 0 {
+			for _, o := range orgs {
+				result = append(result, OrganizationDTO{
+					ID:        o.ID,
+					Name:      o.Name,
+					Slug:      o.Slug,
+					CreatedAt: o.CreatedAt,
+					UpdatedAt: o.UpdatedAt,
+				})
+			}
+			return result, nil
+		}
+	}
+	result = append(result, OrganizationDTO{
+		ID:        "org_default",
+		Name:      "Default Organization",
+		Slug:      "default",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	return result, nil
+}
+
+func (c *DefaultController) CreateOrganization(ctx context.Context, req *CreateOrgRequest) (*OrganizationDTO, error) {
+	if req.Name == "" {
+		return nil, errors.New("organization name cannot be empty")
+	}
+	slug := req.Slug
+	if slug == "" {
+		slug = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(req.Name), " ", "-"))
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	org := &store.Organization{
+		ID:        store.NewID("org"),
+		Name:      req.Name,
+		Slug:      slug,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	if c.st != nil {
+		if err := c.st.Organizations().Create(ctx, org); err != nil {
+			return nil, err
+		}
+	}
+
+	return &OrganizationDTO{
+		ID:        org.ID,
+		Name:      org.Name,
+		Slug:      org.Slug,
+		CreatedAt: org.CreatedAt,
+		UpdatedAt: org.UpdatedAt,
+	}, nil
+}
+
+// --- Project Operations ---
+
+func (c *DefaultController) ListProjects(ctx context.Context, orgID string) ([]ProjectDTO, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []ProjectDTO
+	if c.st != nil {
+		prjs, err := c.st.Projects().List(ctx, orgID)
+		if err == nil {
+			allSvcs, _ := c.st.Services().ListAll(ctx)
+			counts := make(map[string]int)
+			for _, s := range allSvcs {
+				if s.Type == "app" {
+					counts[s.ProjectID]++
+				}
+			}
+
+			for _, p := range prjs {
+				tags := p.Tags
+				if tags == nil {
+					tags = []string{}
+				}
+				result = append(result, ProjectDTO{
+					ID:          p.ID,
+					OrgID:       p.OrgID,
+					Name:        p.Name,
+					Slug:        p.Slug,
+					Description: p.Description,
+					Tags:        tags,
+					AppCount:    counts[p.ID],
+					CreatedAt:   p.CreatedAt,
+					UpdatedAt:   p.UpdatedAt,
+				})
+			}
+			if len(result) > 0 {
+				return result, nil
+			}
+		}
+	}
+
+	result = append(result, ProjectDTO{
+		ID:          "prj_default",
+		OrgID:       "org_default",
+		Name:        "Default Project",
+		Slug:        "default",
+		Description: "Default workspace for applications",
+		Tags:        []string{},
+		AppCount:    len(c.apps),
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	})
+	return result, nil
+}
+
+func (c *DefaultController) GetProject(ctx context.Context, id string) (*ProjectDTO, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.st != nil {
+		p, err := c.st.Projects().GetByID(ctx, id)
+		if err != nil {
+			p, err = c.st.Projects().GetBySlug(ctx, id)
+		}
+		if err == nil && p != nil {
+			svcs, _ := c.st.Services().ListByProject(ctx, p.ID)
+			appCount := 0
+			for _, s := range svcs {
+				if s.Type == "app" {
+					appCount++
+				}
+			}
+			tags := p.Tags
+			if tags == nil {
+				tags = []string{}
+			}
+			return &ProjectDTO{
+				ID:          p.ID,
+				OrgID:       p.OrgID,
+				Name:        p.Name,
+				Slug:        p.Slug,
+				Description: p.Description,
+				Tags:        tags,
+				AppCount:    appCount,
+				CreatedAt:   p.CreatedAt,
+				UpdatedAt:   p.UpdatedAt,
+			}, nil
+		}
+	}
+	if id == "prj_default" || id == "default" {
+		return &ProjectDTO{
+			ID:          "prj_default",
+			OrgID:       "org_default",
+			Name:        "Default Project",
+			Slug:        "default",
+			Description: "Default workspace for applications",
+			Tags:        []string{},
+			AppCount:    len(c.apps),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+		}, nil
+	}
+	return nil, errors.New("project not found")
+}
+
+func (c *DefaultController) CreateProject(ctx context.Context, req *CreateProjectRequest) (*ProjectDTO, error) {
+	if req.Name == "" {
+		return nil, errors.New("project name cannot be empty")
+	}
+	orgID := req.OrgID
+	if orgID == "" {
+		orgID = "org_default"
+	}
+	slug := req.Slug
+	if slug == "" {
+		slug = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(req.Name), " ", "-"))
+	}
+	tags := req.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	prj := &store.Project{
+		ID:          store.NewID("prj"),
+		OrgID:       orgID,
+		Name:        req.Name,
+		Slug:        slug,
+		Description: req.Description,
+		Tags:        tags,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+
+	if c.st != nil {
+		if err := c.st.Projects().Create(ctx, prj); err != nil {
+			return nil, err
+		}
+	}
+
+	return &ProjectDTO{
+		ID:          prj.ID,
+		OrgID:       prj.OrgID,
+		Name:        prj.Name,
+		Slug:        prj.Slug,
+		Description: prj.Description,
+		Tags:        tags,
+		AppCount:    0,
+		CreatedAt:   prj.CreatedAt,
+		UpdatedAt:   prj.UpdatedAt,
+	}, nil
+}
+
+func (c *DefaultController) UpdateProject(ctx context.Context, id string, req *UpdateProjectRequest) (*ProjectDTO, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.st != nil {
+		prj, err := c.st.Projects().GetByID(ctx, id)
+		if err != nil {
+			prj, err = c.st.Projects().GetBySlug(ctx, id)
+		}
+		if err != nil || prj == nil {
+			return nil, errors.New("project not found")
+		}
+
+		if req.Name != "" {
+			prj.Name = req.Name
+		}
+		if req.Slug != "" {
+			prj.Slug = req.Slug
+		}
+		if req.Description != nil {
+			prj.Description = *req.Description
+		}
+		if req.Tags != nil {
+			prj.Tags = *req.Tags
+		}
+		if err := c.st.Projects().Update(ctx, prj); err != nil {
+			return nil, err
+		}
+
+		svcs, _ := c.st.Services().ListByProject(ctx, prj.ID)
+		return &ProjectDTO{
+			ID:          prj.ID,
+			OrgID:       prj.OrgID,
+			Name:        prj.Name,
+			Slug:        prj.Slug,
+			Description: prj.Description,
+			Tags:        prj.Tags,
+			AppCount:    len(svcs),
+			CreatedAt:   prj.CreatedAt,
+			UpdatedAt:   prj.UpdatedAt,
+		}, nil
+	}
+	return nil, errors.New("project not found")
+}
+
+func (c *DefaultController) DeleteProject(ctx context.Context, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if id == "prj_default" || id == "default" {
+		return errors.New("cannot delete the default project")
+	}
+
+	if c.st != nil {
+		return c.st.Projects().Delete(ctx, id)
+	}
+	return nil
+}
+
+// --- Tag Aggregation ---
+
+func (c *DefaultController) ListTags(ctx context.Context) ([]TagSummary, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	counts := make(map[string]int)
+
+	if c.st != nil {
+		allSvcs, _ := c.st.Services().ListAll(ctx)
+		for _, s := range allSvcs {
+			for _, t := range s.Tags {
+				if t != "" {
+					counts[t]++
+				}
+			}
+		}
+		allPrjs, _ := c.st.Projects().List(ctx, "")
+		for _, p := range allPrjs {
+			for _, t := range p.Tags {
+				if t != "" {
+					counts[t]++
+				}
+			}
+		}
+	} else {
+		for _, a := range c.apps {
+			for _, t := range a.Tags {
+				if t != "" {
+					counts[t]++
+				}
+			}
+		}
+	}
+
+	var result []TagSummary
+	for tag, count := range counts {
+		result = append(result, TagSummary{Tag: tag, Count: count})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Count == result[j].Count {
+			return result[i].Tag < result[j].Tag
+		}
+		return result[i].Count > result[j].Count
+	})
+	return result, nil
+}
+
 // --- App Operations ---
 
 func (c *DefaultController) ListApps(ctx context.Context) ([]App, error) {
@@ -319,22 +693,47 @@ func (c *DefaultController) ListApps(ctx context.Context) ([]App, error) {
 
 	var result []App
 	if c.st != nil {
+		prjs, _ := c.st.Projects().List(ctx, "")
+		prjMap := make(map[string]string)
+		for _, p := range prjs {
+			prjMap[p.ID] = p.Name
+		}
+
 		if db := c.st.DB(); db != nil {
-			query := `SELECT id, name, image, replicas, container_port, domain_names, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at FROM services WHERE type = 'app'`
+			query := `SELECT id, project_id, stage_id, name, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at FROM services WHERE type = 'app'`
 			rows, err := db.QueryContext(ctx, query)
 			if err == nil {
 				defer rows.Close()
 				for rows.Next() {
 					var a App
-					var domJSON string
+					var domJSON, tagsJSON string
 					var crAt, upAt string
 					var port sql.NullInt64
 					var gitRepo, gitBranch, buildStrat, dockerfile, pubDir sql.NullString
-					if err := rows.Scan(&a.ID, &a.Name, &a.Image, &a.Replicas, &port, &domJSON, &a.Status, &gitRepo, &gitBranch, &buildStrat, &dockerfile, &pubDir, &crAt, &upAt); err == nil {
+					var prjID, stgID, rtMode, compYAML sql.NullString
+					if err := rows.Scan(&a.ID, &prjID, &stgID, &a.Name, &a.Image, &a.Replicas, &port, &domJSON, &tagsJSON, &rtMode, &compYAML, &a.Status, &gitRepo, &gitBranch, &buildStrat, &dockerfile, &pubDir, &crAt, &upAt); err == nil {
 						_ = json.Unmarshal([]byte(domJSON), &a.Domains)
+						a.Tags = []string{}
+						if tagsJSON != "" {
+							_ = json.Unmarshal([]byte(tagsJSON), &a.Tags)
+						}
 						if port.Valid {
 							a.ContainerPort = int(port.Int64)
 						}
+						a.ProjectID = prjID.String
+						if a.ProjectID == "" {
+							a.ProjectID = "prj_default"
+						}
+						a.ProjectName = prjMap[a.ProjectID]
+						if a.ProjectName == "" && a.ProjectID == "prj_default" {
+							a.ProjectName = "Default Project"
+						}
+						a.StageID = stgID.String
+						a.RuntimeMode = rtMode.String
+						if a.RuntimeMode == "" {
+							a.RuntimeMode = "standalone"
+						}
+						a.ComposeYAML = compYAML.String
 						a.GitRepoURL = gitRepo.String
 						a.GitBranch = gitBranch.String
 						a.BuildStrategy = buildStrat.String
@@ -353,6 +752,16 @@ func (c *DefaultController) ListApps(ctx context.Context) ([]App, error) {
 	}
 
 	for _, a := range c.apps {
+		if a.ProjectID == "" {
+			a.ProjectID = "prj_default"
+			a.ProjectName = "Default Project"
+		}
+		if a.Tags == nil {
+			a.Tags = []string{}
+		}
+		if a.RuntimeMode == "" {
+			a.RuntimeMode = "standalone"
+		}
 		result = append(result, *a)
 	}
 	return result, nil
@@ -372,15 +781,31 @@ func (c *DefaultController) GetApp(ctx context.Context, id string) (*App, error)
 	}
 	if c.st != nil {
 		if svc, err := c.st.Services().GetByID(ctx, id); err == nil && svc != nil {
+			projName := "Default Project"
+			if p, err := c.st.Projects().GetByID(ctx, svc.ProjectID); err == nil && p != nil {
+				projName = p.Name
+			}
+			tags := svc.Tags
+			if tags == nil {
+				tags = []string{}
+			}
+			rtMode := svc.RuntimeMode
+			if rtMode == "" {
+				rtMode = "standalone"
+			}
 			return &App{
 				ID:               svc.ID,
 				ProjectID:        svc.ProjectID,
+				ProjectName:      projName,
 				StageID:          svc.StageID,
 				Name:             svc.Name,
 				Image:            svc.Image,
 				Replicas:         uint64(svc.Replicas),
 				ContainerPort:    svc.ContainerPort,
 				Domains:          svc.DomainNames,
+				Tags:             tags,
+				RuntimeMode:      rtMode,
+				ComposeYAML:      svc.ComposeYAML,
 				Status:           svc.Status,
 				GitRepoURL:       svc.GitRepoURL,
 				GitBranch:        svc.GitBranch,
@@ -402,6 +827,26 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 	if req.Replicas == 0 {
 		req.Replicas = 1
 	}
+	projectID := req.ProjectID
+	if projectID == "" {
+		projectID = "prj_default"
+	}
+	stageID := req.StageID
+	if stageID == "" {
+		stageID = "stg_default_prod"
+	}
+	tags := req.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	runtimeMode := req.RuntimeMode
+	if runtimeMode == "" {
+		if req.Replicas > 1 {
+			runtimeMode = "swarm"
+		} else {
+			runtimeMode = "standalone"
+		}
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -409,11 +854,16 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 	appID := store.NewID("app")
 	app := &App{
 		ID:               appID,
+		ProjectID:        projectID,
+		StageID:          stageID,
 		Name:             req.Name,
 		Image:            req.Image,
 		Replicas:         req.Replicas,
 		ContainerPort:    req.ContainerPort,
 		Domains:          req.Domains,
+		Tags:             tags,
+		RuntimeMode:      runtimeMode,
+		ComposeYAML:      req.ComposeYAML,
 		Env:              req.Env,
 		Status:           "running",
 		GitRepoURL:       req.GitRepoURL,
@@ -430,8 +880,8 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 	if c.st != nil {
 		_ = c.st.Services().Create(ctx, &store.Service{
 			ID:               appID,
-			ProjectID:        "default",
-			StageID:          "production",
+			ProjectID:        projectID,
+			StageID:          stageID,
 			Name:             req.Name,
 			Slug:             strings.ToLower(req.Name),
 			Type:             "app",
@@ -439,6 +889,9 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 			Replicas:         int(req.Replicas),
 			ContainerPort:    req.ContainerPort,
 			DomainNames:      req.Domains,
+			Tags:             tags,
+			RuntimeMode:      runtimeMode,
+			ComposeYAML:      req.ComposeYAML,
 			Status:           "running",
 			GitRepoURL:       req.GitRepoURL,
 			GitBranch:        req.GitBranch,
@@ -474,6 +927,21 @@ func (c *DefaultController) UpdateApp(ctx context.Context, id string, req *Updat
 	if req.Image != "" {
 		app.Image = req.Image
 	}
+	if req.ProjectID != nil && *req.ProjectID != "" {
+		app.ProjectID = *req.ProjectID
+	}
+	if req.StageID != nil && *req.StageID != "" {
+		app.StageID = *req.StageID
+	}
+	if req.Tags != nil {
+		app.Tags = *req.Tags
+	}
+	if req.RuntimeMode != nil && *req.RuntimeMode != "" {
+		app.RuntimeMode = *req.RuntimeMode
+	}
+	if req.ComposeYAML != nil {
+		app.ComposeYAML = *req.ComposeYAML
+	}
 	if req.Replicas != nil {
 		app.Replicas = *req.Replicas
 	}
@@ -507,6 +975,15 @@ func (c *DefaultController) UpdateApp(ctx context.Context, id string, req *Updat
 		if svc, err := c.st.Services().GetByID(ctx, id); err == nil && svc != nil {
 			svc.Name = app.Name
 			svc.Image = app.Image
+			if app.ProjectID != "" {
+				svc.ProjectID = app.ProjectID
+			}
+			if app.StageID != "" {
+				svc.StageID = app.StageID
+			}
+			svc.Tags = app.Tags
+			svc.RuntimeMode = app.RuntimeMode
+			svc.ComposeYAML = app.ComposeYAML
 			svc.Replicas = int(app.Replicas)
 			svc.ContainerPort = app.ContainerPort
 			svc.DomainNames = app.Domains
@@ -520,6 +997,24 @@ func (c *DefaultController) UpdateApp(ctx context.Context, id string, req *Updat
 	}
 
 	return app, nil
+}
+
+func (c *DefaultController) InspectCompose(ctx context.Context, composeYAML string) (*InspectComposeResponse, error) {
+	if strings.TrimSpace(composeYAML) == "" {
+		return nil, errors.New("compose YAML cannot be empty")
+	}
+	result, err := orchestration.InspectComposeYAML(composeYAML)
+	if err != nil {
+		return nil, err
+	}
+	return &InspectComposeResponse{
+		Services:         result.Services,
+		Variables:        result.Variables,
+		ExposedPorts:     result.ExposedPorts,
+		DeclaredVolumes:  result.DeclaredVolumes,
+		DeclaredNetworks: result.DeclaredNetworks,
+		SuggestedRuntime: result.SuggestedRuntime,
+	}, nil
 }
 
 func (c *DefaultController) DeleteApp(ctx context.Context, id string) error {
@@ -583,6 +1078,41 @@ func (c *DefaultController) DeployApp(ctx context.Context, id string, image stri
 				_ = c.orch.Swarm().UpdateService(ctx, existing.ID, existing.Version, spec)
 			} else {
 				_, _ = c.orch.Swarm().CreateService(ctx, spec)
+			}
+		} else if c.orch.Containers() != nil {
+			spec := orchestration.ContainerSpec{
+				Name:        app.Name,
+				ProjectID:   app.ProjectID,
+				Image:       app.Image,
+				Environment: envMap,
+				Labels: map[string]string{
+					"pikpik.name":       app.Name,
+					"pikpik.project_id": app.ProjectID,
+					"pikpik.app_id":     app.ID,
+					"pikpik.managed":    "true",
+				},
+			}
+			_, deployErr := c.orch.Containers().DeployWithRollingUpdate(ctx, spec, orchestration.RollingUpdateConfig{
+				Monitor: 5 * time.Second,
+			})
+			if deployErr != nil {
+				app.Status = "failed"
+				if c.st != nil {
+					_ = c.st.Services().UpdateStatus(ctx, id, "failed")
+				}
+				if c.wsHub != nil {
+					c.wsHub.Broadcast(WSMessage{
+						Channel:  "events",
+						TargetID: id,
+						Event:    "deployment_failed",
+						Data:     map[string]string{"status": "failed", "error": deployErr.Error()},
+						Time:     time.Now().UTC(),
+					})
+				}
+				if c.sseBroadcaster != nil {
+					c.sseBroadcaster.Broadcast("events", id, "deployment_failed", map[string]string{"status": "failed", "error": deployErr.Error()})
+				}
+				return fmt.Errorf("in-place rolling deployment failed: %w", deployErr)
 			}
 		}
 	}
@@ -667,263 +1197,51 @@ func (c *DefaultController) SetAppEnv(ctx context.Context, id string, env map[st
 	return nil
 }
 
-func formatUpstream(target string, defaultPort int) string {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return ""
-	}
-	if strings.Contains(target, ":") {
-		return target
-	}
-	return fmt.Sprintf("%s:%d", target, defaultPort)
-}
-
-func (c *DefaultController) GetAppTraffic(ctx context.Context, appID string) (*TrafficSplitDTO, error) {
-	app, err := c.GetApp(ctx, appID)
-	if err != nil {
-		return nil, err
-	}
-
-	domain := ""
-	if len(app.Domains) > 0 {
-		domain = app.Domains[0]
-	}
-	if domain == "" {
-		domain = app.Name + ".local"
-	}
-
-	c.mu.RLock()
-	cached, ok := c.splits[appID]
-	c.mu.RUnlock()
-	if ok {
-		return cached, nil
-	}
-
-	if c.ingress != nil && domain != "" {
-		split, err := c.ingress.GetTrafficSplit(ctx, domain)
-		if err == nil && split != nil {
-			dto := &TrafficSplitDTO{
-				AppID:          appID,
-				Domain:         split.Domain,
-				StableUpstream: split.StableUpstream,
-				CanaryUpstream: split.CanaryUpstream,
-				CanaryPercent:  split.CanaryPercent,
-				Headers:        split.Headers,
-				Paths:          split.Paths,
-			}
-			c.mu.Lock()
-			c.splits[appID] = dto
-			c.mu.Unlock()
-			return dto, nil
-		}
-	}
-
-	port := 80
-	if app.ContainerPort > 0 {
-		port = app.ContainerPort
-	}
-	upstreamID := app.ID
-	if upstreamID == "" {
-		upstreamID = app.Name
-	}
-
-	// Default fallback: 100% stable
-	return &TrafficSplitDTO{
-		AppID:          appID,
-		Domain:         domain,
-		StableUpstream: fmt.Sprintf("%s:%d", upstreamID, port),
-		CanaryUpstream: "",
-		CanaryPercent:  0,
-	}, nil
-}
-
-func (c *DefaultController) SetAppTraffic(ctx context.Context, appID string, req *SetTrafficSplitRequest) (*TrafficSplitDTO, error) {
-	app, err := c.GetApp(ctx, appID)
-	if err != nil {
-		return nil, err
-	}
-
-	if req.CanaryPercent < 0 || req.CanaryPercent > 100 {
-		return nil, fmt.Errorf("canary percent must be between 0 and 100, got %d", req.CanaryPercent)
-	}
-
-	domain := req.Domain
-	if domain == "" {
-		if len(app.Domains) > 0 {
-			domain = app.Domains[0]
-		} else {
-			domain = app.Name + ".local"
-		}
-	}
-
-	port := 80
-	if app.ContainerPort > 0 {
-		port = app.ContainerPort
-	}
-	upstreamID := app.ID
-	if upstreamID == "" {
-		upstreamID = app.Name
-	}
-
-	stableUpstream := req.StableUpstream
-	if stableUpstream == "" {
-		stableUpstream = fmt.Sprintf("%s:%d", upstreamID, port)
-	} else {
-		stableUpstream = formatUpstream(stableUpstream, port)
-	}
-
-	canaryUpstream := req.CanaryUpstream
-	if req.CanaryPercent > 0 {
-		if canaryUpstream == "" {
-			canaryUpstream = fmt.Sprintf("%s_green:%d", upstreamID, port)
-		} else {
-			canaryUpstream = formatUpstream(canaryUpstream, port)
-		}
-	} else if canaryUpstream != "" {
-		canaryUpstream = formatUpstream(canaryUpstream, port)
-	}
-
-	splitCfg := ingress.TrafficSplitConfig{
-		Domain:         domain,
-		StableUpstream: stableUpstream,
-		CanaryUpstream: canaryUpstream,
-		CanaryPercent:  req.CanaryPercent,
-		Headers:        req.Headers,
-		Paths:          req.Paths,
-	}
-
-	if c.ingress != nil {
-		if err := c.ingress.SetTrafficSplit(ctx, domain, splitCfg); err != nil {
-			return nil, fmt.Errorf("failed to update ingress traffic split: %w", err)
-		}
-	}
-
-	dto := &TrafficSplitDTO{
-		AppID:          appID,
-		Domain:         domain,
-		StableUpstream: stableUpstream,
-		CanaryUpstream: canaryUpstream,
-		CanaryPercent:  req.CanaryPercent,
-		Headers:        req.Headers,
-		Paths:          req.Paths,
-	}
-
-	c.mu.Lock()
-	c.splits[appID] = dto
-	c.mu.Unlock()
-
-	return dto, nil
-}
-
-func (c *DefaultController) DeployBlueGreen(ctx context.Context, appID string, req *BlueGreenDeployRequest) (*BlueGreenDeployResponse, error) {
-	app, err := c.GetApp(ctx, appID)
-	if err != nil {
-		return nil, err
-	}
-
-	image := req.Image
-	if image == "" {
-		image = app.Image
-	}
-	if image == "" {
-		return nil, errors.New("image cannot be empty for blue-green deployment")
-	}
-
-	domain := req.Domain
-	if domain == "" {
-		if len(app.Domains) > 0 {
-			domain = app.Domains[0]
-		} else {
-			domain = app.Name + ".local"
-		}
-	}
-
-	containerPort := req.ContainerPort
-	if containerPort == 0 {
-		containerPort = 80
-	}
-
-	probeTimeout := time.Duration(req.ProbeTimeoutSec) * time.Second
-	if probeTimeout == 0 {
-		probeTimeout = 30 * time.Second
-	}
-
-	drainPeriod := time.Duration(req.DrainPeriodSec) * time.Second
-	if drainPeriod == 0 {
-		drainPeriod = 5 * time.Second
-	}
-
-	envMap := app.Env
-	if len(req.Environment) > 0 {
-		envMap = req.Environment
-	}
-
-	if c.orch != nil {
-		bgDeployer := orchestration.NewBlueGreenDeployer(c.orch.Containers(), c.ingress)
-		cfg := orchestration.BlueGreenConfig{
-			AppID:           appID,
-			ProjectID:       app.ProjectID,
-			Name:            app.Name,
-			Domain:          domain,
-			Image:           image,
-			ContainerPort:   containerPort,
-			Environment:     envMap,
-			HealthCheckPath: req.HealthCheckPath,
-			ProbeTimeout:    probeTimeout,
-			DrainPeriod:     drainPeriod,
-			CanarySteps:     req.CanarySteps,
-		}
-
-		res, err := bgDeployer.Deploy(ctx, cfg)
-		if err != nil {
-			return nil, err
-		}
-
-		app.Image = image
-		app.UpdatedAt = time.Now().UTC()
-
-		return &BlueGreenDeployResponse{
-			AppID:             appID,
-			BlueContainerID:   res.BlueContainerID,
-			GreenContainerID:  res.GreenContainerID,
-			ActiveContainerID: res.ActiveContainerID,
-			Domain:            res.Domain,
-			Status:            res.Status,
-			SwappedAt:         res.SwappedAt,
-			DurationMs:        res.Duration.Milliseconds(),
-		}, nil
-	}
-
-	// Standalone mock fallback
-	blueID := "c_blue_" + appID
-	greenID := fmt.Sprintf("c_green_%s_%d", appID, time.Now().Unix())
-
-	if c.ingress != nil && domain != "" {
-		_ = c.ingress.SetTrafficSplit(ctx, domain, ingress.TrafficSplitConfig{
-			Domain:         domain,
-			StableUpstream: greenID + fmt.Sprintf(":%d", containerPort),
-			CanaryPercent:  0,
-		})
-	}
-
-	app.Image = image
-	app.UpdatedAt = time.Now().UTC()
-
-	return &BlueGreenDeployResponse{
-		AppID:             appID,
-		BlueContainerID:   blueID,
-		GreenContainerID:  greenID,
-		ActiveContainerID: greenID,
-		Domain:            domain,
-		Status:            "success",
-		SwappedAt:         time.Now().UTC(),
-		DurationMs:        120,
-	}, nil
-}
-
 // --- Stack Operations ---
 
+func extractServicesFromCompose(composeYAML string) []string {
+	if composeYAML == "" {
+		return []string{}
+	}
+	res, err := orchestration.InspectComposeYAML(composeYAML)
+	if err != nil {
+		return []string{}
+	}
+	var names []string
+	for _, s := range res.Services {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
 func (c *DefaultController) ListStacks(ctx context.Context) ([]Stack, error) {
+	if c.st != nil {
+		stks, err := c.st.Stacks().ListAll(ctx)
+		if err == nil && len(stks) > 0 {
+			var res []Stack
+			for _, s := range stks {
+				item := Stack{
+					ID:          s.ID,
+					ProjectID:   s.ProjectID,
+					Name:        s.Name,
+					ComposeYAML: s.ComposeYAML,
+					Services:    extractServicesFromCompose(s.ComposeYAML),
+					Status:      s.Status,
+					CreatedAt:   s.CreatedAt,
+					UpdatedAt:   s.UpdatedAt,
+				}
+				if c.orch != nil {
+					if stat, err := c.orch.Stacks().InspectStack(ctx, s.Name); err == nil {
+						item.Status = stat.State
+						item.Containers = stat.Containers
+					}
+				}
+				res = append(res, item)
+			}
+			return res, nil
+		}
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -938,24 +1256,73 @@ func (c *DefaultController) CreateStack(ctx context.Context, req *CreateStackReq
 	if req.Name == "" {
 		return nil, errors.New("stack name required")
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	projID := req.ProjectID
+	if projID == "" {
+		projID = "prj_default"
+	}
 
 	id := store.NewID("stk")
+	now := time.Now().UTC()
+	services := extractServicesFromCompose(req.ComposeYAML)
+
 	stack := &Stack{
 		ID:          id,
+		ProjectID:   projID,
 		Name:        req.Name,
 		ComposeYAML: req.ComposeYAML,
-		Services:    []string{},
-		Status:      "ready",
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		Services:    services,
+		Status:      "stopped",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
+
+	if c.st != nil {
+		dbStack := &store.Stack{
+			ID:          id,
+			ProjectID:   projID,
+			Name:        req.Name,
+			ComposeYAML: req.ComposeYAML,
+			Status:      "stopped",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		_ = c.st.Stacks().Create(ctx, dbStack)
+	}
+
+	c.mu.Lock()
 	c.stacks[id] = stack
+	c.mu.Unlock()
+
 	return stack, nil
 }
 
 func (c *DefaultController) GetStack(ctx context.Context, id string) (*Stack, error) {
+	if c.st != nil {
+		stk, err := c.st.Stacks().GetByID(ctx, id)
+		if err != nil {
+			stk, err = c.st.Stacks().GetByName(ctx, "prj_default", id)
+		}
+		if err == nil && stk != nil {
+			item := &Stack{
+				ID:          stk.ID,
+				ProjectID:   stk.ProjectID,
+				Name:        stk.Name,
+				ComposeYAML: stk.ComposeYAML,
+				Services:    extractServicesFromCompose(stk.ComposeYAML),
+				Status:      stk.Status,
+				CreatedAt:   stk.CreatedAt,
+				UpdatedAt:   stk.UpdatedAt,
+			}
+			if c.orch != nil {
+				if stat, err := c.orch.Stacks().InspectStack(ctx, stk.Name); err == nil {
+					item.Status = stat.State
+					item.Containers = stat.Containers
+				}
+			}
+			return item, nil
+		}
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -976,7 +1343,24 @@ func (c *DefaultController) UpdateStack(ctx context.Context, id string, composeY
 		return nil, err
 	}
 	stack.ComposeYAML = composeYAML
+	stack.Services = extractServicesFromCompose(composeYAML)
 	stack.UpdatedAt = time.Now().UTC()
+
+	if c.st != nil {
+		_ = c.st.Stacks().Update(ctx, &store.Stack{
+			ID:          stack.ID,
+			ProjectID:   stack.ProjectID,
+			Name:        stack.Name,
+			ComposeYAML: composeYAML,
+			Status:      stack.Status,
+			UpdatedAt:   stack.UpdatedAt,
+		})
+	}
+
+	c.mu.Lock()
+	c.stacks[stack.ID] = stack
+	c.mu.Unlock()
+
 	return stack, nil
 }
 
@@ -985,28 +1369,431 @@ func (c *DefaultController) DeployStack(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
+	stack.Status = "deploying"
+	if c.st != nil {
+		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "deploying")
+	}
+
+	if c.orch != nil {
+		parsed, err := orchestration.ParseComposeYAML(stack.ComposeYAML, nil)
+		if err != nil {
+			stack.Status = "failed"
+			if c.st != nil {
+				_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "failed")
+			}
+			return fmt.Errorf("invalid compose yaml: %w", err)
+		}
+
+		res, err := c.orch.Stacks().DeployStack(ctx, orchestration.ComposeStackSpec{
+			Name:      stack.Name,
+			ProjectID: stack.ProjectID,
+			RawYAML:   stack.ComposeYAML,
+			Services:  parsed.Services,
+			Networks:  parsed.Networks,
+			Volumes:   parsed.Volumes,
+			EnvVars:   parsed.EnvVars,
+		})
+		if err != nil {
+			stack.Status = "failed"
+			if c.st != nil {
+				_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "failed")
+			}
+			return fmt.Errorf("failed to deploy stack: %w", err)
+		}
+
+		if c.st != nil {
+			for _, netName := range res.CreatedNetworks {
+				_ = c.st.Networks().Create(ctx, &store.ManagedNetwork{
+					ProjectID: stack.ProjectID,
+					Name:      netName,
+					Driver:    "bridge",
+					Scope:     "stack",
+				})
+			}
+			for _, volName := range res.CreatedVolumes {
+				_ = c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
+					ProjectID: stack.ProjectID,
+					Name:      volName,
+					Driver:    "local",
+				})
+			}
+		}
+	}
+
 	stack.Status = "running"
 	stack.UpdatedAt = time.Now().UTC()
+	if c.st != nil {
+		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "running")
+	}
+	return nil
+}
+
+func (c *DefaultController) StopStack(ctx context.Context, id string) error {
+	stack, err := c.GetStack(ctx, id)
+	if err != nil {
+		return err
+	}
 	if c.orch != nil {
-		_, _ = c.orch.Stacks().DeployStack(ctx, orchestration.ComposeStackSpec{
-			Name:      stack.Name,
-			ProjectID: "default",
-			RawYAML:   stack.ComposeYAML,
-		})
+		_ = c.orch.Stacks().StopStack(ctx, stack.Name)
+	}
+	stack.Status = "stopped"
+	stack.UpdatedAt = time.Now().UTC()
+	if c.st != nil {
+		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "stopped")
+	}
+	return nil
+}
+
+func (c *DefaultController) RestartStack(ctx context.Context, id string) error {
+	stack, err := c.GetStack(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.orch != nil {
+		_ = c.orch.Stacks().RestartStack(ctx, stack.Name)
+	}
+	stack.Status = "running"
+	stack.UpdatedAt = time.Now().UTC()
+	if c.st != nil {
+		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "running")
 	}
 	return nil
 }
 
 func (c *DefaultController) DeleteStack(ctx context.Context, id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	stack, ok := c.stacks[id]
-	if ok && c.orch != nil {
+	stack, err := c.GetStack(ctx, id)
+	if err == nil && c.orch != nil {
 		_ = c.orch.Stacks().RemoveStack(ctx, stack.Name)
 	}
+	if c.st != nil {
+		_ = c.st.Stacks().Delete(ctx, id)
+		if stack != nil {
+			_ = c.st.Stacks().Delete(ctx, stack.ID)
+		}
+	}
+	c.mu.Lock()
 	delete(c.stacks, id)
+	if stack != nil {
+		delete(c.stacks, stack.ID)
+	}
+	c.mu.Unlock()
 	return nil
+}
+
+// --- Network Operations ---
+
+func (c *DefaultController) ListNetworks(ctx context.Context, projectID string) ([]NetworkDTO, error) {
+	if c.st != nil {
+		var nets []*store.ManagedNetwork
+		var err error
+		if projectID != "" {
+			nets, err = c.st.Networks().ListByProject(ctx, projectID)
+		} else {
+			nets, err = c.st.Networks().ListAll(ctx)
+		}
+		if err == nil && len(nets) > 0 {
+			var res []NetworkDTO
+			for _, n := range nets {
+				res = append(res, NetworkDTO{
+					ID:         n.ID,
+					ProjectID:  n.ProjectID,
+					Name:       n.Name,
+					Driver:     n.Driver,
+					Scope:      n.Scope,
+					IsExternal: n.IsExternal,
+					CreatedAt:  n.CreatedAt,
+					UpdatedAt:  n.UpdatedAt,
+				})
+			}
+			return res, nil
+		}
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var res []NetworkDTO
+	for _, n := range c.networks {
+		if projectID == "" || n.ProjectID == projectID {
+			res = append(res, *n)
+		}
+	}
+	return res, nil
+}
+
+func (c *DefaultController) GetNetwork(ctx context.Context, id string) (*NetworkDTO, error) {
+	if c.st != nil {
+		n, err := c.st.Networks().GetByID(ctx, id)
+		if err == nil && n != nil {
+			return &NetworkDTO{
+				ID:         n.ID,
+				ProjectID:  n.ProjectID,
+				Name:       n.Name,
+				Driver:     n.Driver,
+				Scope:      n.Scope,
+				IsExternal: n.IsExternal,
+				CreatedAt:  n.CreatedAt,
+				UpdatedAt:  n.UpdatedAt,
+			}, nil
+		}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if n, ok := c.networks[id]; ok {
+		return n, nil
+	}
+	for _, n := range c.networks {
+		if n.Name == id {
+			return n, nil
+		}
+	}
+	return nil, errors.New("network not found")
+}
+
+func (c *DefaultController) CreateNetwork(ctx context.Context, req *CreateNetworkRequest) (*NetworkDTO, error) {
+	if req.Name == "" {
+		return nil, errors.New("network name required")
+	}
+	projID := req.ProjectID
+	if projID == "" {
+		projID = "prj_default"
+	}
+	driver := req.Driver
+	if driver == "" {
+		driver = "bridge"
+	}
+	scope := req.Scope
+	if scope == "" {
+		scope = "project"
+	}
+
+	id := store.NewID("net")
+	now := time.Now().UTC()
+	net := &NetworkDTO{
+		ID:         id,
+		ProjectID:  projID,
+		Name:       req.Name,
+		Driver:     driver,
+		Scope:      scope,
+		IsExternal: req.IsExternal,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	if c.orch != nil && c.orch.RawClient() != nil {
+		_, _ = c.orch.RawClient().NetworkCreate(ctx, req.Name, types.NetworkCreate{
+			Driver: driver,
+			Labels: map[string]string{
+				"pikpik.project_id":    projID,
+				"pikpik.managed":       "true",
+				"pikpik.network_scope": scope,
+			},
+		})
+	}
+
+	if c.st != nil {
+		_ = c.st.Networks().Create(ctx, &store.ManagedNetwork{
+			ID:         id,
+			ProjectID:  projID,
+			Name:       req.Name,
+			Driver:     driver,
+			Scope:      scope,
+			IsExternal: req.IsExternal,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		})
+	}
+
+	c.mu.Lock()
+	c.networks[id] = net
+	c.mu.Unlock()
+
+	return net, nil
+}
+
+func (c *DefaultController) DeleteNetwork(ctx context.Context, id string) error {
+	n, _ := c.GetNetwork(ctx, id)
+	if n != nil && c.orch != nil && c.orch.RawClient() != nil {
+		_ = c.orch.RawClient().NetworkRemove(ctx, n.Name)
+	}
+	if c.st != nil {
+		_ = c.st.Networks().Delete(ctx, id)
+		if n != nil {
+			_ = c.st.Networks().Delete(ctx, n.ID)
+		}
+	}
+	c.mu.Lock()
+	delete(c.networks, id)
+	if n != nil {
+		delete(c.networks, n.ID)
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *DefaultController) PruneNetworks(ctx context.Context, projectID string) (*PruneResult, error) {
+	res := &PruneResult{Deleted: []string{}}
+	if c.orch != nil && c.orch.RawClient() != nil {
+		report, err := c.orch.RawClient().NetworksPrune(ctx, filters.NewArgs())
+		if err == nil && len(report.NetworksDeleted) > 0 {
+			res.Deleted = report.NetworksDeleted
+		}
+	}
+	return res, nil
+}
+
+// --- Volume Operations ---
+
+func (c *DefaultController) ListVolumes(ctx context.Context, projectID string) ([]VolumeDTO, error) {
+	if c.st != nil {
+		var vols []*store.ManagedVolume
+		var err error
+		if projectID != "" {
+			vols, err = c.st.Volumes().ListManagedByProject(ctx, projectID)
+		} else {
+			vols, err = c.st.Volumes().ListAllManaged(ctx)
+		}
+		if err == nil && len(vols) > 0 {
+			var res []VolumeDTO
+			for _, v := range vols {
+				res = append(res, VolumeDTO{
+					ID:        v.ID,
+					ProjectID: v.ProjectID,
+					Name:      v.Name,
+					Driver:    v.Driver,
+					SizeBytes: v.SizeBytes,
+					CreatedAt: v.CreatedAt,
+					UpdatedAt: v.UpdatedAt,
+				})
+			}
+			return res, nil
+		}
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var res []VolumeDTO
+	for _, v := range c.volumes {
+		if projectID == "" || v.ProjectID == projectID {
+			res = append(res, *v)
+		}
+	}
+	return res, nil
+}
+
+func (c *DefaultController) GetVolume(ctx context.Context, id string) (*VolumeDTO, error) {
+	if c.st != nil {
+		v, err := c.st.Volumes().GetManagedByID(ctx, id)
+		if err == nil && v != nil {
+			return &VolumeDTO{
+				ID:        v.ID,
+				ProjectID: v.ProjectID,
+				Name:      v.Name,
+				Driver:    v.Driver,
+				SizeBytes: v.SizeBytes,
+				CreatedAt: v.CreatedAt,
+				UpdatedAt: v.UpdatedAt,
+			}, nil
+		}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if v, ok := c.volumes[id]; ok {
+		return v, nil
+	}
+	for _, v := range c.volumes {
+		if v.Name == id {
+			return v, nil
+		}
+	}
+	return nil, errors.New("volume not found")
+}
+
+func (c *DefaultController) CreateVolume(ctx context.Context, req *CreateVolumeRequest) (*VolumeDTO, error) {
+	if req.Name == "" {
+		return nil, errors.New("volume name required")
+	}
+	projID := req.ProjectID
+	if projID == "" {
+		projID = "prj_default"
+	}
+	driver := req.Driver
+	if driver == "" {
+		driver = "local"
+	}
+
+	id := store.NewID("vol")
+	now := time.Now().UTC()
+	vol := &VolumeDTO{
+		ID:        id,
+		ProjectID: projID,
+		Name:      req.Name,
+		Driver:    driver,
+		SizeBytes: 0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if c.orch != nil && c.orch.RawClient() != nil {
+		_, _ = c.orch.RawClient().VolumeCreate(ctx, volume.CreateOptions{
+			Name:   req.Name,
+			Driver: driver,
+			Labels: map[string]string{
+				"pikpik.project_id": projID,
+				"pikpik.managed":    "true",
+			},
+		})
+	}
+
+	if c.st != nil {
+		_ = c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
+			ID:        id,
+			ProjectID: projID,
+			Name:      req.Name,
+			Driver:    driver,
+			SizeBytes: 0,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	c.mu.Lock()
+	c.volumes[id] = vol
+	c.mu.Unlock()
+
+	return vol, nil
+}
+
+func (c *DefaultController) DeleteVolume(ctx context.Context, id string) error {
+	v, _ := c.GetVolume(ctx, id)
+	if v != nil && c.orch != nil && c.orch.RawClient() != nil {
+		_ = c.orch.RawClient().VolumeRemove(ctx, v.Name, true)
+	}
+	if c.st != nil {
+		_ = c.st.Volumes().DeleteManaged(ctx, id)
+		if v != nil {
+			_ = c.st.Volumes().DeleteManaged(ctx, v.ID)
+		}
+	}
+	c.mu.Lock()
+	delete(c.volumes, id)
+	if v != nil {
+		delete(c.volumes, v.ID)
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *DefaultController) PruneVolumes(ctx context.Context, projectID string) (*PruneResult, error) {
+	res := &PruneResult{Deleted: []string{}}
+	if c.orch != nil && c.orch.RawClient() != nil {
+		report, err := c.orch.RawClient().VolumesPrune(ctx, filters.NewArgs())
+		if err == nil {
+			res.Deleted = report.VolumesDeleted
+			res.SpaceReclaimed = int64(report.SpaceReclaimed)
+		}
+	}
+	return res, nil
 }
 
 // --- Node Operations ---
@@ -1096,6 +1883,229 @@ func (c *DefaultController) GetJoinTokens(ctx context.Context) (*JoinTokensRespo
 	return &JoinTokensResponse{
 		Manager: "SWMTKN-1-49rf36-manager-mock-token",
 		Worker:  "SWMTKN-1-49rf36-worker-mock-token",
+	}, nil
+}
+
+// --- Managed Machines & Remote Infrastructure Operations ---
+
+func (c *DefaultController) ListMachines(ctx context.Context) ([]MachineDTO, error) {
+	if c.st != nil && c.st.Machines() != nil {
+		records, err := c.st.Machines().List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var dtos []MachineDTO
+		for _, m := range records {
+			dto := MachineDTO{
+				ID:            m.ID,
+				Hostname:      m.Hostname,
+				Role:          m.Role,
+				PublicIP:      m.PublicIP,
+				PrivateIP:     m.PrivateIP,
+				OSKernel:      m.OSKernel,
+				CPUArch:       m.CPUArch,
+				DockerVersion: m.DockerVersion,
+				AgentVersion:  m.AgentVersion,
+				Status:        m.Status,
+				LastSeen:      m.LastSeen,
+				CreatedAt:     m.CreatedAt,
+				UpdatedAt:     m.UpdatedAt,
+			}
+			if metrics, err := c.GetMachineMetrics(ctx, m.ID); err == nil && metrics != nil {
+				dto.Metrics = metrics
+			}
+			dtos = append(dtos, dto)
+		}
+		return dtos, nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var dtos []MachineDTO
+	for _, m := range c.machines {
+		dtos = append(dtos, *m)
+	}
+	return dtos, nil
+}
+
+func (c *DefaultController) GetMachine(ctx context.Context, id string) (*MachineDTO, error) {
+	if c.st != nil && c.st.Machines() != nil {
+		m, err := c.st.Machines().GetByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, errors.New("machine not found")
+			}
+			return nil, err
+		}
+		dto := &MachineDTO{
+			ID:            m.ID,
+			Hostname:      m.Hostname,
+			Role:          m.Role,
+			PublicIP:      m.PublicIP,
+			PrivateIP:     m.PrivateIP,
+			OSKernel:      m.OSKernel,
+			CPUArch:       m.CPUArch,
+			DockerVersion: m.DockerVersion,
+			AgentVersion:  m.AgentVersion,
+			Status:        m.Status,
+			LastSeen:      m.LastSeen,
+			CreatedAt:     m.CreatedAt,
+			UpdatedAt:     m.UpdatedAt,
+		}
+		if metrics, err := c.GetMachineMetrics(ctx, m.ID); err == nil && metrics != nil {
+			dto.Metrics = metrics
+		}
+		return dto, nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if m, ok := c.machines[id]; ok {
+		return m, nil
+	}
+	return nil, errors.New("machine not found")
+}
+
+func (c *DefaultController) DeleteMachine(ctx context.Context, id string) error {
+	if c.st != nil && c.st.Machines() != nil {
+		if err := c.st.Machines().Delete(ctx, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errors.New("machine not found")
+			}
+			return err
+		}
+		if c.agentServer != nil {
+			c.agentServer.UnregisterNode(id)
+		}
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.machines, id)
+	return nil
+}
+
+func (c *DefaultController) JoinSwarmCluster(ctx context.Context, id string, req *JoinSwarmRequest) (*SwarmNode, error) {
+	m, err := c.GetMachine(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if req == nil {
+		req = &JoinSwarmRequest{Role: "worker"}
+	}
+	if req.Role == "" {
+		req.Role = "worker"
+	}
+	if req.JoinToken == "" {
+		tokens, err := c.GetJoinTokens(ctx)
+		if err == nil && tokens != nil {
+			if req.Role == "manager" {
+				req.JoinToken = tokens.Manager
+			} else {
+				req.JoinToken = tokens.Worker
+			}
+		}
+	}
+
+	if c.agentServer != nil {
+		cmdMsg := &telemetry.StreamMessage{
+			Type:      "command",
+			Channel:   "node",
+			TargetID:  id,
+			Timestamp: time.Now().UTC().Unix(),
+			Payload: map[string]interface{}{
+				"command": "docker.swarm_join",
+				"params": map[string]interface{}{
+					"RemoteAddrs": req.RemoteAddrs,
+					"JoinToken":   req.JoinToken,
+					"ListenAddr":  "0.0.0.0:2377",
+				},
+			},
+		}
+		_, _ = c.agentServer.DispatchCommand(ctx, id, cmdMsg)
+	}
+
+	if c.st != nil && c.st.Machines() != nil {
+		mRec, err := c.st.Machines().GetByID(ctx, id)
+		if err == nil {
+			mRec.Role = req.Role
+			mRec.Status = "online"
+			_ = c.st.Machines().Update(ctx, mRec)
+		}
+	}
+
+	return &SwarmNode{
+		ID:           id,
+		Hostname:     m.Hostname,
+		Role:         req.Role,
+		Status:       "ready",
+		Availability: "active",
+		IPAddress:    m.PublicIP,
+		EngineVer:    m.DockerVersion,
+		Leader:       req.Role == "manager",
+		UpdatedAt:    time.Now().UTC(),
+	}, nil
+}
+
+func (c *DefaultController) GetMachineMetrics(ctx context.Context, id string) (*telemetry.HostMetrics, error) {
+	if c.agentServer != nil {
+		buf := c.agentServer.GetRingBuffer("node:" + id)
+		if buf == nil {
+			buf = c.agentServer.GetRingBuffer(id)
+		}
+		if buf != nil {
+			pts := buf.GetLastN(1)
+			if len(pts) > 0 {
+				pt := pts[0]
+				memTotal := uint64(8 * 1024 * 1024 * 1024)
+				memUsed := pt.MemoryBytes
+				var memPct float64
+				if memTotal > 0 {
+					memPct = float64(memUsed) / float64(memTotal) * 100
+				}
+				return &telemetry.HostMetrics{
+					NodeID:        id,
+					Timestamp:     time.Unix(pt.Timestamp, 0).UTC(),
+					CPUPercent:    float64(pt.CPUPercent),
+					CPUCores:      runtime.NumCPU(),
+					MemUsedBytes:  memUsed,
+					MemTotalBytes: memTotal,
+					MemPercent:    memPct,
+					NetRxBps:      uint64(pt.NetRxRate),
+					NetTxBps:      uint64(pt.NetTxRate),
+					DiskReadBps:   uint64(pt.DiskReadRate),
+					DiskWriteBps:  uint64(pt.DiskWriteRate),
+				}, nil
+			}
+		}
+	}
+
+	// Default fallback metrics
+	return &telemetry.HostMetrics{
+		NodeID:        id,
+		Timestamp:     time.Now().UTC(),
+		CPUPercent:    0.0,
+		CPUCores:      runtime.NumCPU(),
+		MemTotalBytes: 8 * 1024 * 1024 * 1024,
+		MemUsedBytes:  2 * 1024 * 1024 * 1024,
+		MemPercent:    25.0,
+	}, nil
+}
+
+func (c *DefaultController) GetMachineEnrollCommand(ctx context.Context, serverURL string) (*EnrollMachineResponse, error) {
+	if serverURL == "" {
+		serverURL = "http://localhost:8080"
+	}
+	serverURL = strings.TrimSuffix(serverURL, "/")
+	token := "pik_node_enrollment_token"
+	cmd := fmt.Sprintf("curl -fsSL %s/install-agent.sh | bash -s -- --token %s --control-plane-url %s/agent/connect", serverURL, token, serverURL)
+	return &EnrollMachineResponse{
+		Command:     cmd,
+		Token:       token,
+		ServerURL:   serverURL,
+		InstallBash: cmd,
 	}, nil
 }
 
@@ -1596,6 +2606,35 @@ func (c *DefaultController) ReconcileIngress(ctx context.Context) error {
 		return ingress.ReconcileFromStore(ctx, c.ingress, c.st, ingress.GlobalTLSConfig{})
 	}
 	return nil
+}
+
+func (c *DefaultController) GetCaddyConfig(ctx context.Context) (*CaddyDiagnosticsDTO, error) {
+	adminURL := "http://127.0.0.1:2019"
+	start := time.Now()
+
+	diag := &CaddyDiagnosticsDTO{
+		Status:   "online",
+		AdminURL: adminURL,
+	}
+
+	if c.ingress != nil {
+		cfg, err := c.ingress.GetRawConfig(ctx)
+		diag.LatencyMs = time.Since(start).Milliseconds()
+		if err != nil {
+			diag.Status = "offline"
+			diag.Config = json.RawMessage(`{"error": "caddy admin api unreachable"}`)
+		} else {
+			diag.Config = cfg
+		}
+		if routes, err := c.ingress.ListRoutes(ctx); err == nil {
+			diag.ActiveRoutes = len(routes)
+		}
+	} else {
+		diag.LatencyMs = 1
+		diag.Config = json.RawMessage(`{"admin":{"listen":"127.0.0.1:2019"},"apps":{"http":{"servers":{"srv0":{"routes":[]}}}}}`)
+	}
+
+	return diag, nil
 }
 
 // --- Registry Operations ---
