@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/backup"
+	"github.com/fusuycorp/pikpik/pkg/backup/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -380,4 +383,79 @@ func TestMultiDB_CustomS3ClientResolution(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rawDump, runner.capturedIn)
 }
+
+type multiDBBlockingRunner struct {
+	onExec func(ctx context.Context)
+}
+
+func (m *multiDBBlockingRunner) ExecStreamStdout(ctx context.Context, containerID string, cmd []string, env []string, stdout io.Writer) (int, error) {
+	if m.onExec != nil {
+		m.onExec(ctx)
+	}
+	return 0, ctx.Err()
+}
+
+func (m *multiDBBlockingRunner) ExecStreamStdin(ctx context.Context, containerID string, cmd []string, env []string, stdin io.Reader) (int, error) {
+	return 0, nil
+}
+
+type mockFailingS3Client struct {
+	errToReturn error
+}
+
+func (m *mockFailingS3Client) UploadStreamMultipart(ctx context.Context, key string, reader io.Reader, opts s3.UploadOptions) (*s3.ObjectInfo, error) {
+	return nil, m.errToReturn
+}
+
+func (m *mockFailingS3Client) DownloadStream(ctx context.Context, key string) (io.ReadCloser, *s3.ObjectInfo, error) {
+	return nil, nil, m.errToReturn
+}
+
+func (m *mockFailingS3Client) ListObjects(ctx context.Context, prefix string) ([]s3.ObjectInfo, error) {
+	return nil, m.errToReturn
+}
+
+func (m *mockFailingS3Client) DeleteObjects(ctx context.Context, keys []string) error {
+	return m.errToReturn
+}
+
+func (m *mockFailingS3Client) PruneRetention(ctx context.Context, prefix string, policy s3.RetentionPolicy) ([]string, error) {
+	return nil, m.errToReturn
+}
+
+func (m *mockFailingS3Client) PruneStaleMultipartUploads(ctx context.Context, maxAge time.Duration) ([]string, error) {
+	return nil, m.errToReturn
+}
+
+func TestMultiDB_UploadFailureCancelsExecContextAndClosesPipe(t *testing.T) {
+	ctx := context.Background()
+
+	var execContextCancelled bool
+	var execFinished bool
+	runner := &multiDBBlockingRunner{
+		onExec: func(execCtx context.Context) {
+			// Blocks until context cancelled
+			<-execCtx.Done()
+			execContextCancelled = true
+			execFinished = true
+		},
+	}
+
+	failingS3 := &mockFailingS3Client{errToReturn: errors.New("simulated S3 500 error")}
+
+	_, err := backup.ExecuteMultiDBBackup(ctx, runner, failingS3, backup.BackupJobConfig{
+		BackupID:     "bk_fail_test",
+		ProjectSlug:  "test-proj",
+		ServiceSlug:  "db",
+		ContainerID:  "cnt_fail",
+		Engine:       backup.EnginePostgres17,
+		DatabaseName: "fail_db",
+	})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, backup.ErrS3UploadAborted) || errors.Is(err, backup.ErrStreamingPipeFailed))
+	assert.True(t, execContextCancelled, "execCtx should have been cancelled when upload failed")
+	assert.True(t, execFinished, "exec runner should terminate promptly without hanging")
+}
+
 

@@ -3,12 +3,14 @@ package backup_test
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/backup"
+	"github.com/fusuycorp/pikpik/pkg/backup/s3"
 	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/stretchr/testify/assert"
@@ -447,4 +449,57 @@ func TestCronScheduler_PerScheduleS3CredentialsAndVault(t *testing.T) {
 	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", mockEngine.lastJobCfg.S3SecretKey)
 	assert.NotNil(t, mockEngine.lastJobCfg.S3Client)
 }
+
+type mockSchedulerS3Client struct {
+	mu           sync.Mutex
+	prunedCount  int
+	prunedMaxAge time.Duration
+}
+
+func (m *mockSchedulerS3Client) UploadStreamMultipart(ctx context.Context, key string, reader io.Reader, opts s3.UploadOptions) (*s3.ObjectInfo, error) {
+	return nil, nil
+}
+func (m *mockSchedulerS3Client) DownloadStream(ctx context.Context, key string) (io.ReadCloser, *s3.ObjectInfo, error) {
+	return nil, nil, nil
+}
+func (m *mockSchedulerS3Client) ListObjects(ctx context.Context, prefix string) ([]s3.ObjectInfo, error) {
+	return nil, nil
+}
+func (m *mockSchedulerS3Client) DeleteObjects(ctx context.Context, keys []string) error {
+	return nil
+}
+func (m *mockSchedulerS3Client) PruneRetention(ctx context.Context, prefix string, policy s3.RetentionPolicy) ([]string, error) {
+	return nil, nil
+}
+func (m *mockSchedulerS3Client) PruneStaleMultipartUploads(ctx context.Context, maxAge time.Duration) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prunedCount++
+	m.prunedMaxAge = maxAge
+	return []string{"pruned-1"}, nil
+}
+
+func TestCronScheduler_BootTimePruneStaleMultipartUploads(t *testing.T) {
+	st := newSchedulerTestStore(t)
+	mockEngine := &mockSchedulerBackupEngine{}
+	mockS3 := &mockSchedulerS3Client{}
+
+	scheduler := backup.NewCronScheduler(st, mockEngine, mockS3, backup.CronSchedulerConfig{
+		PollInterval: 10 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := scheduler.Start(ctx)
+	require.NoError(t, err)
+	defer scheduler.Stop()
+
+	require.Eventually(t, func() bool {
+		mockS3.mu.Lock()
+		defer mockS3.mu.Unlock()
+		return mockS3.prunedCount >= 1 && mockS3.prunedMaxAge == 24*time.Hour
+	}, 1*time.Second, 10*time.Millisecond)
+}
+
 

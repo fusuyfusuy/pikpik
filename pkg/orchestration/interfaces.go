@@ -61,6 +61,8 @@ type StackManager interface {
 	RemoveStack(ctx context.Context, stackName string) error
 	InspectStack(ctx context.Context, stackName string) (*StackStatus, error)
 	ListStacks(ctx context.Context) ([]StackSummary, error)
+	StopStack(ctx context.Context, stackName string) error
+	RestartStack(ctx context.Context, stackName string) error
 }
 
 // LogStreamer streams demultiplexed stdout/stderr from containers and swarm tasks.

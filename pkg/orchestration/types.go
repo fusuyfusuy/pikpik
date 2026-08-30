@@ -260,6 +260,36 @@ type ClusterInfo struct {
 	Workers    int              `json:"workers"`
 }
 
+// ComposeVariableDef describes a variable placeholder detected in a Compose file.
+type ComposeVariableDef struct {
+	Name         string `json:"name"`
+	DefaultValue string `json:"defaultValue,omitempty"`
+	IsSecret     bool   `json:"isSecret"`
+	Required     bool   `json:"required"`
+}
+
+// ComposeServiceInspection describes a service parsed from a Compose file.
+type ComposeServiceInspection struct {
+	Name            string            `json:"name"`
+	Image           string            `json:"image"`
+	Ports           []PortMappingSpec `json:"ports,omitempty"`
+	Volumes         []string          `json:"volumes,omitempty"`
+	Networks        []string          `json:"networks,omitempty"`
+	EnvironmentKeys []string          `json:"environmentKeys,omitempty"`
+	HasDeployBlock  bool              `json:"hasDeployBlock"`
+	Replicas        int               `json:"replicas"`
+}
+
+// ComposeInspectionResult provides detailed AST inspection of a Compose or Stack blueprint.
+type ComposeInspectionResult struct {
+	Services         []ComposeServiceInspection `json:"services"`
+	Variables        []ComposeVariableDef       `json:"variables"`
+	ExposedPorts     []uint32                   `json:"exposedPorts"`
+	DeclaredVolumes  []string                   `json:"declaredVolumes"`
+	DeclaredNetworks []string                   `json:"declaredNetworks"`
+	SuggestedRuntime string                     `json:"suggestedRuntime"` // "swarm" or "standalone"
+}
+
 // ComposeServiceDef defines an individual service within a Compose stack.
 type ComposeServiceDef struct {
 	Name        string               `json:"name"`

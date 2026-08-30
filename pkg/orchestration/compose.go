@@ -105,6 +105,12 @@ type rawComposeFile struct {
 	Volumes  map[string]map[string]interface{} `yaml:"volumes"`
 }
 
+type rawComposeDeploy struct {
+	Replicas  int                    `yaml:"replicas"`
+	Placement map[string]interface{} `yaml:"placement"`
+	Resources map[string]interface{} `yaml:"resources"`
+}
+
 type rawComposeService struct {
 	Image       string                 `yaml:"image"`
 	Build       interface{}            `yaml:"build"`
@@ -117,6 +123,7 @@ type rawComposeService struct {
 	Networks    interface{}            `yaml:"networks"`
 	Restart     string                 `yaml:"restart"`
 	Labels      interface{}            `yaml:"labels"`
+	Deploy      *rawComposeDeploy      `yaml:"deploy"`
 	HealthCheck *rawComposeHealthCheck `yaml:"healthcheck"`
 }
 
@@ -126,6 +133,170 @@ type rawComposeHealthCheck struct {
 	Timeout     time.Duration `yaml:"timeout"`
 	StartPeriod time.Duration `yaml:"start_period"`
 	Retries     int           `yaml:"retries"`
+}
+
+// InspectComposeYAML parses and analyzes raw Compose / Stack YAML to extract services, ports, volumes, and variable schemas.
+func InspectComposeYAML(rawYAML string) (*ComposeInspectionResult, error) {
+	var raw rawComposeFile
+	if err := yaml.Unmarshal([]byte(rawYAML), &raw); err != nil {
+		return nil, fmt.Errorf("invalid compose YAML: %w", err)
+	}
+
+	result := &ComposeInspectionResult{
+		Services:         make([]ComposeServiceInspection, 0),
+		Variables:        make([]ComposeVariableDef, 0),
+		ExposedPorts:     make([]uint32, 0),
+		DeclaredVolumes:  make([]string, 0),
+		DeclaredNetworks: make([]string, 0),
+		SuggestedRuntime: "standalone",
+	}
+
+	for netName := range raw.Networks {
+		result.DeclaredNetworks = append(result.DeclaredNetworks, netName)
+	}
+	sort.Strings(result.DeclaredNetworks)
+
+	for volName := range raw.Volumes {
+		result.DeclaredVolumes = append(result.DeclaredVolumes, volName)
+	}
+	sort.Strings(result.DeclaredVolumes)
+
+	// Extract variables using regex on raw YAML
+	varMap := make(map[string]ComposeVariableDef)
+	matches := envVarRegex.FindAllStringSubmatch(rawYAML, -1)
+	for _, m := range matches {
+		varName := ""
+		defaultVal := ""
+		if m[1] != "" {
+			varName = m[1]
+			defaultVal = m[2]
+		} else if m[3] != "" {
+			varName = m[3]
+		}
+		if varName == "" {
+			continue
+		}
+		upper := strings.ToUpper(varName)
+		isSecret := strings.Contains(upper, "PASS") || strings.Contains(upper, "SECRET") ||
+			strings.Contains(upper, "KEY") || strings.Contains(upper, "TOKEN") ||
+			strings.Contains(upper, "AUTH") || strings.Contains(upper, "CREDENTIAL")
+
+		if _, exists := varMap[varName]; !exists {
+			varMap[varName] = ComposeVariableDef{
+				Name:         varName,
+				DefaultValue: defaultVal,
+				IsSecret:     isSecret,
+				Required:     defaultVal == "",
+			}
+		}
+	}
+
+	varKeys := make([]string, 0, len(varMap))
+	for k := range varMap {
+		varKeys = append(varKeys, k)
+	}
+	sort.Strings(varKeys)
+	for _, k := range varKeys {
+		result.Variables = append(result.Variables, varMap[k])
+	}
+
+	portSet := make(map[uint32]bool)
+
+	// Inspect services
+	for name, s := range raw.Services {
+		svcInsp := ComposeServiceInspection{
+			Name:            name,
+			Image:           s.Image,
+			Ports:           make([]PortMappingSpec, 0),
+			Volumes:         make([]string, 0),
+			Networks:        make([]string, 0),
+			EnvironmentKeys: make([]string, 0),
+			Replicas:        1,
+		}
+
+		if s.Deploy != nil {
+			svcInsp.HasDeployBlock = true
+			if s.Deploy.Replicas > 0 {
+				svcInsp.Replicas = s.Deploy.Replicas
+			}
+			result.SuggestedRuntime = "swarm"
+		}
+
+		// Parse ports
+		for _, item := range s.Ports {
+			if str, ok := item.(string); ok {
+				parts := strings.Split(str, "/")
+				proto := "tcp"
+				if len(parts) == 2 {
+					proto = parts[1]
+				}
+				portMappings := strings.Split(parts[0], ":")
+				if len(portMappings) == 2 {
+					hostP, _ := strconv.ParseUint(portMappings[0], 10, 32)
+					contP, _ := strconv.ParseUint(portMappings[1], 10, 32)
+					svcInsp.Ports = append(svcInsp.Ports, PortMappingSpec{
+						HostPort:      uint32(hostP),
+						ContainerPort: uint32(contP),
+						Protocol:      proto,
+					})
+					if contP > 0 {
+						portSet[uint32(contP)] = true
+					}
+				} else if len(portMappings) == 1 {
+					contP, _ := strconv.ParseUint(portMappings[0], 10, 32)
+					svcInsp.Ports = append(svcInsp.Ports, PortMappingSpec{
+						ContainerPort: uint32(contP),
+						Protocol:      proto,
+					})
+					if contP > 0 {
+						portSet[uint32(contP)] = true
+					}
+				}
+			}
+		}
+
+		// Parse volumes
+		for _, item := range s.Volumes {
+			if str, ok := item.(string); ok {
+				parts := strings.Split(str, ":")
+				if len(parts) >= 2 {
+					svcInsp.Volumes = append(svcInsp.Volumes, parts[1])
+				}
+			}
+		}
+
+		// Parse environment keys
+		switch env := s.Environment.(type) {
+		case map[string]interface{}:
+			for k := range env {
+				svcInsp.EnvironmentKeys = append(svcInsp.EnvironmentKeys, k)
+			}
+		case []interface{}:
+			for _, item := range env {
+				if str, ok := item.(string); ok {
+					parts := strings.SplitN(str, "=", 2)
+					svcInsp.EnvironmentKeys = append(svcInsp.EnvironmentKeys, parts[0])
+				}
+			}
+		}
+		sort.Strings(svcInsp.EnvironmentKeys)
+
+		result.Services = append(result.Services, svcInsp)
+	}
+
+	// Sort services by name
+	sort.Slice(result.Services, func(i, j int) bool {
+		return result.Services[i].Name < result.Services[j].Name
+	})
+
+	for p := range portSet {
+		result.ExposedPorts = append(result.ExposedPorts, p)
+	}
+	sort.Slice(result.ExposedPorts, func(i, j int) bool {
+		return result.ExposedPorts[i] < result.ExposedPorts[j]
+	})
+
+	return result, nil
 }
 
 // ParseComposeYAML parses and converts raw Compose YAML into a domain ComposeStackSpec.
@@ -362,8 +533,26 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 	createdVols := make([]string, 0)
 	deployedContainers := make([]string, 0)
 
+	type rollbackItem struct {
+		newContainerID string
+		oldContainerID string
+		wasOldRunning  bool
+	}
+	var deployedActions []rollbackItem
+
 	rollback := func(deployErr error) (*StackDeploymentResult, error) {
-		// Teardown all containers created during this deployment
+		// Teardown all new containers created during this deployment
+		for i := len(deployedActions) - 1; i >= 0; i-- {
+			item := deployedActions[i]
+			if item.newContainerID != "" {
+				_ = m.containers.Stop(context.Background(), item.newContainerID, 5*time.Second)
+				_ = m.containers.Remove(context.Background(), item.newContainerID, true, true)
+			}
+			if item.oldContainerID != "" && item.wasOldRunning {
+				_ = m.containers.Start(context.Background(), item.oldContainerID)
+			}
+		}
+		// Clean any extra container IDs
 		for _, cid := range deployedContainers {
 			_ = m.containers.Stop(context.Background(), cid, 5*time.Second)
 			_ = m.containers.Remove(context.Background(), cid, true, true)
@@ -380,39 +569,90 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 		return result, deployErr
 	}
 
-	// 1. Reconcile Networks
-	for _, netName := range spec.Networks {
-		fullNetName := fmt.Sprintf("%s_%s", spec.Name, netName)
-		_, err := m.cli.NetworkCreate(ctx, fullNetName, types.NetworkCreate{
+	// 1. Reconcile Networks (Dual-tier: Stack-Isolated + Optional Project-Mesh)
+	netNameMap := make(map[string]string)
+	if len(spec.Networks) == 0 {
+		defaultNetName := fmt.Sprintf("%s_default", spec.Name)
+		if spec.ProjectID != "" {
+			defaultNetName = fmt.Sprintf("pikpik_net_stack_%s", spec.Name)
+		}
+		_, err := m.cli.NetworkCreate(ctx, defaultNetName, types.NetworkCreate{
 			Driver: "bridge",
 			Labels: map[string]string{
-				"pikpik.stack_name": spec.Name,
-				"pikpik.project_id": spec.ProjectID,
-				"pikpik.managed":    "true",
+				"pikpik.stack_name":    spec.Name,
+				"pikpik.project_id":    spec.ProjectID,
+				"pikpik.managed":       "true",
+				"pikpik.network_scope": "stack",
 			},
 		})
-		if err != nil {
-			return rollback(fmt.Errorf("failed to create network '%s': %w", fullNetName, err))
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			return rollback(fmt.Errorf("failed to create network '%s': %w", defaultNetName, err))
 		}
-		createdNets = append(createdNets, fullNetName)
+		if err == nil {
+			createdNets = append(createdNets, defaultNetName)
+		}
+		netNameMap["default"] = defaultNetName
+	} else {
+		for _, netName := range spec.Networks {
+			fullNetName := fmt.Sprintf("%s_%s", spec.Name, netName)
+			_, err := m.cli.NetworkCreate(ctx, fullNetName, types.NetworkCreate{
+				Driver: "bridge",
+				Labels: map[string]string{
+					"pikpik.stack_name":    spec.Name,
+					"pikpik.project_id":    spec.ProjectID,
+					"pikpik.managed":       "true",
+					"pikpik.network_scope": "stack",
+				},
+			})
+			if err != nil && !strings.Contains(err.Error(), "already exists") {
+				return rollback(fmt.Errorf("failed to create network '%s': %w", fullNetName, err))
+			}
+			if err == nil {
+				createdNets = append(createdNets, fullNetName)
+			}
+			netNameMap[netName] = fullNetName
+		}
 	}
+
 	result.CreatedNetworks = createdNets
 
-	// 2. Reconcile Volumes
+	// Project mesh network (shared across project services)
+	var projMeshNet string
+	if spec.ProjectID != "" {
+		projMeshNet = fmt.Sprintf("pikpik_net_proj_%s", spec.ProjectID)
+		_, _ = m.cli.NetworkCreate(ctx, projMeshNet, types.NetworkCreate{
+			Driver: "bridge",
+			Labels: map[string]string{
+				"pikpik.project_id":    spec.ProjectID,
+				"pikpik.managed":       "true",
+				"pikpik.network_scope": "project",
+			},
+		})
+	}
+
+	// 2. Reconcile Volumes (Persistent Scoped)
+	volNameMap := make(map[string]string)
 	for _, volName := range spec.Volumes {
 		fullVolName := fmt.Sprintf("%s_%s", spec.Name, volName)
+		if spec.ProjectID != "" {
+			fullVolName = fmt.Sprintf("pikpik_vol_%s_%s_%s", spec.ProjectID, spec.Name, volName)
+		}
 		_, err := m.cli.VolumeCreate(ctx, volume.CreateOptions{
 			Name: fullVolName,
 			Labels: map[string]string{
-				"pikpik.stack_name": spec.Name,
-				"pikpik.project_id": spec.ProjectID,
-				"pikpik.managed":    "true",
+				"pikpik.stack_name":  spec.Name,
+				"pikpik.project_id":  spec.ProjectID,
+				"pikpik.managed":     "true",
+				"pikpik.volume_name": volName,
 			},
 		})
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
 			return rollback(fmt.Errorf("failed to create volume '%s': %w", fullVolName, err))
 		}
-		createdVols = append(createdVols, fullVolName)
+		if err == nil {
+			createdVols = append(createdVols, fullVolName)
+		}
+		volNameMap[volName] = fullVolName
 	}
 	result.CreatedVolumes = createdVols
 
@@ -422,8 +662,7 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 		return rollback(err)
 	}
 
-	// 4. Sequentially Deploy Services with Rollback Guard
-
+	// 4. Sequentially Deploy Services with In-Place Rolling Update & Rollback Guard
 	for _, svcName := range order {
 		svcDef := spec.Services[svcName]
 
@@ -431,19 +670,44 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 		var svcNetworks []string
 		if len(svcDef.Networks) > 0 {
 			for _, n := range svcDef.Networks {
-				svcNetworks = append(svcNetworks, fmt.Sprintf("%s_%s", spec.Name, n))
+				if mapped, ok := netNameMap[n]; ok {
+					svcNetworks = append(svcNetworks, mapped)
+				} else {
+					svcNetworks = append(svcNetworks, fmt.Sprintf("%s_%s", spec.Name, n))
+				}
 			}
-		} else if len(spec.Networks) > 0 {
-			// Connect to first declared stack network by default
-			svcNetworks = append(svcNetworks, fmt.Sprintf("%s_%s", spec.Name, spec.Networks[0]))
+		} else if len(netNameMap) > 0 {
+			for _, mapped := range netNameMap {
+				svcNetworks = append(svcNetworks, mapped)
+				break
+			}
 		}
 
-		// Resolve volume names with stack prefix
+		if projMeshNet != "" {
+			hasProjNet := false
+			for _, n := range svcNetworks {
+				if n == projMeshNet {
+					hasProjNet = true
+					break
+				}
+			}
+			if !hasProjNet {
+				svcNetworks = append(svcNetworks, projMeshNet)
+			}
+		}
+
+		// Resolve volume names with scoped prefix
 		var svcMounts []VolumeMountSpec
 		for _, mnt := range svcDef.Mounts {
 			targetSource := mnt.Source
 			if mnt.Type == "volume" {
-				targetSource = fmt.Sprintf("%s_%s", spec.Name, mnt.Source)
+				if mapped, ok := volNameMap[mnt.Source]; ok {
+					targetSource = mapped
+				} else if spec.ProjectID != "" {
+					targetSource = fmt.Sprintf("pikpik_vol_%s_%s_%s", spec.ProjectID, spec.Name, mnt.Source)
+				} else {
+					targetSource = fmt.Sprintf("%s_%s", spec.Name, mnt.Source)
+				}
 			}
 			svcMounts = append(svcMounts, VolumeMountSpec{
 				Type:     mnt.Type,
@@ -472,8 +736,26 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 			envMap[k] = v
 		}
 
+		// Check for existing containers for in-place rolling update
+		existingList, _ := m.containers.List(ctx, ListOptions{
+			Labels: map[string]string{
+				"pikpik.stack_name":   spec.Name,
+				"pikpik.service_name": svcName,
+			},
+			All: true,
+		})
+
+		var oldContainerID string
+		wasOldRunning := false
+		containerName := fmt.Sprintf("%s_%s", spec.Name, svcName)
+		if len(existingList) > 0 {
+			oldContainerID = existingList[0].ID
+			wasOldRunning = existingList[0].State == "running"
+			containerName = fmt.Sprintf("%s_%s_%d", spec.Name, svcName, time.Now().UnixNano())
+		}
+
 		containerSpec := ContainerSpec{
-			Name:          fmt.Sprintf("%s_%s", spec.Name, svcName),
+			Name:          containerName,
 			ProjectID:     spec.ProjectID,
 			Image:         svcDef.Image,
 			Environment:   envMap,
@@ -493,6 +775,11 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 			return rollback(fmt.Errorf("failed to create service container '%s': %w", svcName, err))
 		}
 		deployedContainers = append(deployedContainers, cid)
+		deployedActions = append(deployedActions, rollbackItem{
+			newContainerID: cid,
+			oldContainerID: oldContainerID,
+			wasOldRunning:  wasOldRunning,
+		})
 
 		if err := m.containers.Start(ctx, cid); err != nil {
 			return rollback(fmt.Errorf("failed to start service container '%s': %w", svcName, err))
@@ -531,10 +818,58 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 			probeCancel()
 		}
 
+		// If rolling update was successful, retire old container
+		if oldContainerID != "" {
+			_ = m.containers.Stop(ctx, oldContainerID, 5*time.Second)
+			_ = m.containers.Remove(ctx, oldContainerID, true, true)
+		}
+
 		result.ServicesDeployed = append(result.ServicesDeployed, svcName)
 	}
 
 	return result, nil
+}
+
+// StopStack stops all running containers belonging to the specified stack.
+func (m *DockerStackManager) StopStack(ctx context.Context, stackName string) error {
+	if stackName == "" {
+		return ErrStackNotFound
+	}
+	containers, err := m.containers.List(ctx, ListOptions{
+		Labels: map[string]string{"pikpik.stack_name": stackName},
+		All:    true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list stack containers: %w", err)
+	}
+	if len(containers) == 0 {
+		return ErrStackNotFound
+	}
+	for _, c := range containers {
+		_ = m.containers.Stop(ctx, c.ID, 5*time.Second)
+	}
+	return nil
+}
+
+// RestartStack restarts all containers belonging to the specified stack.
+func (m *DockerStackManager) RestartStack(ctx context.Context, stackName string) error {
+	if stackName == "" {
+		return ErrStackNotFound
+	}
+	containers, err := m.containers.List(ctx, ListOptions{
+		Labels: map[string]string{"pikpik.stack_name": stackName},
+		All:    true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list stack containers: %w", err)
+	}
+	if len(containers) == 0 {
+		return ErrStackNotFound
+	}
+	for _, c := range containers {
+		_ = m.containers.Restart(ctx, c.ID, 5*time.Second)
+	}
+	return nil
 }
 
 // RemoveStack stops and tears down all containers, networks, and resources associated with a stack.
@@ -566,6 +901,7 @@ func (m *DockerStackManager) RemoveStack(ctx context.Context, stackName string) 
 
 	return nil
 }
+
 
 // InspectStack queries the current runtime status and active containers of a stack.
 func (m *DockerStackManager) InspectStack(ctx context.Context, stackName string) (*StackStatus, error) {

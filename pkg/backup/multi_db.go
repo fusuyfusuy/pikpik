@@ -264,6 +264,11 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 
 	// 3. Pipe & Stream Setup
 	pipeReader, pipeWriter := io.Pipe()
+	defer pipeReader.Close()
+
+	execCtx, execCancel := context.WithCancel(ctx)
+	defer execCancel()
+
 	uncompressedCounter := &countingWriter{w: io.Discard}
 	var execExitCode int
 	var execErr error
@@ -285,7 +290,7 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 			execWriter = io.MultiWriter(uncompressedCounter, gw)
 		}
 
-		exitCode, runErr := exec.ExecStreamStdout(ctx, cfg.ContainerID, cmd, env, execWriter)
+		exitCode, runErr := exec.ExecStreamStdout(execCtx, cfg.ContainerID, cmd, env, execWriter)
 		execExitCode = exitCode
 		execErr = runErr
 
@@ -318,6 +323,10 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 	}
 
 	objInfo, uploadErr := targetS3.UploadStreamMultipart(ctx, s3Key, pipeReader, uploadOpts)
+	if uploadErr != nil {
+		execCancel()
+		_ = pipeReader.CloseWithError(uploadErr)
+	}
 	<-execDone
 
 	if execErr != nil {

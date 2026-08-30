@@ -354,3 +354,214 @@ func TestStackManager_RollbackAndErrorPropagation(t *testing.T) {
 		}
 	})
 }
+
+// TestInspectComposeYAML verifies YAML AST inspection, variable extraction, and Swarm suggestion.
+func TestInspectComposeYAML(t *testing.T) {
+	rawYAML := `version: '3.8'
+services:
+  web:
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
+    environment:
+      - API_KEY=${APP_API_KEY}
+      - DB_URL=postgres://${DB_USER:-admin}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-prod}
+    volumes:
+      - ./data:/app/data
+    deploy:
+      replicas: 3
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432"
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+networks:
+  backend:
+`
+
+	result, err := orchestration.InspectComposeYAML(rawYAML)
+	if err != nil {
+		t.Fatalf("InspectComposeYAML failed: %v", err)
+	}
+
+	if len(result.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(result.Services))
+	}
+	if result.SuggestedRuntime != "swarm" {
+		t.Errorf("expected suggested runtime 'swarm' due to deploy.replicas=3, got '%s'", result.SuggestedRuntime)
+	}
+
+	// Verify Services
+	if result.Services[0].Name != "postgres" || result.Services[1].Name != "web" {
+		t.Errorf("expected sorted services [postgres, web], got [%s, %s]", result.Services[0].Name, result.Services[1].Name)
+	}
+	if !result.Services[1].HasDeployBlock || result.Services[1].Replicas != 3 {
+		t.Errorf("expected web service to have deploy block with 3 replicas")
+	}
+
+	// Verify Exposed Ports
+	if len(result.ExposedPorts) != 2 {
+		t.Fatalf("expected 2 exposed ports, got %v", result.ExposedPorts)
+	}
+	if result.ExposedPorts[0] != 3000 || result.ExposedPorts[1] != 5432 {
+		t.Errorf("expected exposed ports [3000, 5432], got %v", result.ExposedPorts)
+	}
+
+	// Verify Declared Volumes & Networks
+	if len(result.DeclaredVolumes) < 1 || result.DeclaredVolumes[0] != "pgdata" {
+		t.Errorf("expected declared volume 'pgdata', got %v", result.DeclaredVolumes)
+	}
+	if len(result.DeclaredNetworks) < 1 || result.DeclaredNetworks[0] != "backend" {
+		t.Errorf("expected declared network 'backend', got %v", result.DeclaredNetworks)
+	}
+
+	// Verify Extracted Variables
+	// Expected variables: APP_API_KEY (secret, required), DB_USER (default: admin), DB_PASSWORD (secret, required), DB_NAME (default: prod)
+	varNames := make(map[string]orchestration.ComposeVariableDef)
+	for _, v := range result.Variables {
+		varNames[v.Name] = v
+	}
+
+	if v, ok := varNames["APP_API_KEY"]; !ok || !v.IsSecret || !v.Required {
+		t.Errorf("expected APP_API_KEY to be secret and required: %+v", v)
+	}
+	if v, ok := varNames["DB_USER"]; !ok || v.DefaultValue != "admin" || v.Required {
+		t.Errorf("expected DB_USER with default 'admin' and not required: %+v", v)
+	}
+	if v, ok := varNames["DB_PASSWORD"]; !ok || !v.IsSecret || !v.Required {
+		t.Errorf("expected DB_PASSWORD to be secret and required: %+v", v)
+	}
+	if v, ok := varNames["DB_NAME"]; !ok || v.DefaultValue != "prod" || v.Required {
+		t.Errorf("expected DB_NAME with default 'prod' and not required: %+v", v)
+	}
+}
+
+func TestStackManager_StopAndRestart(t *testing.T) {
+	ctx := context.Background()
+	stoppedContainers := make([]string, 0)
+	restartedContainers := make([]string, 0)
+
+	mock := &MockDockerClient{
+		ContainerListFunc: func(ctx context.Context, options container.ListOptions) ([]types.Container, error) {
+			return []types.Container{
+				{
+					ID:    "c-1",
+					Names: []string{"/mystack_web"},
+					State: "running",
+					Labels: map[string]string{
+						"pikpik.stack_name": "mystack",
+					},
+				},
+				{
+					ID:    "c-2",
+					Names: []string{"/mystack_db"},
+					State: "running",
+					Labels: map[string]string{
+						"pikpik.stack_name": "mystack",
+					},
+				},
+			}, nil
+		},
+		ContainerStopFunc: func(ctx context.Context, containerID string, options container.StopOptions) error {
+			stoppedContainers = append(stoppedContainers, containerID)
+			return nil
+		},
+		ContainerRestartFunc: func(ctx context.Context, containerID string, options container.StopOptions) error {
+			restartedContainers = append(restartedContainers, containerID)
+			return nil
+		},
+	}
+
+	containers := orchestration.NewDockerContainerManager(mock)
+	stacks := orchestration.NewDockerStackManager(mock, containers)
+
+	if err := stacks.StopStack(ctx, "mystack"); err != nil {
+		t.Fatalf("StopStack error: %v", err)
+	}
+	if len(stoppedContainers) != 2 {
+		t.Errorf("expected 2 stopped containers, got %d", len(stoppedContainers))
+	}
+
+	if err := stacks.RestartStack(ctx, "mystack"); err != nil {
+		t.Fatalf("RestartStack error: %v", err)
+	}
+	if len(restartedContainers) != 2 {
+		t.Errorf("expected 2 restarted containers, got %d", len(restartedContainers))
+	}
+}
+
+func TestStackManager_DualNetworkingAndPersistentVolumes(t *testing.T) {
+	ctx := context.Background()
+	createdNets := make([]string, 0)
+	createdVols := make([]string, 0)
+	createdContainers := make([]string, 0)
+
+	mock := &MockDockerClient{
+		NetworkCreateFunc: func(ctx context.Context, name string, options types.NetworkCreate) (types.NetworkCreateResponse, error) {
+			createdNets = append(createdNets, name)
+			return types.NetworkCreateResponse{ID: "net-" + name}, nil
+		},
+		VolumeCreateFunc: func(ctx context.Context, options volume.CreateOptions) (volume.Volume, error) {
+			createdVols = append(createdVols, options.Name)
+			return volume.Volume{Name: options.Name}, nil
+		},
+		ContainerCreateFunc: func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error) {
+			createdContainers = append(createdContainers, containerName)
+			return container.CreateResponse{ID: "cid-" + containerName}, nil
+		},
+	}
+
+	containers := orchestration.NewDockerContainerManager(mock)
+	stacks := orchestration.NewDockerStackManager(mock, containers)
+
+	spec := orchestration.ComposeStackSpec{
+		Name:      "blog",
+		ProjectID: "prj-abc",
+		Networks:  []string{"webnet"},
+		Volumes:   []string{"dbdata"},
+		Services: map[string]orchestration.ComposeServiceDef{
+			"db": {
+				Name:  "db",
+				Image: "postgres:16",
+				Mounts: []orchestration.VolumeMountSpec{
+					{Type: "volume", Source: "dbdata", Target: "/var/lib/postgresql/data"},
+				},
+			},
+		},
+	}
+
+	res, err := stacks.DeployStack(ctx, spec)
+	if err != nil {
+		t.Fatalf("DeployStack failed: %v", err)
+	}
+
+	if len(res.ServicesDeployed) != 1 {
+		t.Errorf("expected 1 service deployed, got %d", len(res.ServicesDeployed))
+	}
+
+	// Check persistent volume scoping: pikpik_vol_<proj>_<stack>_<vol>
+	expectedVol := "pikpik_vol_prj-abc_blog_dbdata"
+	if len(createdVols) != 1 || createdVols[0] != expectedVol {
+		t.Errorf("expected scoped volume %s, got %v", expectedVol, createdVols)
+	}
+
+	// Check dual networking: stack network created, project mesh network created
+	expectedStackNet := "blog_webnet"
+	hasStackNet := false
+	for _, n := range createdNets {
+		if n == expectedStackNet {
+			hasStackNet = true
+		}
+	}
+	if !hasStackNet {
+		t.Errorf("expected stack network %s in %v", expectedStackNet, createdNets)
+	}
+}
+

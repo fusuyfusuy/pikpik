@@ -72,12 +72,14 @@ func (d *DefaultDeployer) Deploy(ctx context.Context, templateID string, req Dep
 		appName = fmt.Sprintf("%s-%s", tpl.ID, appID[len(appID)-6:])
 	}
 	projectID := req.ProjectID
-	if projectID == "" {
-		projectID = "default"
+	if projectID == "" || projectID == "default" {
+		projectID = "prj_default"
 	}
 	stageID := req.StageID
-	if stageID == "" {
-		stageID = "production"
+	if stageID == "" || stageID == "production" || stageID == "prod" {
+		stageID = "stg_default_prod"
+	} else if stageID == "staging" || stageID == "stg" {
+		stageID = "stg_default_staging"
 	}
 
 	// 1. Evaluate & Auto-Generate Variables
@@ -336,6 +338,7 @@ func (d *DefaultDeployer) ensureProjectAndStage(ctx context.Context, projectID, 
 			Name:        projectID,
 			Slug:        strings.ToLower(projectID),
 			Description: "Default project",
+			Tags:        []string{},
 			CreatedAt:   time.Now().UTC(),
 			UpdatedAt:   time.Now().UTC(),
 		})

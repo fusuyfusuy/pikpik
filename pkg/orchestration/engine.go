@@ -3,7 +3,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"strings"
 
 	"github.com/docker/docker/client"
 )
@@ -22,13 +22,12 @@ type EngineClient struct {
 func NewDockerEngineClient(ctx context.Context, socketPath string) (*EngineClient, error) {
 	if socketPath == "" {
 		socketPath = "unix:///var/run/docker.sock"
+	} else if !strings.Contains(socketPath, "://") {
+		socketPath = "unix://" + socketPath
 	}
 
 	cli, err := client.NewClientWithOpts(
 		client.WithHost(socketPath),
-		client.WithHTTPClient(&http.Client{
-			Timeout: 0,
-		}),
 		client.WithAPIVersionNegotiation(),
 	)
 	if err != nil {

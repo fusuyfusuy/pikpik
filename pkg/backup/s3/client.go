@@ -3,6 +3,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -163,6 +164,62 @@ type deleteObjectsPayload struct {
 
 type deleteKeyEntry struct {
 	Key string `xml:"Key"`
+}
+
+type listMultipartUploadsResult struct {
+	XMLName xml.Name          `xml:"ListMultipartUploadsResult"`
+	Bucket  string            `xml:"Bucket"`
+	Uploads []multipartUpload `xml:"Upload"`
+}
+
+type multipartUpload struct {
+	Key       string `xml:"Key"`
+	UploadID  string `xml:"UploadId"`
+	Initiated string `xml:"Initiated"`
+}
+
+func parseS3Time(s string) (time.Time, error) {
+	formats := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02T15:04:05Z",
+		time.RFC1123,
+		time.RFC1123Z,
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unable to parse s3 time %q", s)
+}
+
+func sleepWithJitter(ctx context.Context, attempt int) error {
+	baseDelays := []time.Duration{
+		200 * time.Millisecond,
+		500 * time.Millisecond,
+		1000 * time.Millisecond,
+	}
+	idx := attempt - 1
+	if idx < 0 {
+		idx = 0
+	} else if idx >= len(baseDelays) {
+		idx = len(baseDelays) - 1
+	}
+
+	base := baseDelays[idx]
+	var b [1]byte
+	_, _ = rand.Read(b[:])
+	jitter := time.Duration(int64(b[0]) % int64(base/4+1))
+	delay := base + jitter
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
 }
 
 // UploadStreamMultipart streams data from reader directly to S3 via concurrent multipart uploads.
@@ -370,27 +427,62 @@ func (c *DefaultS3Client) uploadPart(ctx context.Context, key, uploadID string, 
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, partURL.String(), bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
 	bodyHash := sha256Hex(data)
-	SignRequest(req, bodyHash, c.opts.AccessKeyID, c.opts.SecretAccessKey, c.opts.Region, time.Now())
+	const maxAttempts = 3
+	var lastErr error
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, partURL.String(), bytes.NewReader(data))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		SignRequest(req, bodyHash, c.opts.AccessKeyID, c.opts.SecretAccessKey, c.opts.Region, time.Now())
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxAttempts {
+				if sleepErr := sleepWithJitter(ctx, attempt); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
+			return "", fmt.Errorf("upload part %d failed: %w", partNumber, lastErr)
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			etag := resp.Header.Get("ETag")
+			_ = resp.Body.Close()
+			return etag, nil
+		}
+
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("upload part %d error HTTP %d: %s", partNumber, resp.StatusCode, string(body))
+		_ = resp.Body.Close()
+		lastErr = fmt.Errorf("upload part %d error HTTP %d: %s", partNumber, resp.StatusCode, string(body))
+
+		// Retry on 5xx server errors
+		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+			if attempt < maxAttempts {
+				if sleepErr := sleepWithJitter(ctx, attempt); sleepErr != nil {
+					return "", sleepErr
+				}
+				continue
+			}
+		}
+
+		// Non-retryable error (e.g. 4xx)
+		return "", lastErr
 	}
 
-	etag := resp.Header.Get("ETag")
-	return etag, nil
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("upload part %d failed after %d attempts", partNumber, maxAttempts)
 }
 
 func (c *DefaultS3Client) abortMultipartUpload(ctx context.Context, key, uploadID string) error {
@@ -412,6 +504,11 @@ func (c *DefaultS3Client) abortMultipartUpload(ctx context.Context, key, uploadI
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("abort multipart upload HTTP %d: %s", resp.StatusCode, string(body))
+	}
 	return nil
 }
 
@@ -569,4 +666,59 @@ func (c *DefaultS3Client) PruneRetention(ctx context.Context, prefix string, pol
 	}
 
 	return toDelete, nil
+}
+
+// PruneStaleMultipartUploads aborts in-progress multipart uploads older than maxAge.
+func (c *DefaultS3Client) PruneStaleMultipartUploads(ctx context.Context, maxAge time.Duration) ([]string, error) {
+	if maxAge <= 0 {
+		maxAge = 24 * time.Hour
+	}
+
+	q := url.Values{}
+	q.Set("uploads", "")
+	targetURL, err := c.buildURL("", q)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	SignRequest(req, "", c.opts.AccessKeyID, c.opts.SecretAccessKey, c.opts.Region, time.Now())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list multipart uploads failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list multipart uploads error HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var listResult listMultipartUploadsResult
+	if err := xml.NewDecoder(resp.Body).Decode(&listResult); err != nil {
+		return nil, fmt.Errorf("failed to decode list multipart uploads xml: %w", err)
+	}
+
+	now := time.Now().UTC()
+	var pruned []string
+	for _, upload := range listResult.Uploads {
+		if upload.UploadID == "" || upload.Key == "" {
+			continue
+		}
+		initiatedTime, err := parseS3Time(upload.Initiated)
+		if err != nil {
+			continue
+		}
+		if now.Sub(initiatedTime) > maxAge {
+			if abortErr := c.abortMultipartUpload(ctx, upload.Key, upload.UploadID); abortErr == nil {
+				pruned = append(pruned, upload.UploadID)
+			}
+		}
+	}
+
+	return pruned, nil
 }

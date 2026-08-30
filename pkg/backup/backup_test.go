@@ -177,6 +177,10 @@ func (m *mockS3MultipartClient) PruneRetention(ctx context.Context, prefix strin
 	return toDelete, nil
 }
 
+func (m *mockS3MultipartClient) PruneStaleMultipartUploads(ctx context.Context, maxAge time.Duration) ([]string, error) {
+	return nil, nil
+}
+
 type mockExecRunner struct {
 	dumpPayload    []byte
 	dumpExitCode   int

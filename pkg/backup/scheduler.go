@@ -283,6 +283,13 @@ func (s *CronScheduler) Start(ctx context.Context) error {
 		return errors.New("scheduler already running")
 	}
 
+	// Prune orphaned S3 multipart uploads on boot
+	if s.s3Client != nil {
+		go func() {
+			_, _ = s.s3Client.PruneStaleMultipartUploads(ctx, 24*time.Hour)
+		}()
+	}
+
 	s.stopCh = make(chan struct{})
 	s.doneCh = make(chan struct{})
 	stopCh := s.stopCh

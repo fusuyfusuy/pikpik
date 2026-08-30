@@ -69,4 +69,7 @@ type S3Client interface {
 
 	// PruneRetention evaluates existing objects under a prefix and deletes those exceeding retention policy.
 	PruneRetention(ctx context.Context, prefix string, policy RetentionPolicy) ([]string, error)
+
+	// PruneStaleMultipartUploads aborts in-progress multipart uploads older than maxAge.
+	PruneStaleMultipartUploads(ctx context.Context, maxAge time.Duration) ([]string, error)
 }
