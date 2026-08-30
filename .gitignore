@@ -1,0 +1,26 @@
+# Binaries & build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+*.out
+*.test
+coverage.txt
+
+# Local data & database files
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Logs
+*.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
