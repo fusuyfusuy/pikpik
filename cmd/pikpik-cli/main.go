@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/fusuycorp/pikpik/pkg/api"
 	"github.com/gorilla/websocket"
+	flag "github.com/spf13/pflag"
 	"golang.org/x/term"
 )
 
@@ -118,10 +118,10 @@ func getClient() (*APIClient, *Config, *ConfigManager) {
 // 1. pikpik init
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	name := fs.String("name", "", "Application name")
-	port := fs.Int("port", 8080, "Container HTTP port")
-	domain := fs.String("domain", "", "Custom domain binding")
-	image := fs.String("image", "", "Docker image name or registry path")
+	name := fs.StringP("name", "n", "", "Application name")
+	port := fs.IntP("port", "p", 8080, "Container HTTP port")
+	domain := fs.StringP("domain", "d", "", "Custom domain binding")
+	image := fs.StringP("image", "i", "", "Docker image name or registry path")
 	_ = fs.Parse(args)
 
 	appName := *name
@@ -167,14 +167,14 @@ env:
 // 2. pikpik login
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	token := fs.String("token", "", "API Token (pik_live_...) for non-interactive login")
-	ctxName := fs.String("context", "", "Context name (default: default)")
-	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification")
+	token := fs.StringP("token", "t", "", "API Token (pik_live_...) for non-interactive login")
+	ctxName := fs.StringP("context", "c", "", "Context name (default: default)")
+	insecure := fs.BoolP("insecure", "k", false, "Skip TLS certificate verification")
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
 	if len(positional) == 0 {
-		fmt.Println("Usage: pikpik login <server-url> [--token <token>] [--context <name>]")
+		fmt.Println("Usage: pikpik login <server-url> [-t|--token <token>] [-c|--context <name>] [-k|--insecure]")
 		os.Exit(1)
 	}
 
@@ -307,8 +307,8 @@ func runNodes(args []string) {
 // 4. pikpik deploy
 func runDeploy(args []string) {
 	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
-	appFlag := fs.String("app", "", "Application ID or name")
-	imageFlag := fs.String("image", "", "Container image tag to deploy")
+	appFlag := fs.StringP("app", "a", "", "Application ID or name")
+	imageFlag := fs.StringP("image", "i", "", "Container image tag to deploy")
 	_ = fs.Parse(args)
 
 	client, _, _ := getClient()
@@ -327,7 +327,7 @@ func runDeploy(args []string) {
 	}
 
 	if targetApp == "" {
-		fmt.Println("Usage: pikpik deploy --app <app_name> [--image <image_tag>]")
+		fmt.Println("Usage: pikpik deploy [-a|--app <app_name>] [-i|--image <image_tag>]")
 		os.Exit(1)
 	}
 
@@ -342,14 +342,14 @@ func runDeploy(args []string) {
 // 5. pikpik logs
 func runLogs(args []string) {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
-	follow := fs.Bool("f", false, "Follow log stream")
-	tail := fs.Int("tail", 100, "Number of historical lines")
-	timestamps := fs.Bool("timestamps", false, "Show log timestamps")
+	follow := fs.BoolP("follow", "f", false, "Follow log stream")
+	tail := fs.IntP("tail", "n", 100, "Number of historical lines")
+	timestamps := fs.BoolP("timestamps", "t", false, "Show log timestamps")
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
 	if len(positional) == 0 {
-		fmt.Println("Usage: pikpik logs <app_name> [-f] [--tail <lines>] [--timestamps]")
+		fmt.Println("Usage: pikpik logs <app_name> [-f|--follow] [-n|--tail <lines>] [-t|--timestamps]")
 		os.Exit(1)
 	}
 	appID := positional[0]
@@ -491,10 +491,10 @@ func runDB(args []string) {
 
 	case "restore":
 		fs := flag.NewFlagSet("restore", flag.ExitOnError)
-		snap := fs.String("snapshot", "", "Snapshot ID to restore")
+		snap := fs.StringP("snapshot", "s", "", "Snapshot ID to restore")
 		_ = fs.Parse(args[1:])
 		if *snap == "" {
-			fmt.Println("Usage: pikpik db restore <database_name> --snapshot <snapshot_id>")
+			fmt.Println("Usage: pikpik db restore <database_name> [-s|--snapshot <snapshot_id>]")
 			os.Exit(1)
 		}
 		target := ""
@@ -512,8 +512,8 @@ func runDB(args []string) {
 // 8. pikpik prune
 func runPrune(args []string) {
 	fs := flag.NewFlagSet("prune", flag.ExitOnError)
-	all := fs.Bool("all", true, "Remove all unused images, not just dangling ones")
-	volumes := fs.Bool("volumes", false, "Prune unused persistent volumes")
+	all := fs.BoolP("all", "a", true, "Remove all unused images, not just dangling ones")
+	volumes := fs.BoolP("volumes", "v", false, "Prune unused persistent volumes")
 	_ = fs.Parse(args)
 
 	client, _, _ := getClient()
@@ -529,12 +529,13 @@ func runPrune(args []string) {
 // 9. pikpik exec
 func runExec(args []string) {
 	fs := flag.NewFlagSet("exec", flag.ExitOnError)
-	it := fs.Bool("it", true, "Interactive PTY mode")
+	interactive := fs.BoolP("interactive", "i", true, "Keep STDIN open")
+	tty := fs.BoolP("tty", "t", true, "Allocate a pseudo-TTY")
 	_ = fs.Parse(args)
 
 	positional := fs.Args()
 	if len(positional) == 0 {
-		fmt.Println("Usage: pikpik exec -it <app_or_container> -- /bin/sh")
+		fmt.Println("Usage: pikpik exec [-i|--interactive] [-t|--tty] <app_or_container> -- /bin/sh")
 		os.Exit(1)
 	}
 
@@ -562,7 +563,7 @@ func runExec(args []string) {
 	}
 	defer conn.Close()
 
-	if *it && term.IsTerminal(int(os.Stdin.Fd())) {
+	if (*interactive || *tty) && term.IsTerminal(int(os.Stdin.Fd())) {
 		oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 		if err == nil {
 			defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()

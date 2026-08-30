@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,6 +27,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
 	"github.com/docker/docker/client"
+	flag "github.com/spf13/pflag"
 )
 
 var (
@@ -48,11 +48,6 @@ type ServerConfig struct {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("pikpik unified control plane v%s\n", Version)
-		os.Exit(0)
-	}
-
 	cfg := parseConfig(os.Args[1:])
 
 	log.Printf("Starting pikpik Control Plane v%s [Invariant 2: Unified Runtime]", Version)
@@ -103,19 +98,35 @@ func parseConfig(args []string) ServerConfig {
 	if dataDir == "" {
 		dataDir = "./data"
 	}
-	_ = os.MkdirAll(dataDir, 0755)
+
+	var showVersion bool
 
 	fs := flag.NewFlagSet("pikpik", flag.ContinueOnError)
-	fs.StringVar(&cfg.ListenAddr, "listen", getEnvOrDefault("PIKPIK_LISTEN_ADDR", ":8080"), "HTTP listen address")
-	fs.StringVar(&cfg.DBPath, "db", getEnvOrDefault("PIKPIK_DB_PATH", filepath.Join(dataDir, "pikpik.db")), "SQLite state database path")
-	fs.StringVar(&cfg.DockerSocket, "docker-socket", getEnvOrDefault("PIKPIK_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker Engine Unix domain socket")
-	fs.StringVar(&cfg.CaddyAdminURL, "caddy-admin-url", getEnvOrDefault("PIKPIK_CADDY_ADMIN_URL", "http://127.0.0.1:2019"), "Caddy Admin API URL")
-	fs.StringVar(&cfg.EnrollmentToken, "enrollment-token", getEnvOrDefault("PIKPIK_ENROLLMENT_TOKEN", "pik_node_enrollment_secret_token"), "Worker node agent enrollment token")
-	fs.StringVar(&cfg.AdminEmail, "admin-email", getEnvOrDefault("PIKPIK_ADMIN_EMAIL", "admin@pikpik.local"), "Initial bootstrap owner email")
-	fs.StringVar(&cfg.AdminPassword, "admin-password", getEnvOrDefault("PIKPIK_ADMIN_PASSWORD", "pikpikAdmin123!"), "Initial bootstrap owner password")
-	cfg.DataDir = dataDir
+	fs.StringVarP(&cfg.ListenAddr, "listen", "l", getEnvOrDefault("PIKPIK_LISTEN_ADDR", ":8080"), "HTTP listen address (e.g. :8080 or 127.0.0.1:8080)")
+	fs.StringVarP(&cfg.DataDir, "data-dir", "d", dataDir, "Root directory for database and internal storage")
+	fs.StringVar(&cfg.DBPath, "db", getEnvOrDefault("PIKPIK_DB_PATH", ""), "SQLite state database path (defaults to <data-dir>/pikpik.db)")
+	fs.StringVarP(&cfg.DockerSocket, "docker-socket", "s", getEnvOrDefault("PIKPIK_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker Engine Unix domain socket")
+	fs.StringVarP(&cfg.CaddyAdminURL, "caddy-url", "c", getEnvOrDefault("PIKPIK_CADDY_ADMIN_URL", "http://127.0.0.1:2019"), "Caddy dynamic Admin REST API URL")
+	fs.StringVarP(&cfg.EnrollmentToken, "token", "t", getEnvOrDefault("PIKPIK_ENROLLMENT_TOKEN", "pik_node_enrollment_secret_token"), "Worker node agent enrollment token")
+	fs.StringVarP(&cfg.AdminEmail, "admin-email", "e", getEnvOrDefault("PIKPIK_ADMIN_EMAIL", "admin@pikpik.local"), "Initial bootstrap owner email")
+	fs.StringVarP(&cfg.AdminPassword, "admin-password", "p", getEnvOrDefault("PIKPIK_ADMIN_PASSWORD", "pikpikAdmin123!"), "Initial bootstrap owner password")
+	fs.BoolVarP(&showVersion, "version", "v", false, "Display pikpik server version")
 
 	_ = fs.Parse(args)
+
+	if showVersion || (len(args) > 0 && args[0] == "version") {
+		fmt.Printf("pikpik unified control plane v%s\n", Version)
+		os.Exit(0)
+	}
+
+	if cfg.DataDir == "" {
+		cfg.DataDir = dataDir
+	}
+	_ = os.MkdirAll(cfg.DataDir, 0755)
+
+	if cfg.DBPath == "" {
+		cfg.DBPath = filepath.Join(cfg.DataDir, "pikpik.db")
+	}
 
 	// Support port environment variable override
 	if portStr := os.Getenv("PIKPIK_PORT"); portStr != "" {

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/fusuycorp/pikpik/pkg/agent"
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
+	flag "github.com/spf13/pflag"
 )
 
 var (
@@ -23,11 +23,6 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("pikpik-agent version %s\n", Version)
-		os.Exit(0)
-	}
-
 	cfg := parseFlagsAndEnv(os.Args[1:])
 
 	if cfg.ControlPlaneURL == "" {
@@ -74,28 +69,35 @@ func parseFlagsAndEnv(args []string) agent.AgentConfig {
 
 	var configFile string
 	var hostSec, containerSec int
-	var insecure bool
+	var insecure, showVersion bool
 
-	fs.StringVar(&configFile, "config", os.Getenv("PIKPIK_CONFIG_FILE"), "Path to agent.env configuration file")
-	fs.StringVar(&cfg.NodeID, "node-id", os.Getenv("PIKPIK_NODE_ID"), "Unique worker node identifier")
-	fs.StringVar(&cfg.NodeName, "node-name", os.Getenv("PIKPIK_NODE_NAME"), "Node hostname or friendly label")
-	fs.StringVar(&cfg.NodeRole, "node-role", os.Getenv("PIKPIK_NODE_ROLE"), "Node role (e.g. worker, manager)")
-	fs.StringVar(&cfg.ControlPlaneURL, "control-plane-url", os.Getenv("PIKPIK_CONTROL_PLANE_URL"), "Control plane WebSocket endpoint")
-	fs.StringVar(&cfg.EnrollmentToken, "token", os.Getenv("PIKPIK_ENROLLMENT_TOKEN"), "Worker node authentication token")
+	fs.StringVarP(&configFile, "config", "c", os.Getenv("PIKPIK_CONFIG_FILE"), "Path to agent.env configuration file")
+	fs.StringVarP(&cfg.NodeID, "node-id", "i", os.Getenv("PIKPIK_NODE_ID"), "Unique worker node identifier")
+	fs.StringVarP(&cfg.NodeName, "node-name", "n", os.Getenv("PIKPIK_NODE_NAME"), "Node hostname or friendly label")
+	fs.StringVarP(&cfg.NodeRole, "node-role", "r", getEnvOrDefault("PIKPIK_NODE_ROLE", "worker"), "Node role (e.g. worker, manager)")
+	fs.StringVarP(&cfg.ControlPlaneURL, "control-plane-url", "u", os.Getenv("PIKPIK_CONTROL_PLANE_URL"), "Control plane WebSocket endpoint (e.g. wss://cp.example.com/agent/connect)")
+	fs.StringVarP(&cfg.EnrollmentToken, "token", "t", os.Getenv("PIKPIK_ENROLLMENT_TOKEN"), "Worker node authentication token")
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert", os.Getenv("PIKPIK_TLS_CERT_FILE"), "Client TLS certificate file path")
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key", os.Getenv("PIKPIK_TLS_KEY_FILE"), "Client TLS private key file path")
 	fs.StringVar(&cfg.TLSCAFile, "tls-ca", os.Getenv("PIKPIK_TLS_CA_FILE"), "Control plane CA certificate file path")
-	fs.BoolVar(&insecure, "insecure-skip-verify", os.Getenv("PIKPIK_INSECURE_SKIP_VERIFY") == "true", "Skip TLS certificate verification")
+	fs.BoolVarP(&insecure, "insecure-skip-verify", "k", os.Getenv("PIKPIK_INSECURE_SKIP_VERIFY") == "true", "Skip TLS certificate verification")
 	fs.IntVar(&hostSec, "host-interval", 5, "Host metric collection cadence in seconds")
 	fs.IntVar(&containerSec, "container-interval", 10, "Container stats collection cadence in seconds")
-	fs.StringVar(&cfg.DockerSocket, "docker-socket", "/var/run/docker.sock", "Docker daemon Unix domain socket")
+	fs.StringVarP(&cfg.DockerSocket, "docker-socket", "s", getEnvOrDefault("PIKPIK_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker daemon Unix domain socket")
+	fs.StringVar(&cfg.ProcRoot, "proc-root", getEnvOrDefault("PIKPIK_PROC_ROOT", "/proc"), "Linux /proc filesystem root path")
+	fs.BoolVarP(&showVersion, "version", "v", false, "Display agent version")
 
-	// Skip first arg if it is "run"
+	// Skip first arg if it is "run" or "start"
 	filteredArgs := args
-	if len(filteredArgs) > 0 && filteredArgs[0] == "run" {
+	if len(filteredArgs) > 0 && (filteredArgs[0] == "run" || filteredArgs[0] == "start") {
 		filteredArgs = filteredArgs[1:]
 	}
 	_ = fs.Parse(filteredArgs)
+
+	if showVersion || (len(args) > 0 && args[0] == "version") {
+		fmt.Printf("pikpik-agent version %s\n", Version)
+		os.Exit(0)
+	}
 
 	// Load .env file if specified
 	if configFile != "" {
@@ -191,4 +193,11 @@ func loadEnvFile(path string, cfg *agent.AgentConfig) {
 			}
 		}
 	}
+}
+
+func getEnvOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

@@ -10,17 +10,32 @@ import (
 )
 
 func TestParseConfig(t *testing.T) {
-	args := []string{
-		"-listen", ":9090",
-		"-admin-email", "test@pikpik.dev",
+	// 1. Long GNU flags
+	argsLong := []string{
+		"--listen", ":9090",
+		"--admin-email", "test@pikpik.dev",
 	}
-	cfg := parseConfig(args)
+	cfgLong := parseConfig(argsLong)
 
-	if cfg.ListenAddr != ":9090" {
-		t.Errorf("expected listen :9090, got %s", cfg.ListenAddr)
+	if cfgLong.ListenAddr != ":9090" {
+		t.Errorf("expected listen :9090, got %s", cfgLong.ListenAddr)
 	}
-	if cfg.AdminEmail != "test@pikpik.dev" {
-		t.Errorf("expected email test@pikpik.dev, got %s", cfg.AdminEmail)
+	if cfgLong.AdminEmail != "test@pikpik.dev" {
+		t.Errorf("expected email test@pikpik.dev, got %s", cfgLong.AdminEmail)
+	}
+
+	// 2. Short UNIX flags
+	argsShort := []string{
+		"-l", ":9091",
+		"-e", "short@pikpik.dev",
+	}
+	cfgShort := parseConfig(argsShort)
+
+	if cfgShort.ListenAddr != ":9091" {
+		t.Errorf("expected listen :9091, got %s", cfgShort.ListenAddr)
+	}
+	if cfgShort.AdminEmail != "short@pikpik.dev" {
+		t.Errorf("expected email short@pikpik.dev, got %s", cfgShort.AdminEmail)
 	}
 }
 
