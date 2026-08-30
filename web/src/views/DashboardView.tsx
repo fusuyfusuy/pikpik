@@ -13,6 +13,10 @@ import {
   RefreshCw,
   Plus,
   Layers,
+  Archive,
+  Store,
+  ArrowRight,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -40,6 +44,11 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     queryFn: () => api.apps.list(),
   });
 
+  const { data: stacks, refetch: refetchStacks } = useQuery({
+    queryKey: ['stacks'],
+    queryFn: api.stacks.list,
+  });
+
   const { data: nodes, refetch: refetchNodes } = useQuery({
     queryKey: ['nodes'],
     queryFn: api.nodes.list,
@@ -50,7 +59,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     queryFn: api.databases.list,
   });
 
-  const { data: domains } = useQuery({
+  const { data: domains, refetch: refetchDomains } = useQuery({
     queryKey: ['domains'],
     queryFn: api.ingress.listDomains,
   });
@@ -67,11 +76,14 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
 
   const activeAppsCount = apps?.filter((a) => a.status === 'running').length || 0;
   const readyNodesCount = nodes?.filter((n) => n.status === 'ready').length || 0;
+  const activeDatabasesCount = databases?.filter((d) => d.status === 'running').length || 0;
 
   const handleRefreshAll = () => {
     refetchApps();
+    refetchStacks();
     refetchNodes();
     refetchDatabases();
+    refetchDomains();
   };
 
   return (
@@ -82,11 +94,11 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
           <h1 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2.5">
             <span>Cluster Overview</span>
             <Badge variant="success" dot pulse>
-              Swarm Active
+              Swarm Operational
             </Badge>
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Real-time telemetry and resource allocation for pikpik control plane
+            Real-time telemetry, categorized workloads, and infrastructure allocation
           </p>
         </div>
 
@@ -100,9 +112,10 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         </div>
       </div>
 
-      {/* Metric Cards Grid */}
+      {/* Categorized Metric Cards Grid (5 Pillars) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="cursor-pointer hover:border-cyan-500/50" onClick={() => onNavigate('apps')}>
+        {/* Workloads Card */}
+        <Card className="cursor-pointer hover:border-cyan-500/50 transition-all" onClick={() => onNavigate('apps')}>
           <div className="flex items-center justify-between">
             <div className="p-2.5 rounded-lg bg-cyan-950/50 border border-cyan-800/40 text-cyan-400">
               <Box className="h-5 w-5" />
@@ -111,37 +124,32 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
           </div>
           <div className="mt-4">
             <div className="text-2xl font-bold font-mono text-zinc-100">{apps?.length ?? 0}</div>
-            <div className="text-xs text-zinc-400 font-medium mt-0.5">Applications</div>
-          </div>
-        </Card>
-
-        <Card className="cursor-pointer hover:border-emerald-500/50" onClick={() => onNavigate('nodes')}>
-          <div className="flex items-center justify-between">
-            <div className="p-2.5 rounded-lg bg-emerald-950/50 border border-emerald-800/40 text-emerald-400">
-              <Server className="h-5 w-5" />
+            <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
+              <span>Applications</span>
+              <span className="text-[10px] text-zinc-500 font-mono">{stacks?.length ?? 0} Stacks</span>
             </div>
-            <Badge variant="success">{readyNodesCount} ready</Badge>
-          </div>
-          <div className="mt-4">
-            <div className="text-2xl font-bold font-mono text-zinc-100">{nodes?.length ?? 1}</div>
-            <div className="text-xs text-zinc-400 font-medium mt-0.5">Swarm Nodes</div>
           </div>
         </Card>
 
-        <Card className="cursor-pointer hover:border-purple-500/50" onClick={() => onNavigate('databases')}>
+        {/* Managed Databases */}
+        <Card className="cursor-pointer hover:border-purple-500/50 transition-all" onClick={() => onNavigate('databases')}>
           <div className="flex items-center justify-between">
             <div className="p-2.5 rounded-lg bg-purple-950/50 border border-purple-800/40 text-purple-400">
               <Database className="h-5 w-5" />
             </div>
-            <Badge variant="purple">{databases?.length ?? 0} active</Badge>
+            <Badge variant="purple">{activeDatabasesCount} active</Badge>
           </div>
           <div className="mt-4">
             <div className="text-2xl font-bold font-mono text-zinc-100">{databases?.length ?? 0}</div>
-            <div className="text-xs text-zinc-400 font-medium mt-0.5">Managed Databases</div>
+            <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
+              <span>Databases</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Managed</span>
+            </div>
           </div>
         </Card>
 
-        <Card className="cursor-pointer hover:border-amber-500/50" onClick={() => onNavigate('ingress')}>
+        {/* Ingress & Traffic */}
+        <Card className="cursor-pointer hover:border-amber-500/50 transition-all" onClick={() => onNavigate('ingress')}>
           <div className="flex items-center justify-between">
             <div className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-800/40 text-amber-400">
               <Globe className="h-5 w-5" />
@@ -150,9 +158,80 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
           </div>
           <div className="mt-4">
             <div className="text-2xl font-bold font-mono text-zinc-100">{domains?.length ?? 0}</div>
-            <div className="text-xs text-zinc-400 font-medium mt-0.5">Ingress Domains</div>
+            <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
+              <span>Ingress Domains</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Caddy Proxy</span>
+            </div>
           </div>
         </Card>
+
+        {/* Machine Fleet */}
+        <Card className="cursor-pointer hover:border-emerald-500/50 transition-all" onClick={() => onNavigate('nodes')}>
+          <div className="flex items-center justify-between">
+            <div className="p-2.5 rounded-lg bg-emerald-950/50 border border-emerald-800/40 text-emerald-400">
+              <Server className="h-5 w-5" />
+            </div>
+            <Badge variant="success">{readyNodesCount} ready</Badge>
+          </div>
+          <div className="mt-4">
+            <div className="text-2xl font-bold font-mono text-zinc-100">{nodes?.length ?? 1}</div>
+            <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
+              <span>Swarm Nodes</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Agent WSS</span>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Operational Quick Jump Row */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div
+          onClick={() => onNavigate('marketplace')}
+          className="p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 cursor-pointer flex items-center justify-between group transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-purple-950/40 border border-purple-800/30 text-purple-400">
+              <Store className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-zinc-200">1-Click Recipes</div>
+              <div className="text-[11px] text-zinc-400">Deploy WordPress, Ghost, Postgres, Redis</div>
+            </div>
+          </div>
+          <ArrowRight className="h-3.5 w-3.5 text-zinc-500 group-hover:text-purple-400 group-hover:translate-x-0.5 transition-all" />
+        </div>
+
+        <div
+          onClick={() => onNavigate('backups')}
+          className="p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 cursor-pointer flex items-center justify-between group transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-cyan-950/40 border border-cyan-800/30 text-cyan-400">
+              <Archive className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-zinc-200">S3 Backups & Disaster Recovery</div>
+              <div className="text-[11px] text-zinc-400">Automated streaming snapshots & schedules</div>
+            </div>
+          </div>
+          <ArrowRight className="h-3.5 w-3.5 text-zinc-500 group-hover:text-cyan-400 group-hover:translate-x-0.5 transition-all" />
+        </div>
+
+        <div
+          onClick={() => onNavigate('settings')}
+          className="p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800 hover:border-zinc-700 cursor-pointer flex items-center justify-between group transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-800/30 text-emerald-400">
+              <ShieldCheck className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-zinc-200">Security & Access Tokens</div>
+              <div className="text-[11px] text-zinc-400">RBAC permissions & AES secret vault</div>
+            </div>
+          </div>
+          <ArrowRight className="h-3.5 w-3.5 text-zinc-500 group-hover:text-emerald-400 group-hover:translate-x-0.5 transition-all" />
+        </div>
       </div>
 
       {/* Telemetry Charts */}
@@ -260,7 +339,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         <Card className="lg:col-span-2">
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm">Applications</CardTitle>
+              <CardTitle className="text-sm">Deployed Applications</CardTitle>
               <Button variant="ghost" size="sm" onClick={() => onNavigate('apps')}>
                 View all &rarr;
               </Button>
@@ -269,7 +348,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
           <CardContent>
             {(!apps || apps.length === 0) ? (
               <div className="text-center py-8 text-zinc-500 text-xs">
-                No applications deployed yet. Click "New Application" to deploy your first container.
+                No applications deployed yet. Click &ldquo;New Application&rdquo; to deploy your first container.
               </div>
             ) : (
               <div className="divide-y divide-zinc-800/60">
