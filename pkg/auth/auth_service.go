@@ -78,8 +78,11 @@ func (s *authServiceImpl) CreateAPIToken(
 	scopes []string,
 	expiresAt *time.Time,
 ) (*GeneratedToken, error) {
-	// Verify user exists
-	if _, err := s.store.Users().GetByID(ctx, userID); err != nil {
+	// Verify user exists, and capture the session_version this token is
+	// issued against so a later password rotation (which bumps it) can
+	// invalidate this token in ValidateAPIToken.
+	user, err := s.store.Users().GetByID(ctx, userID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, ErrUserNotFound
 		}
@@ -95,13 +98,14 @@ func (s *authServiceImpl) CreateAPIToken(
 	prefix := ExtractTokenPrefix(rawSecret)
 
 	tok := &store.APIToken{
-		ID:        store.NewID("tok"),
-		UserID:    userID,
-		Name:      name,
-		Prefix:    prefix,
-		TokenHash: tokenHash,
-		Scopes:    scopes,
-		ExpiresAt: expiresAt,
+		ID:             store.NewID("tok"),
+		UserID:         userID,
+		Name:           name,
+		Prefix:         prefix,
+		TokenHash:      tokenHash,
+		Scopes:         scopes,
+		SessionVersion: user.SessionVersion,
+		ExpiresAt:      expiresAt,
 	}
 
 	if err := s.store.APITokens().Create(ctx, tok); err != nil {
@@ -136,6 +140,19 @@ func (s *authServiceImpl) ValidateAPIToken(
 	// Scope verification
 	if requiredScope != "" && !HasScope(tok.Scopes, requiredScope) {
 		return nil, ErrInsufficientScope
+	}
+
+	// Session-version check: a password rotation bumps the user's
+	// session_version, which must invalidate every token issued before it.
+	user, err := s.store.Users().GetByID(ctx, tok.UserID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("auth: failed to load token owner: %w", err)
+	}
+	if tok.SessionVersion < user.SessionVersion {
+		return nil, ErrSessionRevoked
 	}
 
 	// Update last_used_at asynchronously/inline

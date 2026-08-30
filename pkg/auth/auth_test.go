@@ -136,6 +136,49 @@ func TestAuth_APITokenExpiration(t *testing.T) {
 	}
 }
 
+func TestAuth_SessionRevokedOnPasswordRotation(t *testing.T) {
+	svc, st := newTestAuth(t)
+	ctx := context.Background()
+
+	user, err := svc.BootstrapAdmin(ctx, "rotate@pikpik.io", "OldPassword123!")
+	if err != nil {
+		t.Fatalf("Failed to bootstrap admin: %v", err)
+	}
+
+	// Token issued before the password rotation.
+	genTok, err := svc.CreateAPIToken(ctx, user.ID, "Web Session", []string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("CreateAPIToken failed: %v", err)
+	}
+
+	// Sanity: the token validates before rotation.
+	if _, err := svc.ValidateAPIToken(ctx, genTok.RawSecret, ""); err != nil {
+		t.Fatalf("Expected token to validate before rotation, got %v", err)
+	}
+
+	newHash, err := svc.HashPassword("NewPassword456!")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	if err := st.Users().UpdatePassword(ctx, user.ID, newHash, true); err != nil {
+		t.Fatalf("UpdatePassword failed: %v", err)
+	}
+
+	// The pre-rotation token must now be rejected as revoked.
+	if _, err := svc.ValidateAPIToken(ctx, genTok.RawSecret, ""); !errors.Is(err, auth.ErrSessionRevoked) {
+		t.Errorf("Expected ErrSessionRevoked for pre-rotation token, got %v", err)
+	}
+
+	// A token minted after rotation must still validate normally.
+	postTok, err := svc.CreateAPIToken(ctx, user.ID, "Post-rotation Session", []string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("CreateAPIToken after rotation failed: %v", err)
+	}
+	if _, err := svc.ValidateAPIToken(ctx, postTok.RawSecret, ""); err != nil {
+		t.Errorf("Expected post-rotation token to validate, got %v", err)
+	}
+}
+
 func TestAuth_ScopeMatching(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -26,6 +26,10 @@ var (
 
 	// ErrUserNotFound is returned when a user record is not found.
 	ErrUserNotFound = errors.New("auth: user not found")
+
+	// ErrSessionRevoked is returned when a token was issued before the
+	// owning user's most recent password rotation (session_version bump).
+	ErrSessionRevoked = errors.New("auth: session revoked by password change")
 )
 
 // GeneratedToken contains the persisted metadata and the one-time raw secret token string.
