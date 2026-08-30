@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -129,6 +130,8 @@ func (c *defaultAgentClient) runSession() error {
 	headers.Set("X-Node-ID", c.config.NodeID)
 	headers.Set("X-Node-Name", c.config.NodeName)
 	headers.Set("X-Node-Role", c.config.NodeRole)
+	headers.Set("X-CPU-Arch", runtime.GOARCH)
+	headers.Set("X-OS-Kernel", runtime.GOOS)
 
 	dialOpts := &websocket.DialOptions{
 		HTTPClient: c.httpCl,

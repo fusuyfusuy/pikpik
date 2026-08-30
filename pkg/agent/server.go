@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
 	"nhooyr.io/websocket"
 )
@@ -25,6 +26,7 @@ type AgentServerOptions struct {
 	OnLog           LogCallback
 	RingBuffers     map[string]telemetry.RingBuffer
 	WebSocketHub    telemetry.WebSocketHub
+	MachineStore    store.MachineStore
 }
 
 type defaultAgentServer struct {
@@ -36,6 +38,7 @@ type defaultAgentServer struct {
 	ringBuffers  map[string]telemetry.RingBuffer
 	ringMu       sync.RWMutex
 	webSocketHub telemetry.WebSocketHub
+	machineStore store.MachineStore
 }
 
 // NewAgentServer creates a new AgentServer for the Control Plane.
@@ -60,6 +63,7 @@ func NewAgentServer(opts AgentServerOptions) telemetry.AgentServer {
 		onLog:        opts.OnLog,
 		ringBuffers:  rb,
 		webSocketHub: opts.WebSocketHub,
+		machineStore: opts.MachineStore,
 	}
 }
 
@@ -100,6 +104,10 @@ func (s *defaultAgentServer) UnregisterNode(nodeID string) {
 	sess, ok := s.sessions[nodeID]
 	delete(s.sessions, nodeID)
 	s.mu.Unlock()
+
+	if s.machineStore != nil {
+		_ = s.machineStore.UpdateStatus(context.Background(), nodeID, "offline", time.Now().UTC())
+	}
 
 	if ok && sess != nil {
 		s.mu.Lock()
@@ -179,6 +187,24 @@ func (s *defaultAgentServer) HandleHTTP(w http.ResponseWriter, r *http.Request) 
 		nodeRole = "worker"
 	}
 
+	osKernel := r.Header.Get("X-OS-Kernel")
+	cpuArch := r.Header.Get("X-CPU-Arch")
+	agentVer := r.Header.Get("X-Agent-Version")
+	dockerVer := r.Header.Get("X-Docker-Version")
+	publicIP := r.Header.Get("X-Public-IP")
+	privateIP := r.Header.Get("X-Private-IP")
+	if publicIP == "" {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			publicIP = host
+		} else {
+			publicIP = r.RemoteAddr
+		}
+	}
+	if nodeName == "" {
+		nodeName = nodeID
+	}
+
 	opts := &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
 	}
@@ -198,6 +224,23 @@ func (s *defaultAgentServer) HandleHTTP(w http.ResponseWriter, r *http.Request) 
 		LastHeartbeat:   time.Now().UTC(),
 		Conn:            conn,
 		PendingCommands: make(map[string]chan *CommandResult),
+	}
+
+	if s.machineStore != nil {
+		now := time.Now().UTC()
+		_ = s.machineStore.Upsert(r.Context(), &store.ManagedMachine{
+			ID:            nodeID,
+			Hostname:      nodeName,
+			Role:          nodeRole,
+			PublicIP:      publicIP,
+			PrivateIP:     privateIP,
+			OSKernel:      osKernel,
+			CPUArch:       cpuArch,
+			DockerVersion: dockerVer,
+			AgentVersion:  agentVer,
+			Status:        "online",
+			LastSeen:      &now,
+		})
 	}
 
 	s.RegisterNode(nodeID, session)
@@ -276,6 +319,10 @@ func (s *defaultAgentServer) readLoop(ctx context.Context, session *NodeSession)
 			// Heartbeat pong received
 
 		case "metric":
+			if s.machineStore != nil {
+				now := time.Now().UTC()
+				_ = s.machineStore.UpdateStatus(ctx, session.NodeID, "online", now)
+			}
 			// Forward to callback
 			if s.onTelemetry != nil {
 				s.onTelemetry(session.NodeID, &msg)

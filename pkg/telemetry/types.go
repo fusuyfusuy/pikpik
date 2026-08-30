@@ -178,6 +178,8 @@ type AgentServer interface {
 	// RingBufferSnapshot returns a thread-safe copy of the ring buffer registry,
 	// safe for callers to range over without racing concurrent writers.
 	RingBufferSnapshot() map[string]RingBuffer
+	// GetRingBuffer returns a ring buffer by key in a thread-safe manner.
+	GetRingBuffer(key string) RingBuffer
 }
 
 // RingBuffer defines the high-performance in-memory circular storage.
