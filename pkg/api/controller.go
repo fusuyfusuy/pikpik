@@ -105,18 +105,20 @@ type ControllerDependencies struct {
 	Registry       registry.RegistryManager
 	ConfigManager  config.ConfigManager
 	WSHub          *WebSocketHub
+	SSEBroadcaster *SSEBroadcaster
 }
 
 // DefaultController implements Controller.
 type DefaultController struct {
-	st        store.Store
-	authSvc   auth.AuthService
-	orch      orchestration.Orchestrator
-	ingress   ingress.IngressManager
-	backup    backup.BackupEngine
-	reg       registry.RegistryManager
-	configMgr config.ConfigManager
-	wsHub     *WebSocketHub
+	st             store.Store
+	authSvc        auth.AuthService
+	orch           orchestration.Orchestrator
+	ingress        ingress.IngressManager
+	backup         backup.BackupEngine
+	reg            registry.RegistryManager
+	configMgr      config.ConfigManager
+	wsHub          *WebSocketHub
+	sseBroadcaster *SSEBroadcaster
 
 	// In-memory fallbacks / caches for standalone or testing modes
 	mu           sync.RWMutex
@@ -131,20 +133,21 @@ type DefaultController struct {
 // NewDefaultController constructs a new DefaultController.
 func NewDefaultController(deps ControllerDependencies) *DefaultController {
 	return &DefaultController{
-		st:           deps.Store,
-		authSvc:      deps.AuthService,
-		orch:         deps.Orchestrator,
-		ingress:      deps.IngressManager,
-		backup:       deps.BackupEngine,
-		reg:          deps.Registry,
-		configMgr:    deps.ConfigManager,
-		wsHub:        deps.WSHub,
-		apps:         make(map[string]*App),
-		stacks:       make(map[string]*Stack),
-		databases:    make(map[string]*Database),
-		backups:      make(map[string]*Backup),
-		destinations: make(map[string]*BackupDestination),
-		domains:      make(map[string]*DomainBinding),
+		st:             deps.Store,
+		authSvc:        deps.AuthService,
+		orch:           deps.Orchestrator,
+		ingress:        deps.IngressManager,
+		backup:         deps.BackupEngine,
+		reg:            deps.Registry,
+		configMgr:      deps.ConfigManager,
+		wsHub:          deps.WSHub,
+		sseBroadcaster: deps.SSEBroadcaster,
+		apps:           make(map[string]*App),
+		stacks:         make(map[string]*Stack),
+		databases:      make(map[string]*Database),
+		backups:        make(map[string]*Backup),
+		destinations:   make(map[string]*BackupDestination),
+		domains:        make(map[string]*DomainBinding),
 	}
 }
 
@@ -479,6 +482,9 @@ func (c *DefaultController) DeployApp(ctx context.Context, id string, image stri
 			Data:     map[string]string{"status": "running", "image": app.Image},
 			Time:     time.Now().UTC(),
 		})
+	}
+	if c.sseBroadcaster != nil {
+		c.sseBroadcaster.Broadcast("events", id, "deployment_finished", map[string]string{"status": "running", "image": app.Image})
 	}
 	return nil
 }

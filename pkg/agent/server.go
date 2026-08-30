@@ -60,6 +60,13 @@ func NewAgentServer(opts AgentServerOptions) telemetry.AgentServer {
 	}
 }
 
+// GetRingBuffer returns a ring buffer by key in a thread-safe manner.
+func (s *defaultAgentServer) GetRingBuffer(key string) telemetry.RingBuffer {
+	s.ringMu.RLock()
+	defer s.ringMu.RUnlock()
+	return s.ringBuffers[key]
+}
+
 // RegisterNode registers a newly authenticated worker node session.
 func (s *defaultAgentServer) RegisterNode(nodeID string, session interface{}) {
 	s.mu.Lock()

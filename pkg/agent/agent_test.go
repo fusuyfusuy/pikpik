@@ -201,8 +201,11 @@ func TestAgentClientServerE2E(t *testing.T) {
 	// Verify Ring Buffer points
 	nodeBufKey := fmt.Sprintf("node:%s", nodeID)
 	require.Eventually(t, func() bool {
-		buf, ok := ringBuffers[nodeBufKey]
-		return ok && buf.Len() > 0
+		if srvImpl, ok := agentServer.(interface{ GetRingBuffer(string) telemetry.RingBuffer }); ok {
+			buf := srvImpl.GetRingBuffer(nodeBufKey)
+			return buf != nil && buf.Len() > 0
+		}
+		return false
 	}, 3*time.Second, 50*time.Millisecond, "node ring buffer should contain points")
 }
 

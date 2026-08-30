@@ -68,6 +68,7 @@ func RegisterRoutes(
 	authSvc auth.AuthService,
 	st store.Store,
 	wsHub *WebSocketHub,
+	sseBroadcaster *SSEBroadcaster,
 	ptyHandler *PTYHandler,
 	nudgeHandler *deploy.DefaultDeployWebhookHandler,
 	rateLimiter *RateLimiter,
@@ -730,23 +731,38 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
 	}))
 
-	// --- 10. WebSocket Endpoints ---
+	// --- 10. WebSocket Endpoints (Authenticated) ---
 	if wsHub != nil {
-		mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
+		mux.Handle("GET /ws", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			wsHub.ServeWebSocket(w, r, "multiplex")
-		})
-		mux.HandleFunc("GET /ws/events", func(w http.ResponseWriter, r *http.Request) {
+		}))
+		mux.Handle("GET /ws/events", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			wsHub.ServeWebSocket(w, r, "events")
-		})
-		mux.HandleFunc("GET /ws/logs", func(w http.ResponseWriter, r *http.Request) {
+		}))
+		mux.Handle("GET /ws/logs", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			wsHub.ServeWebSocket(w, r, "logs")
-		})
-		mux.HandleFunc("GET /ws/stats", func(w http.ResponseWriter, r *http.Request) {
+		}))
+		mux.Handle("GET /ws/stats", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			wsHub.ServeWebSocket(w, r, "stats")
-		})
+		}))
 	}
 
 	if ptyHandler != nil {
-		mux.HandleFunc("GET /ws/pty", ptyHandler.ServeHTTP)
+		mux.Handle("GET /ws/pty", authWrap(RoleDeveloper, ptyHandler.ServeHTTP))
+	}
+
+	// --- 11. Server-Sent Events (SSE) Streaming Endpoints ---
+	if sseBroadcaster != nil {
+		mux.Handle("GET /api/v1/events/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			sseBroadcaster.ServeEventsStream(w, r)
+		}))
+
+		mux.Handle("GET /api/v1/logs/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			sseBroadcaster.ServeLogsStream(w, r, "")
+		}))
+
+		mux.Handle("GET /api/v1/stats/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			sseBroadcaster.ServeStatsStream(w, r)
+		}))
 	}
 }

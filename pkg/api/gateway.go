@@ -17,6 +17,7 @@ type APIGatewayOptions struct {
 	Store          store.Store
 	AuthService    auth.AuthService
 	WebSocketHub   *WebSocketHub
+	SSEBroadcaster *SSEBroadcaster
 	DockerClient   dockerclient.CommonAPIClient
 	DeployWebhook  *deploy.DefaultDeployWebhookHandler
 	RateLimiter    *RateLimiter
@@ -26,13 +27,14 @@ type APIGatewayOptions struct {
 
 // APIGateway is the primary HTTP router and gateway engine for the pikpik control plane.
 type APIGateway struct {
-	ctrl         Controller
-	wsHub        *WebSocketHub
-	ptyHandler   *PTYHandler
-	nudgeHandler *deploy.DefaultDeployWebhookHandler
-	rateLimiter  *RateLimiter
-	router       *http.ServeMux
-	handler      http.Handler
+	ctrl           Controller
+	wsHub          *WebSocketHub
+	sseBroadcaster *SSEBroadcaster
+	ptyHandler     *PTYHandler
+	nudgeHandler   *deploy.DefaultDeployWebhookHandler
+	rateLimiter    *RateLimiter
+	router         *http.ServeMux
+	handler        http.Handler
 }
 
 // NewAPIGateway creates and configures a new APIGateway.
@@ -52,6 +54,9 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 	if opts.WebSocketHub == nil {
 		opts.WebSocketHub = NewWebSocketHub()
 	}
+	if opts.SSEBroadcaster == nil {
+		opts.SSEBroadcaster = NewSSEBroadcaster()
+	}
 
 	pty := NewPTYHandler(opts.DockerClient)
 
@@ -62,6 +67,7 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 		opts.AuthService,
 		opts.Store,
 		opts.WebSocketHub,
+		opts.SSEBroadcaster,
 		pty,
 		opts.DeployWebhook,
 		opts.RateLimiter,
@@ -82,13 +88,14 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 	})
 
 	return &APIGateway{
-		ctrl:         opts.Controller,
-		wsHub:        opts.WebSocketHub,
-		ptyHandler:   pty,
-		nudgeHandler: opts.DeployWebhook,
-		rateLimiter:  opts.RateLimiter,
-		router:       mux,
-		handler:      handler,
+		ctrl:           opts.Controller,
+		wsHub:          opts.WebSocketHub,
+		sseBroadcaster: opts.SSEBroadcaster,
+		ptyHandler:     pty,
+		nudgeHandler:   opts.DeployWebhook,
+		rateLimiter:    opts.RateLimiter,
+		router:         mux,
+		handler:        handler,
 	}
 }
 
@@ -100,6 +107,16 @@ func (gw *APIGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // WebSocketHub returns the underlying WebSocketHub instance.
 func (gw *APIGateway) WebSocketHub() *WebSocketHub {
 	return gw.wsHub
+}
+
+// SSEBroadcaster returns the underlying SSEBroadcaster instance.
+func (gw *APIGateway) SSEBroadcaster() *SSEBroadcaster {
+	return gw.sseBroadcaster
+}
+
+// PTYHandler returns the underlying PTYHandler instance.
+func (gw *APIGateway) PTYHandler() *PTYHandler {
+	return gw.ptyHandler
 }
 
 // RunBackground starts background workers (e.g. WebSocketHub run loop).

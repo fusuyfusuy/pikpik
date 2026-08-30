@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/fusuycorp/pikpik/pkg/agent"
 	"github.com/fusuycorp/pikpik/pkg/api"
 	"github.com/fusuycorp/pikpik/pkg/auth"
@@ -26,7 +27,6 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/registry"
 	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
-	"github.com/docker/docker/client"
 	flag "github.com/spf13/pflag"
 )
 
@@ -191,9 +191,10 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 	regConfigPath := filepath.Join(cfg.DataDir, "registry_config.yml")
 	regMgr := registry.NewRegistryManager(rawDockerCli, htpasswdPath, regConfigPath)
 
-	// 7. Telemetry & API WebSocket Hubs
+	// 7. Telemetry & API WebSocket Hubs + SSE Broadcaster
 	apiWSHub := api.NewWebSocketHub()
 	go apiWSHub.Run(ctx)
+	sseBroadcaster := api.NewSSEBroadcaster()
 
 	telemetryWSHub := telemetry.NewWebSocketHub()
 	ringBuffers := make(map[string]telemetry.RingBuffer)
@@ -212,6 +213,7 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 					Data:     msg.Payload,
 					Time:     time.Unix(msg.Timestamp, 0).UTC(),
 				})
+				sseBroadcaster.Broadcast(msg.Channel, msg.TargetID, msg.Type, msg.Payload)
 			}
 		},
 	})
@@ -253,18 +255,20 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		Registry:       regMgr,
 		ConfigManager:  configMgr,
 		WSHub:          apiWSHub,
+		SSEBroadcaster: sseBroadcaster,
 	})
 
 	rateLimiter := api.NewRateLimiter(600, time.Minute)
 
 	gateway := api.NewAPIGatewayWithOptions(api.APIGatewayOptions{
-		Controller:    ctrl,
-		Store:         st,
-		AuthService:   authSvc,
-		WebSocketHub:  apiWSHub,
-		DeployWebhook: nudgeHandler,
-		RateLimiter:   rateLimiter,
-		DockerClient:  rawDockerCli,
+		Controller:     ctrl,
+		Store:          st,
+		AuthService:    authSvc,
+		WebSocketHub:   apiWSHub,
+		SSEBroadcaster: sseBroadcaster,
+		DeployWebhook:  nudgeHandler,
+		RateLimiter:    rateLimiter,
+		DockerClient:   rawDockerCli,
 	})
 
 	// Unified HTTP Router

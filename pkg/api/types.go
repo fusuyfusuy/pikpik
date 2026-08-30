@@ -243,10 +243,10 @@ type SystemInfo struct {
 }
 
 type DiskUsageInfo struct {
-	ImagesBytes            int64 `json:"images_bytes"`
-	ContainersBytes        int64 `json:"containers_bytes"`
-	VolumesBytes           int64 `json:"volumes_bytes"`
-	BuildCacheBytes        int64 `json:"build_cache_bytes"`
+	ImagesBytes           int64 `json:"images_bytes"`
+	ContainersBytes       int64 `json:"containers_bytes"`
+	VolumesBytes          int64 `json:"volumes_bytes"`
+	BuildCacheBytes       int64 `json:"build_cache_bytes"`
 	TotalReclaimableBytes int64 `json:"total_reclaimable_bytes"`
 }
 
