@@ -1,23 +1,34 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, getToken } from './lib/api';
 import { Layout } from './components/Layout';
 import { useSSE } from './hooks/useSSE';
 import { User } from './lib/types';
 
-// Views
-import { LoginView } from './views/LoginView';
-import { DashboardView } from './views/DashboardView';
-import { MarketplaceView } from './views/MarketplaceView';
-import { AppsView } from './views/AppsView';
-import { StacksView } from './views/StacksView';
-import { NodesView } from './views/NodesView';
-import { DatabasesView } from './views/DatabasesView';
-import { IngressView } from './views/IngressView';
-import { BackupsView } from './views/BackupsView';
-import { RegistryView } from './views/RegistryView';
-import { SystemView } from './views/SystemView';
-import { SettingsView } from './views/SettingsView';
+// Lazy-loaded Views for route-level code splitting
+const LoginView = lazy(() => import('./views/LoginView').then((m) => ({ default: m.LoginView })));
+const DashboardView = lazy(() => import('./views/DashboardView').then((m) => ({ default: m.DashboardView })));
+const MarketplaceView = lazy(() => import('./views/MarketplaceView').then((m) => ({ default: m.MarketplaceView })));
+const AppsView = lazy(() => import('./views/AppsView').then((m) => ({ default: m.AppsView })));
+const StacksView = lazy(() => import('./views/StacksView').then((m) => ({ default: m.StacksView })));
+const NodesView = lazy(() => import('./views/NodesView').then((m) => ({ default: m.NodesView })));
+const DatabasesView = lazy(() => import('./views/DatabasesView').then((m) => ({ default: m.DatabasesView })));
+const IngressView = lazy(() => import('./views/IngressView').then((m) => ({ default: m.IngressView })));
+const BackupsView = lazy(() => import('./views/BackupsView').then((m) => ({ default: m.BackupsView })));
+const RegistryView = lazy(() => import('./views/RegistryView').then((m) => ({ default: m.RegistryView })));
+const SystemView = lazy(() => import('./views/SystemView').then((m) => ({ default: m.SystemView })));
+const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })));
+
+function ViewLoader() {
+  return (
+    <div className="flex items-center justify-center h-64 text-zinc-500">
+      <div className="flex flex-col items-center gap-2">
+        <div className="h-5 w-5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+        <span className="text-xs font-mono text-zinc-400">Loading module...</span>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -82,7 +93,18 @@ export function App() {
   }
 
   if (!currentUser) {
-    return <LoginView onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <Suspense
+        fallback={
+          <div className="min-h-screen bg-[#09090b] flex flex-col items-center justify-center text-zinc-400">
+            <div className="h-6 w-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-3" />
+            <span className="text-xs font-mono">Loading authentication...</span>
+          </div>
+        }
+      >
+        <LoginView onLoginSuccess={handleLoginSuccess} />
+      </Suspense>
+    );
   }
 
   return (
@@ -93,17 +115,19 @@ export function App() {
       onLogout={handleLogout}
       sseStatus={sseStatus}
     >
-      {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
-      {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
-      {currentView === 'apps' && <AppsView />}
-      {currentView === 'stacks' && <StacksView />}
-      {currentView === 'nodes' && <NodesView />}
-      {currentView === 'databases' && <DatabasesView />}
-      {currentView === 'ingress' && <IngressView />}
-      {currentView === 'backups' && <BackupsView />}
-      {currentView === 'registry' && <RegistryView />}
-      {currentView === 'system' && <SystemView />}
-      {currentView === 'settings' && <SettingsView user={currentUser} />}
+      <Suspense fallback={<ViewLoader />}>
+        {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
+        {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
+        {currentView === 'apps' && <AppsView />}
+        {currentView === 'stacks' && <StacksView />}
+        {currentView === 'nodes' && <NodesView />}
+        {currentView === 'databases' && <DatabasesView />}
+        {currentView === 'ingress' && <IngressView />}
+        {currentView === 'backups' && <BackupsView />}
+        {currentView === 'registry' && <RegistryView />}
+        {currentView === 'system' && <SystemView />}
+        {currentView === 'settings' && <SettingsView user={currentUser} />}
+      </Suspense>
     </Layout>
   );
 }

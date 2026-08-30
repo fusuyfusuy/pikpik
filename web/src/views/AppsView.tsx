@@ -1517,16 +1517,32 @@ function AppTrafficTab({ app }: { app: App }) {
   );
 }
 
-// Subcomponent: Virtualized Log Viewer with ANSI Parsing
+// Subcomponent: Virtualized Log Viewer with Live SSE Stream and ANSI Parsing
 function AppLogsViewer({ appId }: { appId: string }) {
-  // Generate initial bootstrap logs
-  const [logs] = useState<string[]>(() =>
-    Array.from({ length: 200 }, (_, i) =>
-      `\x1b[36m[${new Date(Date.now() - (200 - i) * 1000).toISOString()}]\x1b[0m \x1b[32m[INFO]\x1b[0m Container service [${appId}] serving request #${i + 1} with HTTP 200 OK (latency: 1.2ms)`
-    )
-  );
-
+  const [logs, setLogs] = useState<string[]>([]);
   const parentRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef<boolean>(true);
+
+  const { status } = useSSE<any>({
+    endpoint: `/api/v1/projects/default/services/${appId}/logs/stream`,
+    onMessage: (msg) => {
+      let line = '';
+      if (typeof msg === 'string') {
+        line = msg;
+      } else if (msg && typeof msg === 'object') {
+        line = msg.log || msg.message || msg.text || JSON.stringify(msg);
+      }
+      if (line) {
+        setLogs((prev) => {
+          const next = [...prev, line];
+          if (next.length > 2000) {
+            return next.slice(next.length - 2000);
+          }
+          return next;
+        });
+      }
+    },
+  });
 
   const rowVirtualizer = useVirtualizer({
     count: logs.length,
@@ -1535,45 +1551,73 @@ function AppLogsViewer({ appId }: { appId: string }) {
     overscan: 15,
   });
 
+  useEffect(() => {
+    if (autoScrollRef.current && logs.length > 0 && parentRef.current) {
+      rowVirtualizer.scrollToIndex(logs.length - 1, { align: 'end' });
+    }
+  }, [logs.length, rowVirtualizer]);
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-zinc-400">
-        <span className="font-mono">Log Stream (Virtualized - {logs.length} lines)</span>
-        <span className="text-emerald-400 flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          Live
-        </span>
+        <span className="font-mono">Log Stream (Live SSE - {logs.length} lines)</span>
+        <div className="flex items-center gap-3">
+          {logs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setLogs([])}
+              className="text-[11px] text-zinc-500 hover:text-zinc-300 font-mono transition-colors cursor-pointer"
+            >
+              Clear
+            </button>
+          )}
+          <span className={`flex items-center gap-1.5 ${status === 'connected' ? 'text-emerald-400' : status === 'connecting' ? 'text-amber-400' : 'text-zinc-500'}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${status === 'connected' ? 'bg-emerald-400 animate-pulse' : status === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-500'}`} />
+            {status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting...' : 'Disconnected'}
+          </span>
+        </div>
       </div>
 
       <div
         ref={parentRef}
         className="h-80 w-full bg-zinc-950 rounded-lg border border-zinc-800 p-3 overflow-y-auto font-mono text-xs leading-relaxed select-text"
+        onScroll={(e) => {
+          const target = e.currentTarget;
+          const isAtBottom = target.scrollHeight - target.scrollTop <= target.clientHeight + 40;
+          autoScrollRef.current = isAtBottom;
+        }}
       >
-        <div
-          style={{
-            height: `${rowVirtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => (
-            <div
-              key={virtualRow.index}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: `${virtualRow.size}px`,
-                transform: `translateY(${virtualRow.start}px)`,
-              }}
-              className="truncate text-zinc-300"
-              dangerouslySetInnerHTML={{
-                __html: ansi.ansi_to_html(logs[virtualRow.index]),
-              }}
-            />
-          ))}
-        </div>
+        {logs.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-zinc-600 font-mono text-xs">
+            {status === 'connecting' ? 'Connecting to live service logs stream...' : 'Waiting for incoming logs...'}
+          </div>
+        ) : (
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => (
+              <div
+                key={virtualRow.index}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+                className="truncate text-zinc-300"
+                dangerouslySetInnerHTML={{
+                  __html: ansi.ansi_to_html(logs[virtualRow.index]),
+                }}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
