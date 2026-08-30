@@ -91,6 +91,7 @@ graph TD
 | **[`docs/handbook/09-DECISION-RECORDS-ADRS.md`](docs/handbook/09-DECISION-RECORDS-ADRS.md)** | Formal Architectural Decision Records ADR-001 through ADR-007. |
 | **[`docs/handbook/10-VOLUMES-NETWORKS-AND-ENV-HIERARCHY.md`](docs/handbook/10-VOLUMES-NETWORKS-AND-ENV-HIERARCHY.md)** | Volume slugging, Swarm overlays, and 4-tier DAG variable hierarchy. |
 | **[`docs/handbook/11-DOKPLOY-FEATURE-CATALOG-AND-PARITY-MATRIX.md`](docs/handbook/11-DOKPLOY-FEATURE-CATALOG-AND-PARITY-MATRIX.md)** | Exhaustive feature catalog and clean reimplementation matrix. |
+| **[`docs/handbook/12-SYSTEMD-AND-DAEMON-INSTALLATION.md`](docs/handbook/12-SYSTEMD-AND-DAEMON-INSTALLATION.md)** | Daemon architecture comparison vs Dokploy/Coolify and production Systemd services. |
 | **[`docs/LAUNCH-AND-DISTRIBUTION-GUIDE.md`](docs/LAUNCH-AND-DISTRIBUTION-GUIDE.md)** | Positioning, Product Hunt launch, Hacker News strategy, and community registry. |
 
 ### Formal Package Specifications
