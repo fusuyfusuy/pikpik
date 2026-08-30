@@ -90,6 +90,11 @@ type Builder interface {
 	Build(ctx context.Context, srcDir string, opts BuildOptions, logCb LogCallback) (*BuildResult, error)
 }
 
+// ImagePusher defines the contract for pushing built images to an OCI registry.
+type ImagePusher interface {
+	Push(ctx context.Context, imageTag, auth string, logCb LogCallback) error
+}
+
 // GitCloner defines the contract for checking out source repositories.
 type GitCloner func(ctx context.Context, opts git.CloneOptions) (*git.Workspace, error)
 

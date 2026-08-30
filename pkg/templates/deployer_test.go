@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/docker/docker/client"
+	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
 
@@ -91,8 +95,8 @@ func TestDeployer_DeployPocketBase_WithStore(t *testing.T) {
 	if resp.Volumes[0] != expectedVolPath {
 		t.Errorf("expected volume '%s', got '%s'", expectedVolPath, resp.Volumes[0])
 	}
-	if len(resp.ResolvedVariables["POCKETBASE_ENCRYPTION_KEY"]) != 32 {
-		t.Errorf("expected auto-generated 32-char hex key, got '%s'", resp.ResolvedVariables["POCKETBASE_ENCRYPTION_KEY"])
+	if resp.ResolvedVariables["POCKETBASE_ENCRYPTION_KEY"] != "[REDACTED]" {
+		t.Errorf("expected redacted key '[REDACTED]', got '%s'", resp.ResolvedVariables["POCKETBASE_ENCRYPTION_KEY"])
 	}
 
 	// Verify SQLite Store Registration
@@ -165,8 +169,8 @@ func TestDeployer_UserVariableOverrides(t *testing.T) {
 		t.Fatalf("deploy failed: %v", err)
 	}
 
-	if resp.ResolvedVariables["N8N_ENCRYPTION_KEY"] != customKey {
-		t.Errorf("expected custom key '%s', got '%s'", customKey, resp.ResolvedVariables["N8N_ENCRYPTION_KEY"])
+	if resp.ResolvedVariables["N8N_ENCRYPTION_KEY"] != "[REDACTED]" {
+		t.Errorf("expected '[REDACTED]', got '%s'", resp.ResolvedVariables["N8N_ENCRYPTION_KEY"])
 	}
 	if resp.ResolvedVariables["GENERIC_TIMEZONE"] != "America/New_York" {
 		t.Errorf("expected 'America/New_York', got '%s'", resp.ResolvedVariables["GENERIC_TIMEZONE"])
@@ -217,3 +221,164 @@ func TestDeployer_ServiceTopologicalOrder(t *testing.T) {
 		t.Errorf("expected cyclic dependency error, got %v", err)
 	}
 }
+
+func TestDeployer_SanitizeResolvedVariables(t *testing.T) {
+	tpl := &Template{
+		EnvVars: []TemplateEnvVar{
+			{Key: "APP_NAME", IsSecret: false},
+			{Key: "DATABASE_PASSWORD", IsSecret: true},
+			{Key: "SECRET_TOKEN", AutoGenerate: "hex_32"},
+			{Key: "PUBLIC_PORT", Default: "8080"},
+		},
+	}
+
+	rawVars := map[string]string{
+		"APP_NAME":          "my-app",
+		"DATABASE_PASSWORD": "supersecretpassword",
+		"SECRET_TOKEN":      "token12345",
+		"PUBLIC_PORT":       "8080",
+		"CUSTOM_API_KEY":    "key9999",
+		"UNRELATED_CONFIG":  "config_val",
+	}
+
+	sanitized := sanitizeResolvedVariables(rawVars, tpl)
+
+	if sanitized["APP_NAME"] != "my-app" {
+		t.Errorf("expected APP_NAME 'my-app', got '%s'", sanitized["APP_NAME"])
+	}
+	if sanitized["PUBLIC_PORT"] != "8080" {
+		t.Errorf("expected PUBLIC_PORT '8080', got '%s'", sanitized["PUBLIC_PORT"])
+	}
+	if sanitized["UNRELATED_CONFIG"] != "config_val" {
+		t.Errorf("expected UNRELATED_CONFIG 'config_val', got '%s'", sanitized["UNRELATED_CONFIG"])
+	}
+	if sanitized["DATABASE_PASSWORD"] != "[REDACTED]" {
+		t.Errorf("expected DATABASE_PASSWORD '[REDACTED]', got '%s'", sanitized["DATABASE_PASSWORD"])
+	}
+	if sanitized["SECRET_TOKEN"] != "[REDACTED]" {
+		t.Errorf("expected SECRET_TOKEN '[REDACTED]', got '%s'", sanitized["SECRET_TOKEN"])
+	}
+	if sanitized["CUSTOM_API_KEY"] != "[REDACTED]" {
+		t.Errorf("expected CUSTOM_API_KEY '[REDACTED]', got '%s'", sanitized["CUSTOM_API_KEY"])
+	}
+}
+
+// Mock structures for Rollback testing
+type testMockContainerManager struct {
+	createCount int
+	startCount  int
+	stoppedCIDs []string
+	removedCIDs []string
+	failOnStart int
+}
+
+func (m *testMockContainerManager) Create(ctx context.Context, spec orchestration.ContainerSpec) (string, error) {
+	m.createCount++
+	return spec.ID, nil
+}
+
+func (m *testMockContainerManager) Start(ctx context.Context, containerID string) error {
+	m.startCount++
+	if m.failOnStart > 0 && m.startCount == m.failOnStart {
+		return errors.New("simulated container start failure")
+	}
+	return nil
+}
+
+func (m *testMockContainerManager) Stop(ctx context.Context, containerID string, timeout time.Duration) error {
+	m.stoppedCIDs = append(m.stoppedCIDs, containerID)
+	return nil
+}
+
+func (m *testMockContainerManager) Remove(ctx context.Context, containerID string, force bool, removeVolumes bool) error {
+	m.removedCIDs = append(m.removedCIDs, containerID)
+	return nil
+}
+
+func (m *testMockContainerManager) Restart(ctx context.Context, containerID string, timeout time.Duration) error {
+	return nil
+}
+func (m *testMockContainerManager) Inspect(ctx context.Context, containerID string) (*orchestration.ContainerStatus, error) {
+	return nil, nil
+}
+func (m *testMockContainerManager) List(ctx context.Context, opts orchestration.ListOptions) ([]orchestration.ContainerStatus, error) {
+	return nil, nil
+}
+func (m *testMockContainerManager) DeployWithRollingUpdate(ctx context.Context, spec orchestration.ContainerSpec, updateCfg orchestration.RollingUpdateConfig) (*orchestration.RollingUpdateResult, error) {
+	return nil, nil
+}
+
+type testMockOrchestrator struct {
+	containers *testMockContainerManager
+}
+
+func (m *testMockOrchestrator) Mode() orchestration.RuntimeMode { return orchestration.ModeStandalone }
+func (m *testMockOrchestrator) Ping(ctx context.Context) error { return nil }
+func (m *testMockOrchestrator) Close() error { return nil }
+func (m *testMockOrchestrator) RawClient() client.CommonAPIClient { return nil }
+func (m *testMockOrchestrator) Containers() orchestration.ContainerManager { return m.containers }
+func (m *testMockOrchestrator) Swarm() orchestration.SwarmManager { return nil }
+func (m *testMockOrchestrator) Stacks() orchestration.StackManager { return nil }
+func (m *testMockOrchestrator) Logs() orchestration.LogStreamer { return nil }
+
+func TestDeployer_RollbackOnPartialFailure(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_rollback.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	// Multi-service template with 2 services
+	multiSvcTpl := Template{
+		ID:          "multi-test",
+		Name:        "Multi-Service Test",
+		Category:    CategoryProductivityDevTools,
+		Description: "Stack with two services for rollback test",
+		Services: []TemplateService{
+			{Name: "backend", Image: "mock/backend:1.0"},
+			{Name: "frontend", Image: "mock/frontend:1.0", DependsOn: []string{"backend"}},
+		},
+	}
+
+	cat := &Catalog{
+		templates: map[string]Template{
+			"multi-test": multiSvcTpl,
+		},
+	}
+
+	mockCM := &testMockContainerManager{
+		failOnStart: 2, // Backend succeeds, Frontend fails to start
+	}
+	orch := &testMockOrchestrator{containers: mockCM}
+
+	deployer := NewDeployer(cat, st, orch)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "test-rollback-app",
+	}
+
+	resp, err := deployer.Deploy(ctx, "multi-test", req)
+	if err == nil {
+		t.Fatalf("expected deploy error on second service, got success: %v", resp)
+	}
+
+	// Verify rollback cleaned up the first started container
+	if len(mockCM.stoppedCIDs) == 0 {
+		t.Errorf("expected stopped containers during rollback, got 0")
+	}
+	if len(mockCM.removedCIDs) == 0 {
+		t.Errorf("expected removed containers during rollback, got 0")
+	}
+
+	// Verify store was cleaned up (no orphaned service record)
+	svcs, err := st.Services().ListByStage(ctx, "production")
+	if err == nil && len(svcs) > 0 {
+		t.Errorf("expected 0 services in store after rollback, found %d", len(svcs))
+	}
+}
+

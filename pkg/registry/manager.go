@@ -78,7 +78,7 @@ func (m *DefaultRegistryManager) Reconcile(ctx context.Context, cfg RegistryConf
 	// Write config and htpasswd if paths are configured
 	if m.configFilePath != "" {
 		if err := os.MkdirAll(filepath.Dir(m.configFilePath), 0755); err == nil {
-			_ = os.WriteFile(m.configFilePath, []byte(yamlContent), 0644)
+			_ = os.WriteFile(m.configFilePath, []byte(yamlContent), 0600)
 		}
 	}
 	if m.htpasswdFilePath != "" {
@@ -88,7 +88,7 @@ func (m *DefaultRegistryManager) Reconcile(ctx context.Context, cfg RegistryConf
 				creds = append(creds, c)
 			}
 			htContent := RenderHtpasswd(creds)
-			_ = os.WriteFile(m.htpasswdFilePath, []byte(htContent), 0644)
+			_ = os.WriteFile(m.htpasswdFilePath, []byte(htContent), 0600)
 		}
 	}
 
@@ -314,7 +314,7 @@ func (m *DefaultRegistryManager) syncHtpasswdLocked(ctx context.Context) {
 			creds = append(creds, c)
 		}
 		content := RenderHtpasswd(creds)
-		_ = os.WriteFile(m.htpasswdFilePath, []byte(content), 0644)
+		_ = os.WriteFile(m.htpasswdFilePath, []byte(content), 0600)
 	}
 
 	// Reload registry by sending SIGHUP if container is running

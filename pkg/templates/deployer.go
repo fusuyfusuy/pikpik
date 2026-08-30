@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -279,12 +280,15 @@ func (d *DefaultDeployer) Deploy(ctx context.Context, templateID string, req Dep
 		if d.orch != nil {
 			cid, err := d.orch.Containers().Create(ctx, containerSpec)
 			if err != nil {
+				d.rollback(ctx, appID, networkName, deployedContainers, volumeRecords, createdVolumes)
 				return nil, fmt.Errorf("failed to create container for service '%s': %w", svc.Name, err)
 			}
+			deployedContainers = append(deployedContainers, cid)
+
 			if err := d.orch.Containers().Start(ctx, cid); err != nil {
+				d.rollback(ctx, appID, networkName, deployedContainers, volumeRecords, createdVolumes)
 				return nil, fmt.Errorf("failed to start container for service '%s': %w", svc.Name, err)
 			}
-			deployedContainers = append(deployedContainers, cid)
 		} else {
 			deployedContainers = append(deployedContainers, containerSpec.ID)
 		}
@@ -512,10 +516,40 @@ func interpolateString(s string, vars map[string]string) string {
 	})
 }
 
+func (d *DefaultDeployer) rollback(ctx context.Context, appID string, networkName string, containerIDs []string, volumeRecords []*store.Volume, createdVolumes []string) {
+	// 1. Stop and remove any containers created during this deployment
+	if d.orch != nil && d.orch.Containers() != nil {
+		for _, cid := range containerIDs {
+			_ = d.orch.Containers().Stop(context.Background(), cid, 5*time.Second)
+			_ = d.orch.Containers().Remove(context.Background(), cid, true, true)
+		}
+	}
+
+	// 2. Remove Docker bridge network
+	if d.orch != nil && d.orch.RawClient() != nil && networkName != "" {
+		_ = d.orch.RawClient().NetworkRemove(context.Background(), networkName)
+	}
+
+	// 3. Purge persisted store metadata for the app
+	if d.st != nil && appID != "" {
+		_ = d.st.Services().Delete(context.Background(), appID)
+		for _, vr := range volumeRecords {
+			_ = d.st.Volumes().Delete(context.Background(), vr.ID)
+		}
+	}
+
+	// 4. Remove any volume directories created on disk
+	for _, hostPath := range createdVolumes {
+		_ = os.RemoveAll(hostPath)
+	}
+}
+
 func isSecretVar(tpl *Template, key string) bool {
-	for _, ev := range tpl.EnvVars {
-		if ev.Key == key {
-			return ev.IsSecret || ev.AutoGenerate != ""
+	if tpl != nil {
+		for _, ev := range tpl.EnvVars {
+			if ev.Key == key {
+				return ev.IsSecret || ev.AutoGenerate != ""
+			}
 		}
 	}
 	k := strings.ToUpper(key)
@@ -523,9 +557,14 @@ func isSecretVar(tpl *Template, key string) bool {
 }
 
 func sanitizeResolvedVariables(vars map[string]string, tpl *Template) map[string]string {
-	res := make(map[string]string)
+	res := make(map[string]string, len(vars))
 	for k, v := range vars {
-		res[k] = v
+		if isSecretVar(tpl, k) {
+			res[k] = "[REDACTED]"
+		} else {
+			res[k] = v
+		}
 	}
 	return res
 }
+

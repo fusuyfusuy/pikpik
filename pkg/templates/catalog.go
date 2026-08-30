@@ -190,7 +190,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "pocketbase",
-					Image: "ghcr.io/muchobien/pocketbase:latest",
+					Image: "ghcr.io/muchobien/pocketbase:0.22.20",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 8090, HostPort: 8090, Protocol: "tcp"},
 					},
@@ -248,7 +248,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "n8n",
-					Image: "docker.n8n.io/n8nio/n8n:latest",
+					Image: "docker.n8n.io/n8nio/n8n:1.59.0",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 5678, HostPort: 5678, Protocol: "tcp"},
 					},
@@ -298,7 +298,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "vaultwarden",
-					Image: "vaultwarden/server:latest",
+					Image: "vaultwarden/server:1.32.0",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 80, HostPort: 80, Protocol: "tcp"},
 					},
@@ -424,7 +424,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "directus",
-					Image: "directus/directus:latest",
+					Image: "directus/directus:11.1.0",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 8055, HostPort: 8055, Protocol: "tcp"},
 					},
@@ -472,7 +472,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "supabase-studio",
-					Image: "supabase/studio:latest",
+					Image: "supabase/studio:20240729-219198b",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 3000, HostPort: 3000, Protocol: "tcp"},
 					},
@@ -515,7 +515,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "minio",
-					Image: "minio/minio:latest",
+					Image: "minio/minio:RELEASE.2024-08-29T01-40-52Z",
 					Command: []string{
 						"server",
 						"/data",
@@ -574,7 +574,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "grafana",
-					Image: "grafana/grafana:latest",
+					Image: "grafana/grafana:11.2.0",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 3000, HostPort: 3000, Protocol: "tcp"},
 					},
@@ -611,7 +611,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "prometheus",
-					Image: "prom/prometheus:latest",
+					Image: "prom/prometheus:v2.54.1",
 					Command: []string{
 						"--config.file=/etc/prometheus/prometheus.yml",
 						"--storage.tsdb.path=/prometheus",
@@ -660,7 +660,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "metabase",
-					Image: "metabase/metabase:latest",
+					Image: "metabase/metabase:v0.50.25",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 3000, HostPort: 3000, Protocol: "tcp"},
 					},
@@ -776,7 +776,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "plausible",
-					Image: "ghcr.io/plausible/community-edition:latest",
+					Image: "ghcr.io/plausible/community-edition:v2.1.1",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 8000, HostPort: 8000, Protocol: "tcp"},
 					},
@@ -819,7 +819,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "umami",
-					Image: "ghcr.io/umami-software/umami:postgresql-latest",
+					Image: "ghcr.io/umami-software/umami:postgresql-v2.13.0",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 3000, HostPort: 3000, Protocol: "tcp"},
 					},
@@ -932,7 +932,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "wordpress",
-					Image: "wordpress:latest",
+					Image: "wordpress:6.6.2-apache",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 80, HostPort: 80, Protocol: "tcp"},
 					},
@@ -1208,7 +1208,7 @@ func newCuratedCatalog() *Catalog {
 			Services: []TemplateService{
 				{
 					Name:  "clickhouse",
-					Image: "clickhouse/clickhouse-server:latest",
+					Image: "clickhouse/clickhouse-server:24.8.3",
 					Ports: []orchestration.PortMappingSpec{
 						{ContainerPort: 8123, HostPort: 8123, Protocol: "tcp"},
 						{ContainerPort: 9000, HostPort: 9000, Protocol: "tcp"},

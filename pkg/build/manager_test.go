@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,6 +48,31 @@ func (m *mockDeployer) getDeployed() (string, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.deployedApp, m.deployedImage
+}
+
+// mockPusher is a mock implementation of build.ImagePusher.
+type mockPusher struct {
+	mu          sync.Mutex
+	pushedImage string
+	pushedAuth  string
+	pushErr     error
+}
+
+func (m *mockPusher) Push(ctx context.Context, imageTag, auth string, logCb build.LogCallback) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pushedImage = imageTag
+	m.pushedAuth = auth
+	if logCb != nil {
+		logCb("[mock-pusher] Pushed " + imageTag)
+	}
+	return m.pushErr
+}
+
+func (m *mockPusher) getPushed() (string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pushedImage, m.pushedAuth
 }
 
 // mockBuilder is a mock implementation of build.Builder.
@@ -179,8 +205,9 @@ func TestBuildManager_EndToEndSuccess(t *testing.T) {
 		t.Fatalf("expected build status 'success', got %q (error: %s)", finishedBuild.Status, finishedBuild.ErrorMessage)
 	}
 
-	if finishedBuild.ImageTag != "pikpik/"+serviceID+":abcdef1" {
-		t.Errorf("expected tag pikpik/%s:abcdef1, got %s", serviceID, finishedBuild.ImageTag)
+	expectedTag := "127.0.0.1:5000/pikpik/" + serviceID + ":abcdef1"
+	if finishedBuild.ImageTag != expectedTag {
+		t.Errorf("expected tag %s, got %s", expectedTag, finishedBuild.ImageTag)
 	}
 
 	depApp, depImg := deployer.getDeployed()
@@ -326,3 +353,179 @@ func TestBuildManager_Cancel(t *testing.T) {
 		t.Errorf("expected status cancelled or failed, got %q", bld.Status)
 	}
 }
+
+func TestBuildManager_RegistryPush_Success(t *testing.T) {
+	st, serviceID := setupTestStore(t)
+	defer st.Close()
+
+	pusher := &mockPusher{}
+	deployer := &mockDeployer{}
+
+	mockCloner := func(ctx context.Context, opts git.CloneOptions) (*git.Workspace, error) {
+		tempWS, _ := os.MkdirTemp("", "pikpik-push-ws-*")
+		_ = os.WriteFile(filepath.Join(tempWS, "Dockerfile"), []byte("FROM alpine\n"), 0644)
+		return &git.Workspace{Path: tempWS}, nil
+	}
+
+	bm := build.NewBuildManager(build.BuildManagerOptions{
+		Store:             st,
+		DockerfileBuilder: &mockBuilder{},
+		Deployer:          deployer,
+		ImagePusher:       pusher,
+		Cloner:            mockCloner,
+		RegistryAuth:      "base64authtoken",
+		Workers:           1,
+	})
+	defer bm.Close()
+
+	job := &build.BuildJob{
+		ID:        "bld_test_push_01",
+		AppID:     serviceID,
+		RepoURL:   "https://github.com/fusuycorp/push-success.git",
+		Branch:    "main",
+		CommitSHA: "1234567890ab",
+	}
+
+	ctx := context.Background()
+	if err := bm.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	var finishedBuild *store.Build
+	for i := 0; i < 50; i++ {
+		time.Sleep(50 * time.Millisecond)
+		bld, err := st.Builds().GetByID(ctx, job.ID)
+		if err == nil && (bld.Status == "success" || bld.Status == "failed") {
+			finishedBuild = bld
+			break
+		}
+	}
+
+	if finishedBuild == nil || finishedBuild.Status != "success" {
+		t.Fatalf("expected build success, got %v", finishedBuild)
+	}
+
+	expectedTag := "127.0.0.1:5000/pikpik/" + serviceID + ":1234567"
+	pushedImg, pushedAuth := pusher.getPushed()
+	if pushedImg != expectedTag {
+		t.Errorf("expected pushed image %s, got %s", expectedTag, pushedImg)
+	}
+	if pushedAuth != "base64authtoken" {
+		t.Errorf("expected auth token 'base64authtoken', got '%s'", pushedAuth)
+	}
+}
+
+func TestBuildManager_RegistryPush_Failure(t *testing.T) {
+	st, serviceID := setupTestStore(t)
+	defer st.Close()
+
+	failingPusher := &mockPusher{
+		pushErr: errors.New("connection refused by registry daemon"),
+	}
+
+	mockCloner := func(ctx context.Context, opts git.CloneOptions) (*git.Workspace, error) {
+		tempWS, _ := os.MkdirTemp("", "pikpik-push-fail-ws-*")
+		_ = os.WriteFile(filepath.Join(tempWS, "Dockerfile"), []byte("FROM alpine\n"), 0644)
+		return &git.Workspace{Path: tempWS}, nil
+	}
+
+	bm := build.NewBuildManager(build.BuildManagerOptions{
+		Store:             st,
+		DockerfileBuilder: &mockBuilder{},
+		ImagePusher:       failingPusher,
+		Cloner:            mockCloner,
+		Workers:           1,
+	})
+	defer bm.Close()
+
+	job := &build.BuildJob{
+		ID:        "bld_test_push_fail_01",
+		AppID:     serviceID,
+		RepoURL:   "https://github.com/fusuycorp/push-fail.git",
+		Branch:    "main",
+		CommitSHA: "abcdef000000",
+	}
+
+	ctx := context.Background()
+	if err := bm.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	var finishedBuild *store.Build
+	for i := 0; i < 50; i++ {
+		time.Sleep(50 * time.Millisecond)
+		bld, err := st.Builds().GetByID(ctx, job.ID)
+		if err == nil && (bld.Status == "success" || bld.Status == "failed") {
+			finishedBuild = bld
+			break
+		}
+	}
+
+	if finishedBuild == nil {
+		t.Fatalf("build did not complete")
+	}
+
+	if finishedBuild.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", finishedBuild.Status)
+	}
+
+	if !strings.Contains(finishedBuild.ErrorMessage, "registry push failed") {
+		t.Errorf("expected error message to contain 'registry push failed', got %q", finishedBuild.ErrorMessage)
+	}
+}
+
+func TestBuildManager_CustomRegistryHost(t *testing.T) {
+	st, serviceID := setupTestStore(t)
+	defer st.Close()
+
+	pusher := &mockPusher{}
+
+	mockCloner := func(ctx context.Context, opts git.CloneOptions) (*git.Workspace, error) {
+		tempWS, _ := os.MkdirTemp("", "pikpik-custom-reg-*")
+		_ = os.WriteFile(filepath.Join(tempWS, "Dockerfile"), []byte("FROM alpine\n"), 0644)
+		return &git.Workspace{Path: tempWS}, nil
+	}
+
+	bm := build.NewBuildManager(build.BuildManagerOptions{
+		Store:             st,
+		DockerfileBuilder: &mockBuilder{},
+		ImagePusher:       pusher,
+		Cloner:            mockCloner,
+		RegistryHost:      "registry.example.com:5000",
+		Workers:           1,
+	})
+	defer bm.Close()
+
+	job := &build.BuildJob{
+		ID:        "bld_test_custom_reg_01",
+		AppID:     serviceID,
+		RepoURL:   "https://github.com/fusuycorp/custom-reg.git",
+		Branch:    "main",
+		CommitSHA: "fedcba987654",
+	}
+
+	ctx := context.Background()
+	if err := bm.Enqueue(ctx, job); err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	var finishedBuild *store.Build
+	for i := 0; i < 50; i++ {
+		time.Sleep(50 * time.Millisecond)
+		bld, err := st.Builds().GetByID(ctx, job.ID)
+		if err == nil && (bld.Status == "success" || bld.Status == "failed") {
+			finishedBuild = bld
+			break
+		}
+	}
+
+	if finishedBuild == nil || finishedBuild.Status != "success" {
+		t.Fatalf("expected build success, got %v", finishedBuild)
+	}
+
+	expectedTag := "registry.example.com:5000/pikpik/" + serviceID + ":fedcba9"
+	if finishedBuild.ImageTag != expectedTag {
+		t.Errorf("expected custom tag %s, got %s", expectedTag, finishedBuild.ImageTag)
+	}
+}
+

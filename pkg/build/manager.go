@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	imageTypes "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/fusuycorp/pikpik/pkg/git"
 	"github.com/fusuycorp/pikpik/pkg/store"
@@ -50,6 +51,9 @@ type BuildManagerOptions struct {
 	QueueCapacity     int
 	WorkDirRoot       string
 	LogsDir           string
+	RegistryHost      string
+	RegistryAuth      string
+	ImagePusher       ImagePusher
 }
 
 // BuildManager manages asynchronous build job queues, worker pools, strategy dispatch, and rollout triggers.
@@ -63,6 +67,9 @@ type BuildManager struct {
 	deployer          AppDeployer
 	broadcaster       BuildBroadcaster
 	cloner            GitCloner
+	registryHost      string
+	registryAuth      string
+	imagePusher       ImagePusher
 	workDirRoot       string
 	logsDir           string
 	queue             chan *BuildJob
@@ -116,6 +123,12 @@ func NewBuildManager(opts BuildManagerOptions) *BuildManager {
 	}
 	_ = os.MkdirAll(logsDir, 0755)
 
+	regHost := opts.RegistryHost
+	if regHost == "" {
+		regHost = "127.0.0.1:5000"
+	}
+	regHost = strings.TrimSuffix(regHost, "/")
+
 	bm := &BuildManager{
 		st:                opts.Store,
 		dockerCli:         opts.DockerClient,
@@ -125,6 +138,9 @@ func NewBuildManager(opts BuildManagerOptions) *BuildManager {
 		deployer:          opts.Deployer,
 		broadcaster:       opts.Broadcaster,
 		cloner:            cloner,
+		registryHost:      regHost,
+		registryAuth:      opts.RegistryAuth,
+		imagePusher:       opts.ImagePusher,
 		workDirRoot:       workDir,
 		logsDir:           logsDir,
 		queue:             make(chan *BuildJob, queueCap),
@@ -161,6 +177,12 @@ func (bm *BuildManager) Enqueue(ctx context.Context, job *BuildJob) error {
 		job.Status = StatusQueued
 	}
 
+	regHost := bm.registryHost
+	if regHost == "" {
+		regHost = "127.0.0.1:5000"
+	}
+	regHost = strings.TrimSuffix(regHost, "/")
+
 	if job.ImageTag == "" {
 		shortSHA := job.CommitSHA
 		if len(shortSHA) > 7 {
@@ -173,7 +195,9 @@ func (bm *BuildManager) Enqueue(ctx context.Context, job *BuildJob) error {
 		if appName == "" {
 			appName = "app"
 		}
-		job.ImageTag = fmt.Sprintf("pikpik/%s:%s", appName, shortSHA)
+		job.ImageTag = fmt.Sprintf("%s/pikpik/%s:%s", regHost, appName, shortSHA)
+	} else if !strings.Contains(job.ImageTag, "/") || strings.HasPrefix(job.ImageTag, "pikpik/") {
+		job.ImageTag = fmt.Sprintf("%s/%s", regHost, strings.TrimPrefix(job.ImageTag, "/"))
 	}
 	job.Options.ImageTag = job.ImageTag
 
@@ -430,6 +454,32 @@ func (bm *BuildManager) executeJob(job *BuildJob) {
 	imageTag := job.ImageTag
 	if buildRes != nil && buildRes.ImageTag != "" {
 		imageTag = buildRes.ImageTag
+	}
+
+	// Push image to registry so multi-node Swarm workers can pull images across nodes
+	if bm.imagePusher != nil {
+		logCb(fmt.Sprintf("[registry] Pushing image %s to registry...", imageTag))
+		if err := bm.imagePusher.Push(jobCtx, imageTag, bm.registryAuth, logCb); err != nil {
+			bm.failBuild(jobCtx, job, fmt.Errorf("registry push failed: %w", err), logCb)
+			return
+		}
+		logCb(fmt.Sprintf("[registry] Successfully pushed %s to registry.", imageTag))
+	} else if bm.dockerCli != nil {
+		logCb(fmt.Sprintf("[registry] Pushing image %s to registry...", imageTag))
+		pushOpts := imageTypes.PushOptions{
+			RegistryAuth: bm.registryAuth,
+		}
+		resp, err := bm.dockerCli.ImagePush(jobCtx, imageTag, pushOpts)
+		if err != nil {
+			bm.failBuild(jobCtx, job, fmt.Errorf("registry push failed: %w", err), logCb)
+			return
+		}
+		defer resp.Close()
+		if _, err := ParseDockerBuildOutput(resp, logCb); err != nil {
+			bm.failBuild(jobCtx, job, fmt.Errorf("registry push failed: %w", err), logCb)
+			return
+		}
+		logCb(fmt.Sprintf("[registry] Successfully pushed %s to registry.", imageTag))
 	}
 
 	// 8. On success: record status as 'deploying' and trigger zero-downtime rollout

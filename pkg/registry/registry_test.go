@@ -2,6 +2,8 @@ package registry_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -168,3 +170,41 @@ func TestRegistryManager_ReconcileMock(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, status.IsRunning)
 }
+
+func TestRegistryManager_FilePermissions0600(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yml")
+	htpasswdPath := filepath.Join(tempDir, "htpasswd")
+
+	mgr := registry.NewRegistryManager(nil, configPath, htpasswdPath)
+
+	cfg := registry.RegistryConfig{
+		Enabled:        true,
+		Domain:         "registry.example.com",
+		StorageBackend: registry.StorageBackendLocal,
+		InternalPort:   5000,
+	}
+
+	_, err := mgr.Reconcile(ctx, cfg)
+	require.NoError(t, err)
+
+	// Check config.yml permissions
+	info, err := os.Stat(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "config.yml should have 0600 permissions")
+
+	// Check htpasswd permissions on creation
+	infoHt, err := os.Stat(htpasswdPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), infoHt.Mode().Perm(), "htpasswd should have 0600 permissions")
+
+	// Create robot account which calls syncHtpasswdLocked
+	_, err = mgr.CreateRobotAccount(ctx, "proj_perm_test", "Permission test robot")
+	require.NoError(t, err)
+
+	infoHtAfter, err := os.Stat(htpasswdPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), infoHtAfter.Mode().Perm(), "htpasswd after robot creation should retain 0600 permissions")
+}
+

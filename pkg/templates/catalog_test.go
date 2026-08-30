@@ -158,3 +158,21 @@ func TestCatalog_SearchTemplates(t *testing.T) {
 		t.Errorf("expected 0 matches, got %d", len(noMatches))
 	}
 }
+
+func TestCatalog_NoLatestTags(t *testing.T) {
+	cat := DefaultCatalog()
+	templates := cat.ListTemplates("")
+
+	for _, tpl := range templates {
+		for _, svc := range tpl.Services {
+			if strings.HasSuffix(svc.Image, ":latest") || strings.Contains(svc.Image, ":latest") || strings.HasSuffix(svc.Image, "-latest") {
+				t.Errorf("template %s service %s has unpinned floating image tag: %s", tpl.ID, svc.Name, svc.Image)
+			}
+			// Ensure image has a tag (contains :)
+			if !strings.Contains(svc.Image, ":") {
+				t.Errorf("template %s service %s image has no tag specified: %s", tpl.ID, svc.Name, svc.Image)
+			}
+		}
+	}
+}
+
