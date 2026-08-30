@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -23,12 +24,20 @@ func (s *sqlProjectStore) Create(ctx context.Context, p *Project) error {
 	if p.UpdatedAt.IsZero() {
 		p.UpdatedAt = now
 	}
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
+
+	tagsJSON, err := json.Marshal(p.Tags)
+	if err != nil {
+		return fmt.Errorf("store: failed to marshal project tags: %w", err)
+	}
 
 	query := `
-	INSERT INTO projects (id, org_id, name, slug, description, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?)`
+	INSERT INTO projects (id, org_id, name, slug, description, tags, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := s.db.ExecContext(ctx, query, p.ID, p.OrgID, p.Name, p.Slug, p.Description, p.CreatedAt, p.UpdatedAt)
+	_, err = s.db.ExecContext(ctx, query, p.ID, p.OrgID, p.Name, p.Slug, p.Description, string(tagsJSON), p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("store: failed to create project: %w", err)
 	}
@@ -36,12 +45,13 @@ func (s *sqlProjectStore) Create(ctx context.Context, p *Project) error {
 }
 
 func (s *sqlProjectStore) GetByID(ctx context.Context, id string) (*Project, error) {
-	query := `SELECT id, org_id, name, slug, description, created_at, updated_at FROM projects WHERE id = ?`
+	query := `SELECT id, org_id, name, slug, description, tags, created_at, updated_at FROM projects WHERE id = ?`
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	var p Project
 	var desc sql.NullString
-	err := row.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &p.CreatedAt, &p.UpdatedAt)
+	var tagsJSON sql.NullString
+	err := row.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &tagsJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -49,16 +59,21 @@ func (s *sqlProjectStore) GetByID(ctx context.Context, id string) (*Project, err
 		return nil, fmt.Errorf("store: failed to get project by id: %w", err)
 	}
 	p.Description = desc.String
+	p.Tags = []string{}
+	if tagsJSON.Valid && tagsJSON.String != "" {
+		_ = json.Unmarshal([]byte(tagsJSON.String), &p.Tags)
+	}
 	return &p, nil
 }
 
 func (s *sqlProjectStore) GetBySlug(ctx context.Context, slug string) (*Project, error) {
-	query := `SELECT id, org_id, name, slug, description, created_at, updated_at FROM projects WHERE slug = ?`
+	query := `SELECT id, org_id, name, slug, description, tags, created_at, updated_at FROM projects WHERE slug = ?`
 	row := s.db.QueryRowContext(ctx, query, slug)
 
 	var p Project
 	var desc sql.NullString
-	err := row.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &p.CreatedAt, &p.UpdatedAt)
+	var tagsJSON sql.NullString
+	err := row.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &tagsJSON, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -66,6 +81,10 @@ func (s *sqlProjectStore) GetBySlug(ctx context.Context, slug string) (*Project,
 		return nil, fmt.Errorf("store: failed to get project by slug: %w", err)
 	}
 	p.Description = desc.String
+	p.Tags = []string{}
+	if tagsJSON.Valid && tagsJSON.String != "" {
+		_ = json.Unmarshal([]byte(tagsJSON.String), &p.Tags)
+	}
 	return &p, nil
 }
 
@@ -75,10 +94,10 @@ func (s *sqlProjectStore) List(ctx context.Context, orgID string) ([]*Project, e
 	var err error
 
 	if orgID != "" {
-		query = `SELECT id, org_id, name, slug, description, created_at, updated_at FROM projects WHERE org_id = ? ORDER BY name ASC`
+		query = `SELECT id, org_id, name, slug, description, tags, created_at, updated_at FROM projects WHERE org_id = ? ORDER BY name ASC`
 		rows, err = s.db.QueryContext(ctx, query, orgID)
 	} else {
-		query = `SELECT id, org_id, name, slug, description, created_at, updated_at FROM projects ORDER BY name ASC`
+		query = `SELECT id, org_id, name, slug, description, tags, created_at, updated_at FROM projects ORDER BY name ASC`
 		rows, err = s.db.QueryContext(ctx, query)
 	}
 
@@ -91,13 +110,46 @@ func (s *sqlProjectStore) List(ctx context.Context, orgID string) ([]*Project, e
 	for rows.Next() {
 		var p Project
 		var desc sql.NullString
-		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var tagsJSON sql.NullString
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.Name, &p.Slug, &desc, &tagsJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("store: failed to scan project: %w", err)
 		}
 		p.Description = desc.String
+		p.Tags = []string{}
+		if tagsJSON.Valid && tagsJSON.String != "" {
+			_ = json.Unmarshal([]byte(tagsJSON.String), &p.Tags)
+		}
 		projects = append(projects, &p)
 	}
 	return projects, rows.Err()
+}
+
+func (s *sqlProjectStore) Update(ctx context.Context, p *Project) error {
+	p.UpdatedAt = time.Now().UTC()
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
+	tagsJSON, err := json.Marshal(p.Tags)
+	if err != nil {
+		return fmt.Errorf("store: failed to marshal project tags: %w", err)
+	}
+
+	query := `
+	UPDATE projects SET name = ?, slug = ?, description = ?, tags = ?, updated_at = ?
+	WHERE id = ?`
+
+	res, err := s.db.ExecContext(ctx, query, p.Name, p.Slug, p.Description, string(tagsJSON), p.UpdatedAt, p.ID)
+	if err != nil {
+		return fmt.Errorf("store: failed to update project: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *sqlProjectStore) Delete(ctx context.Context, id string) error {

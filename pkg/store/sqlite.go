@@ -31,12 +31,15 @@ type SQLiteStore struct {
 	services            ServiceStore
 	envVars             EnvVarStore
 	volumes             VolumeStore
+	stacks              StackStore
+	networks            NetworkStore
 	deployments         DeploymentStore
 	backups             BackupStore
 	audit               AuditStore
 	builds              BuildStore
 	githubInstallations GitHubInstallationStore
 	schedules           ScheduleStore
+	machines            MachineStore
 }
 
 // perConnectionPragmaParams are SQLite session-level settings that database/sql
@@ -123,12 +126,15 @@ func newStoreWithExecutor(exec dbExecutor, isTx bool) *SQLiteStore {
 	s.services = &sqlServiceStore{db: exec}
 	s.envVars = &sqlEnvVarStore{db: exec}
 	s.volumes = &sqlVolumeStore{db: exec}
+	s.stacks = &sqlStackStore{db: exec}
+	s.networks = &sqlNetworkStore{db: exec}
 	s.deployments = &sqlDeploymentStore{db: exec}
 	s.backups = &sqlBackupStore{db: exec}
 	s.audit = &sqlAuditStore{db: exec}
 	s.builds = &sqlBuildStore{db: exec}
 	s.githubInstallations = &sqlGitHubInstallationStore{db: exec}
 	s.schedules = &sqlScheduleStore{db: exec}
+	s.machines = &sqlMachineStore{db: exec}
 
 	return s
 }
@@ -142,12 +148,15 @@ func (s *SQLiteStore) Stages() StageStore                           { return s.s
 func (s *SQLiteStore) Services() ServiceStore                       { return s.services }
 func (s *SQLiteStore) EnvVars() EnvVarStore                         { return s.envVars }
 func (s *SQLiteStore) Volumes() VolumeStore                         { return s.volumes }
+func (s *SQLiteStore) Stacks() StackStore                           { return s.stacks }
+func (s *SQLiteStore) Networks() NetworkStore                       { return s.networks }
 func (s *SQLiteStore) Deployments() DeploymentStore                 { return s.deployments }
 func (s *SQLiteStore) Backups() BackupStore                         { return s.backups }
 func (s *SQLiteStore) Audit() AuditStore                            { return s.audit }
 func (s *SQLiteStore) Builds() BuildStore                           { return s.builds }
 func (s *SQLiteStore) GitHubInstallations() GitHubInstallationStore { return s.githubInstallations }
 func (s *SQLiteStore) Schedules() ScheduleStore                     { return s.schedules }
+func (s *SQLiteStore) Machines() MachineStore                       { return s.machines }
 
 func (s *SQLiteStore) DB() *sql.DB {
 	return s.db

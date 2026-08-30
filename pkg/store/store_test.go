@@ -124,8 +124,18 @@ func TestStore_Organizations(t *testing.T) {
 
 	// List
 	list, err := st.Organizations().List(ctx)
-	if err != nil || len(list) != 1 {
-		t.Fatalf("Expected 1 org in list, got %d (err: %v)", len(list), err)
+	if err != nil || len(list) < 1 {
+		t.Fatalf("Expected at least 1 org in list, got %d (err: %v)", len(list), err)
+	}
+	found := false
+	for _, item := range list {
+		if item.ID == org.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Created org %s not found in list", org.ID)
 	}
 
 	// Delete
@@ -248,9 +258,21 @@ func TestStore_ProjectStageServiceAndEnvVars(t *testing.T) {
 	org := &store.Organization{Name: "Org 1", Slug: "org-1"}
 	_ = st.Organizations().Create(ctx, org)
 
-	prj := &store.Project{OrgID: org.ID, Name: "E-Commerce", Slug: "e-comm"}
+	prj := &store.Project{OrgID: org.ID, Name: "E-Commerce", Slug: "e-comm", Tags: []string{"retail", "team:checkout"}}
 	if err := st.Projects().Create(ctx, prj); err != nil {
 		t.Fatalf("Failed to create project: %v", err)
+	}
+
+	fetchedPrj, err := st.Projects().GetByID(ctx, prj.ID)
+	if err != nil || len(fetchedPrj.Tags) != 2 {
+		t.Fatalf("Failed to get project with tags: %v", err)
+	}
+
+	// Update project
+	fetchedPrj.Description = "Updated description"
+	fetchedPrj.Tags = append(fetchedPrj.Tags, "v2")
+	if err := st.Projects().Update(ctx, fetchedPrj); err != nil {
+		t.Fatalf("Failed to update project: %v", err)
 	}
 
 	stage := &store.Stage{ProjectID: prj.ID, Name: "Production", Slug: "production"}
@@ -267,14 +289,20 @@ func TestStore_ProjectStageServiceAndEnvVars(t *testing.T) {
 		Image:         "pikpik/auth:v1.0",
 		ContainerPort: 8080,
 		DomainNames:   []string{"auth.pikpik.io"},
+		Tags:          []string{"backend", "env:prod"},
 	}
 	if err := st.Services().Create(ctx, svc); err != nil {
 		t.Fatalf("Failed to create service: %v", err)
 	}
 
 	bySlug, err := st.Services().GetBySlug(ctx, prj.ID, stage.ID, "auth-api")
-	if err != nil || bySlug.ID != svc.ID {
-		t.Fatalf("Failed to get service by slug: %v", err)
+	if err != nil || bySlug.ID != svc.ID || len(bySlug.Tags) != 2 {
+		t.Fatalf("Failed to get service by slug with tags: %v", err)
+	}
+
+	byPrj, err := st.Services().ListByProject(ctx, prj.ID)
+	if err != nil || len(byPrj) != 1 {
+		t.Fatalf("Failed to list services by project: %v", err)
 	}
 
 	// Env Vars (Upsert test)

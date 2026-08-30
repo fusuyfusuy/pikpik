@@ -67,6 +67,7 @@ type Project struct {
 	Name        string    `json:"name"`
 	Slug        string    `json:"slug"`
 	Description string    `json:"description"`
+	Tags        []string  `json:"tags"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -100,6 +101,9 @@ type Service struct {
 	BuildStrategy    string    `json:"build_strategy,omitempty"`
 	DockerfilePath   string    `json:"dockerfile_path,omitempty"`
 	PublishDirectory string    `json:"publish_directory,omitempty"`
+	Tags             []string  `json:"tags"`
+	RuntimeMode      string    `json:"runtime_mode"` // "swarm" or "standalone"
+	ComposeYAML      string    `json:"compose_yaml,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -211,3 +215,56 @@ type BackupSchedule struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 }
+
+// Stack represents a multi-container compose stack grouping within a project.
+type Stack struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"project_id"`
+	Name        string    `json:"name"`
+	ComposeYAML string    `json:"compose_yaml"`
+	Status      string    `json:"status"` // "stopped", "deploying", "running", "degraded", "failed"
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ManagedNetwork represents a project-level or stack-isolated virtual network.
+type ManagedNetwork struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"project_id"`
+	Name       string    `json:"name"`
+	Driver     string    `json:"driver"`
+	Scope      string    `json:"scope"` // "stack", "project", "custom"
+	IsExternal bool      `json:"is_external"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// ManagedVolume represents a persistent storage volume managed by pikpik.
+type ManagedVolume struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	Name      string    `json:"name"`
+	Driver    string    `json:"driver"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ManagedMachine represents a remote host running pikpik-agent or swarm worker/manager.
+type ManagedMachine struct {
+	ID            string     `json:"id"`
+	Hostname      string     `json:"hostname"`
+	Role          string     `json:"role"` // "worker", "manager", "standalone"
+	PublicIP      string     `json:"public_ip"`
+	PrivateIP     string     `json:"private_ip"`
+	OSKernel      string     `json:"os_kernel"`
+	CPUArch       string     `json:"cpu_arch"`
+	DockerVersion string     `json:"docker_version"`
+	AgentVersion  string     `json:"agent_version"`
+	Status        string     `json:"status"` // "online", "degraded", "offline"
+	LastSeen      *time.Time `json:"last_seen,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+

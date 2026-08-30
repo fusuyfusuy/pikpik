@@ -35,12 +35,15 @@ type Store interface {
 	Services() ServiceStore
 	EnvVars() EnvVarStore
 	Volumes() VolumeStore
+	Stacks() StackStore
+	Networks() NetworkStore
 	Deployments() DeploymentStore
 	Backups() BackupStore
 	Audit() AuditStore
 	Builds() BuildStore
 	GitHubInstallations() GitHubInstallationStore
 	Schedules() ScheduleStore
+	Machines() MachineStore
 
 	// WithTx executes the supplied operation inside an atomic database transaction.
 	WithTx(ctx context.Context, fn func(tx Store) error) error
@@ -99,6 +102,7 @@ type ProjectStore interface {
 	GetByID(ctx context.Context, id string) (*Project, error)
 	GetBySlug(ctx context.Context, slug string) (*Project, error)
 	List(ctx context.Context, orgID string) ([]*Project, error)
+	Update(ctx context.Context, p *Project) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -117,6 +121,8 @@ type ServiceStore interface {
 	GetByID(ctx context.Context, id string) (*Service, error)
 	GetBySlug(ctx context.Context, projectID, stageID, slug string) (*Service, error)
 	ListByStage(ctx context.Context, stageID string) ([]*Service, error)
+	ListByProject(ctx context.Context, projectID string) ([]*Service, error)
+	ListAll(ctx context.Context) ([]*Service, error)
 	UpdateStatus(ctx context.Context, id string, status string) error
 	Update(ctx context.Context, s *Service) error
 	Delete(ctx context.Context, id string) error
@@ -130,13 +136,46 @@ type EnvVarStore interface {
 	Delete(ctx context.Context, tier ScopeTier, resourceID, key string) error
 }
 
-// VolumeStore handles persistent storage volume metadata.
+// VolumeStore handles persistent storage volume metadata and managed volumes.
 type VolumeStore interface {
 	Create(ctx context.Context, v *Volume) error
 	GetByID(ctx context.Context, id string) (*Volume, error)
 	ListByService(ctx context.Context, serviceID string) ([]*Volume, error)
 	Delete(ctx context.Context, id string) error
+
+	// Managed volumes
+	CreateManaged(ctx context.Context, v *ManagedVolume) error
+	GetManagedByID(ctx context.Context, id string) (*ManagedVolume, error)
+	GetManagedByName(ctx context.Context, projectID, name string) (*ManagedVolume, error)
+	ListManagedByProject(ctx context.Context, projectID string) ([]*ManagedVolume, error)
+	ListAllManaged(ctx context.Context) ([]*ManagedVolume, error)
+	DeleteManaged(ctx context.Context, id string) error
+	DeleteManagedByName(ctx context.Context, projectID, name string) error
 }
+
+// StackStore handles multi-container compose stack persistence.
+type StackStore interface {
+	Create(ctx context.Context, s *Stack) error
+	GetByID(ctx context.Context, id string) (*Stack, error)
+	GetByName(ctx context.Context, projectID, name string) (*Stack, error)
+	ListByProject(ctx context.Context, projectID string) ([]*Stack, error)
+	ListAll(ctx context.Context) ([]*Stack, error)
+	Update(ctx context.Context, s *Stack) error
+	UpdateStatus(ctx context.Context, id string, status string) error
+	Delete(ctx context.Context, id string) error
+}
+
+// NetworkStore handles virtual and bridge networks persistence.
+type NetworkStore interface {
+	Create(ctx context.Context, n *ManagedNetwork) error
+	GetByID(ctx context.Context, id string) (*ManagedNetwork, error)
+	GetByName(ctx context.Context, projectID, name string) (*ManagedNetwork, error)
+	ListByProject(ctx context.Context, projectID string) ([]*ManagedNetwork, error)
+	ListAll(ctx context.Context) ([]*ManagedNetwork, error)
+	Delete(ctx context.Context, id string) error
+	DeleteByName(ctx context.Context, projectID, name string) error
+}
+
 
 // DeploymentStore handles service deployment event records.
 type DeploymentStore interface {
@@ -172,4 +211,17 @@ type ScheduleStore interface {
 	UpdateRunTimes(ctx context.Context, id string, lastRun, nextRun time.Time) error
 	Delete(ctx context.Context, id string) error
 }
+
+// MachineStore handles remote machine agent registration, metadata, and status persistence.
+type MachineStore interface {
+	Create(ctx context.Context, m *ManagedMachine) error
+	GetByID(ctx context.Context, id string) (*ManagedMachine, error)
+	GetByHostname(ctx context.Context, hostname string) (*ManagedMachine, error)
+	List(ctx context.Context) ([]*ManagedMachine, error)
+	Update(ctx context.Context, m *ManagedMachine) error
+	Upsert(ctx context.Context, m *ManagedMachine) error
+	UpdateStatus(ctx context.Context, id string, status string, lastSeen time.Time) error
+	Delete(ctx context.Context, id string) error
+}
+
 
