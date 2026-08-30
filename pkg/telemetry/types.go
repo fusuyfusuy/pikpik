@@ -175,6 +175,9 @@ type AgentServer interface {
 	RegisterNode(nodeID string, session interface{})
 	// UnregisterNode removes disconnected worker node sessions.
 	UnregisterNode(nodeID string)
+	// RingBufferSnapshot returns a thread-safe copy of the ring buffer registry,
+	// safe for callers to range over without racing concurrent writers.
+	RingBufferSnapshot() map[string]RingBuffer
 }
 
 // RingBuffer defines the high-performance in-memory circular storage.

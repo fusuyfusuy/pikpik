@@ -145,3 +145,37 @@ func TestProcReaderMissingFiles(t *testing.T) {
 	_, err := reader.ReadHostMetrics(context.Background())
 	assert.Error(t, err)
 }
+
+// TestProcReaderTruncatedCPULine verifies a malformed/truncated "cpu " line in
+// /proc/stat (fewer than the 9 fields readCPU indexes into, e.g. missing the
+// "steal" column) is skipped gracefully instead of panicking with an
+// index-out-of-range on fields[8].
+func TestProcReaderTruncatedCPULine(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Only 8 fields total ("cpu" label + 7 numeric columns) - one short of the
+	// 9 fields (through "steal") that readCPU reads.
+	truncatedStat := "cpu  100 0 100 800 0 0 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "stat"), []byte(truncatedStat), 0644))
+
+	meminfo := "MemTotal:       1024000 kB\nMemAvailable:    512000 kB\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "meminfo"), []byte(meminfo), 0644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "diskstats"), []byte(""), 0644))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "net"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "net", "dev"), []byte(""), 0644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "loadavg"), []byte("0 0 0 0/0 0\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "uptime"), []byte("1.0 1.0\n"), 0644))
+
+	reader := telemetry.NewProcReaderWithRoot(tmpDir)
+
+	assert.NotPanics(t, func() {
+		m, err := reader.ReadHostMetrics(context.Background())
+		require.NoError(t, err)
+		// The truncated "cpu " line must be skipped rather than partially
+		// parsed, so CPUPercent stays at its zero value.
+		assert.Equal(t, 0.0, m.CPUPercent)
+	})
+}

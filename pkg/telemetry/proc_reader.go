@@ -91,7 +91,7 @@ func (p *LinuxProcReader) readCPU(m *HostMetrics) error {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "cpu ") {
 			fields := strings.Fields(line)
-			if len(fields) < 8 {
+			if len(fields) < 9 {
 				continue
 			}
 

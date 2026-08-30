@@ -67,6 +67,20 @@ func (s *defaultAgentServer) GetRingBuffer(key string) telemetry.RingBuffer {
 	return s.ringBuffers[key]
 }
 
+// RingBufferSnapshot returns a thread-safe copy of the ring buffer registry.
+// Callers must use this instead of accessing the map passed into
+// AgentServerOptions directly, since that map is mutated concurrently
+// (under ringMu) by incoming telemetry writes.
+func (s *defaultAgentServer) RingBufferSnapshot() map[string]telemetry.RingBuffer {
+	s.ringMu.RLock()
+	defer s.ringMu.RUnlock()
+	snapshot := make(map[string]telemetry.RingBuffer, len(s.ringBuffers))
+	for key, buf := range s.ringBuffers {
+		snapshot[key] = buf
+	}
+	return snapshot
+}
+
 // RegisterNode registers a newly authenticated worker node session.
 func (s *defaultAgentServer) RegisterNode(nodeID string, session interface{}) {
 	s.mu.Lock()

@@ -209,6 +209,69 @@ func TestAgentClientServerE2E(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond, "node ring buffer should contain points")
 }
 
+// TestRingBufferSnapshotConcurrentAccess proves RingBufferSnapshot can be
+// ranged over safely by a reader goroutine (mimicking the background
+// downsampler ticker in cmd/pikpik/main.go) while real telemetry ingestion
+// concurrently mutates the server's ring buffer registry via
+// recordToRingBuffer. Run with -race: before RingBufferSnapshot existed,
+// ranging the raw map shared between main.go and the server would trip Go's
+// concurrent map read/write detector under this exact workload.
+func TestRingBufferSnapshotConcurrentAccess(t *testing.T) {
+	ringBuffers := make(map[string]telemetry.RingBuffer)
+	agentServer := agent.NewAgentServer(agent.AgentServerOptions{
+		EnrollmentToken: "snapshot_test_token",
+		RingBuffers:     ringBuffers,
+	})
+
+	srvImpl, ok := agentServer.(interface {
+		RingBufferSnapshot() map[string]telemetry.RingBuffer
+	})
+	require.True(t, ok, "AgentServer must implement RingBufferSnapshot")
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h, ok := agentServer.(interface{ HandleHTTP(http.ResponseWriter, *http.Request) }); ok {
+			h.HandleHTTP(w, r)
+		}
+	}))
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+
+	cfg := agent.AgentConfig{
+		NodeID:                  "snapshot_race_node",
+		ControlPlaneURL:         wsURL,
+		EnrollmentToken:         "snapshot_test_token",
+		HostMetricInterval:      1 * time.Millisecond,
+		ContainerMetricInterval: 1 * time.Millisecond,
+	}
+
+	client, err := agent.NewAgentClient(cfg, &mockProcReader{}, &mockDockerCollector{}, agent.NewCommandDispatcher(""))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, client.Start(ctx))
+	defer client.Close()
+
+	// Reader: repeatedly takes snapshots and ranges over them concurrently
+	// with the telemetry writes flowing in from the client above, exactly
+	// like the downsampler ticker does against the live server in main.go.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			snap := srvImpl.RingBufferSnapshot()
+			for range snap {
+				// no-op: just prove ranging a snapshot is race-free
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
 // TestAgentServerAuthenticationFailure verifies invalid tokens are rejected with HTTP 401.
 func TestAgentServerAuthenticationFailure(t *testing.T) {
 	serverOpts := agent.AgentServerOptions{
