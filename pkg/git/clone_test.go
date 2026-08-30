@@ -2,13 +2,42 @@ package git_test
 
 import (
 	"context"
+	"errors"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fusuycorp/pikpik/pkg/git"
 )
+
+// startGitHTTPServer serves bareRepoDir over the git smart-HTTP protocol using the
+// system's git-http-backend CGI binary, so tests can exercise a real https/http clone
+// without touching the network or relying on the now-disallowed file:// transport.
+func startGitHTTPServer(t *testing.T, bareRepoDir string) *httptest.Server {
+	t.Helper()
+
+	execPathOut, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Fatalf("failed to resolve git --exec-path: %v", err)
+	}
+	backend := filepath.Join(strings.TrimSpace(string(execPathOut)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skipf("git-http-backend not available, skipping smart-HTTP clone test: %v", err)
+	}
+
+	handler := &cgi.Handler{
+		Path: backend,
+		Env: []string{
+			"GIT_PROJECT_ROOT=" + filepath.Dir(bareRepoDir),
+			"GIT_HTTP_EXPORT_ALL=1",
+		},
+	}
+	return httptest.NewServer(handler)
+}
 
 func createTestLocalGitRepo(t *testing.T) (string, string) {
 	t.Helper()
@@ -55,11 +84,20 @@ func createTestLocalGitRepo(t *testing.T) (string, string) {
 
 func TestCloneRepository_Local(t *testing.T) {
 	repoDir, expectedSHA := createTestLocalGitRepo(t)
+
+	bareDir := filepath.Join(t.TempDir(), "bare-repo.git")
+	if out, err := exec.Command("git", "clone", "--bare", repoDir, bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("failed to create bare repo: %v, output: %s", err, string(out))
+	}
+
+	server := startGitHTTPServer(t, bareDir)
+	defer server.Close()
+
 	destDir := filepath.Join(t.TempDir(), "cloned-workspace")
 
 	ctx := context.Background()
 	opts := git.CloneOptions{
-		RepoURL:   "file://" + repoDir,
+		RepoURL:   server.URL + "/" + filepath.Base(bareDir),
 		Branch:    "main",
 		CommitSHA: expectedSHA,
 		Depth:     1,
@@ -114,6 +152,72 @@ func TestCloneRepository_InvalidRepo(t *testing.T) {
 	// Verify secret token is NOT leaked in the error message
 	if opts.Token != "" && (len(err.Error()) > 0 && containsToken(err.Error(), opts.Token)) {
 		t.Errorf("token was leaked in error message: %s", err.Error())
+	}
+}
+
+// TestCloneRepository_RejectsDangerousURLs verifies that CloneRepository refuses to invoke
+// git for URLs using disallowed transports (ext::, file://, fd::), bare local paths, and
+// flag-injection attempts (a repo_url starting with "-"), before any subprocess is spawned.
+func TestCloneRepository_RejectsDangerousURLs(t *testing.T) {
+	dangerousURLs := []string{
+		`ext::sh -c "id"`,
+		"file:///etc/passwd",
+		"fd::1",
+		"--upload-pack=touch /tmp/pwned",
+		"/etc/passwd",
+		"relative/local/path",
+	}
+
+	for _, repoURL := range dangerousURLs {
+		t.Run(repoURL, func(t *testing.T) {
+			ctx := context.Background()
+			opts := git.CloneOptions{
+				RepoURL: repoURL,
+				WorkDir: filepath.Join(t.TempDir(), "rejected-clone"),
+			}
+
+			ws, err := git.CloneRepository(ctx, opts)
+			if err == nil {
+				_ = ws.Cleanup()
+				t.Fatalf("expected repo_url %q to be rejected, but clone succeeded", repoURL)
+			}
+
+			// The rejection must come from URL validation, not from a failed/attempted
+			// git subprocess invocation (which would wrap ErrCloneFailed).
+			if errors.Is(err, git.ErrCloneFailed) {
+				t.Errorf("repo_url %q reached git exec instead of being rejected up front: %v", repoURL, err)
+			}
+		})
+	}
+}
+
+// TestCloneRepository_AllowsSafeSchemes verifies that URLs using allowed transports pass
+// validation (they may still fail later at the actual git exec step, e.g. due to unreachable
+// hosts in this test, which is fine — the point is they aren't rejected by the allowlist).
+func TestCloneRepository_AllowsSafeSchemes(t *testing.T) {
+	safeURLs := []string{
+		"https://example.invalid/org/repo.git",
+		"http://example.invalid/org/repo.git",
+		"ssh://git@example.invalid/org/repo.git",
+		"git@example.invalid:org/repo.git",
+	}
+
+	for _, repoURL := range safeURLs {
+		t.Run(repoURL, func(t *testing.T) {
+			ctx := context.Background()
+			opts := git.CloneOptions{
+				RepoURL: repoURL,
+				WorkDir: filepath.Join(t.TempDir(), "allowed-clone"),
+			}
+
+			_, err := git.CloneRepository(ctx, opts)
+			if err == nil {
+				t.Fatalf("expected clone of unreachable host %q to fail at exec, not succeed", repoURL)
+			}
+			if !errors.Is(err, git.ErrCloneFailed) {
+				t.Errorf("repo_url %q was rejected by validation instead of reaching git exec: %v", repoURL, err)
+			}
+		})
 	}
 }
 

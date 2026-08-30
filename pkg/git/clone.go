@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,13 +20,50 @@ var (
 
 	// ErrCloneFailed is returned when git clone fails.
 	ErrCloneFailed = errors.New("git: clone failed")
+
+	// allowedGitURLSchemes is the set of transports CloneRepository is permitted to invoke.
+	// Deliberately excludes git's alternate transport helpers (ext::, fd::) and file:// / bare
+	// local paths, which can be abused for arbitrary command execution or local file disclosure
+	// when opts.RepoURL originates from an untrusted source (e.g. a webhook payload).
+	allowedGitURLSchemes = map[string]bool{
+		"https": true,
+		"http":  true,
+		"ssh":   true,
+	}
+
+	// scpLikeSSHPattern matches the scp-like SSH shorthand git supports, e.g. git@github.com:org/repo.git.
+	scpLikeSSHPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:.+$`)
 )
+
+// validateRepoURL ensures rawURL uses an explicitly allowed git transport before it is ever
+// passed to exec.CommandContext. See allowedGitURLSchemes for the rationale.
+func validateRepoURL(rawURL string) error {
+	if strings.Contains(rawURL, "://") {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return fmt.Errorf("git: invalid repo_url: %w", err)
+		}
+		if !allowedGitURLSchemes[strings.ToLower(parsed.Scheme)] {
+			return fmt.Errorf("git: repo_url scheme %q is not allowed (allowed: https, http, ssh, or scp-like git@host:path)", parsed.Scheme)
+		}
+		return nil
+	}
+
+	if scpLikeSSHPattern.MatchString(rawURL) {
+		return nil
+	}
+
+	return fmt.Errorf("git: repo_url %q must use https://, http://, ssh://, or scp-like git@host:path", rawURL)
+}
 
 // CloneRepository executes a typed git clone command using exec.CommandContext.
 // Zero shell interpolation is performed. Supports HTTPS tokens and SSH deploy keys.
 func CloneRepository(ctx context.Context, opts CloneOptions) (*Workspace, error) {
 	if strings.TrimSpace(opts.RepoURL) == "" {
 		return nil, ErrEmptyRepoURL
+	}
+	if err := validateRepoURL(opts.RepoURL); err != nil {
+		return nil, err
 	}
 
 	workDir := opts.WorkDir
@@ -81,7 +119,7 @@ func CloneRepository(ctx context.Context, opts CloneOptions) (*Workspace, error)
 	}()
 
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmdEnv := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmdEnv := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=http:https:ssh")
 
 	// Handle SSH Deploy Key
 	if strings.TrimSpace(opts.SSHPrivateKey) != "" {

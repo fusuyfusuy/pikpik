@@ -212,7 +212,7 @@ func ParseGenericGitPush(r *http.Request) (*PushEvent, error) {
 	var bodyBytes []byte
 	if r.Body != nil {
 		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
+		bodyBytes, err = io.ReadAll(io.LimitReader(r.Body, 5*1024*1024))
 		if err != nil {
 			return nil, fmt.Errorf("git: failed to read request body: %w", err)
 		}
