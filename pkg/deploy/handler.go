@@ -143,8 +143,7 @@ func (h *DefaultDeployWebhookHandler) ValidatePayload(payload *DeployNudgePayloa
 			if allowed == "" {
 				continue
 			}
-			// Exact domain match, prefix match, or wildcard match
-			if strings.HasPrefix(image, allowed) || strings.HasPrefix(image, strings.TrimSuffix(allowed, "/*")) {
+			if registryAllowed(image, allowed) {
 				matched = true
 				break
 			}
@@ -155,6 +154,21 @@ func (h *DefaultDeployWebhookHandler) ValidatePayload(payload *DeployNudgePayloa
 	}
 
 	return nil
+}
+
+// registryAllowed reports whether image is covered by the allowed registry
+// entry, matching only on path-segment boundaries (an exact match, or a
+// prefix match immediately followed by "/") rather than a naive string
+// prefix. This prevents typosquat bypasses such as "ghcr.io/fusuycorp"
+// matching "ghcr.io/fusuycorpevil/backdoor". A trailing "/*" or "/" on the
+// allowlist entry is treated the same as the bare entry.
+func registryAllowed(image, allowed string) bool {
+	allowed = strings.TrimSuffix(allowed, "/*")
+	allowed = strings.TrimSuffix(allowed, "/")
+	if allowed == "" {
+		return false
+	}
+	return image == allowed || strings.HasPrefix(image, allowed+"/")
 }
 
 // ServeHTTP implements the http.Handler interface for POST /api/deploy/nudge/{token}.
@@ -304,16 +318,14 @@ func (h *DefaultDeployWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// extractClientIP returns the actual TCP peer address to key the rate
+// limiter on. Proxy headers (X-Forwarded-For/X-Real-IP) are deliberately
+// NOT trusted: this daemon has no reverse-proxy trust configuration, and
+// honoring caller-supplied headers on this unauthenticated endpoint lets any
+// client mint an unlimited number of distinct rate-limit buckets (spoofing
+// a new header value per request), defeating rate limiting and exhausting
+// the limiter's memory.
 func extractClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-			return strings.TrimSpace(parts[0])
-		}
-	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return strings.TrimSpace(xrip)
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host

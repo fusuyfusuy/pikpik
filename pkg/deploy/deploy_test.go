@@ -125,6 +125,25 @@ func TestDeployWebhookHandler_PayloadValidation(t *testing.T) {
 		Image: "docker.io/untrusted/repo:tag",
 	}, []string{"registry.yourdomain.com", "ghcr.io/fusuycorp/"})
 	assert.ErrorIs(t, err, deploy.ErrUnauthorizedRegistry)
+
+	// Typosquat bypass: "ghcr.io/fusuycorpevil" must NOT match allowlist entry
+	// "ghcr.io/fusuycorp" via naive string-prefix matching.
+	err = handler.ValidatePayload(&deploy.DeployNudgePayload{
+		Image: "ghcr.io/fusuycorpevil/backdoor:latest",
+	}, []string{"ghcr.io/fusuycorp"})
+	assert.ErrorIs(t, err, deploy.ErrUnauthorizedRegistry)
+
+	// A genuine sub-path of the allowed org must still pass.
+	err = handler.ValidatePayload(&deploy.DeployNudgePayload{
+		Image: "ghcr.io/fusuycorp/realimage:v1",
+	}, []string{"ghcr.io/fusuycorp"})
+	assert.NoError(t, err)
+
+	// An exact, bare-org match must still pass.
+	err = handler.ValidatePayload(&deploy.DeployNudgePayload{
+		Image: "ghcr.io/fusuycorp",
+	}, []string{"ghcr.io/fusuycorp"})
+	assert.NoError(t, err)
 }
 
 func TestDeployWebhookHandler_PayloadSizeCeiling(t *testing.T) {
@@ -141,6 +160,45 @@ func TestDeployWebhookHandler_PayloadSizeCeiling(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+}
+
+// TestDeployWebhookHandler_SpoofedForwardedForDoesNotBypassRateLimit verifies that a caller
+// cannot mint a fresh IP rate-limit bucket per request by spoofing X-Forwarded-For; the limiter
+// must key on the real TCP peer (RemoteAddr), not attacker-controlled headers.
+func TestDeployWebhookHandler_SpoofedForwardedForDoesNotBypassRateLimit(t *testing.T) {
+	handler := deploy.NewDeployWebhookHandler(deploy.HandlerOptions{
+		IPRateLimit:  5,
+		IPBurstLimit: 1,
+	})
+
+	rawToken, _, err := handler.GenerateToken(context.Background(), "svc_web", "proj_web")
+	require.NoError(t, err)
+	body := []byte(`{"image":"registry.example.com/app:v1"}`)
+
+	newReq := func(xff string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/api/deploy/nudge/"+rawToken, bytes.NewReader(body))
+		req.RemoteAddr = "203.0.113.7:54321"
+		if xff != "" {
+			req.Header.Set("X-Forwarded-For", xff)
+		}
+		return req
+	}
+
+	// First request from the real peer consumes the single burst token.
+	rr1 := httptest.NewRecorder()
+	handler.ServeHTTP(rr1, newReq(""))
+	assert.Equal(t, http.StatusAccepted, rr1.Code)
+
+	// A second request from the same real peer, spoofing a distinct X-Forwarded-For value,
+	// must NOT get a fresh bucket - it should be rate limited just like an unspoofed repeat.
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, newReq("1.2.3.4"))
+	assert.Equal(t, http.StatusTooManyRequests, rr2.Code)
+
+	// Yet another distinct spoofed value from the same real peer: still limited.
+	rr3 := httptest.NewRecorder()
+	handler.ServeHTTP(rr3, newReq("9.9.9.9"))
+	assert.Equal(t, http.StatusTooManyRequests, rr3.Code)
 }
 
 func TestDeployWebhookHandler_DispatcherIntegration(t *testing.T) {
