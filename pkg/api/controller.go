@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,11 @@ type Controller interface {
 	DeleteBackup(ctx context.Context, id string) error
 	ListBackupDestinations(ctx context.Context) ([]BackupDestination, error)
 	CreateBackupDestination(ctx context.Context, dest *BackupDestination) (*BackupDestination, error)
+	ListBackupSchedules(ctx context.Context, serviceID string) ([]*store.BackupSchedule, error)
+	GetBackupSchedule(ctx context.Context, id string) (*store.BackupSchedule, error)
+	CreateBackupSchedule(ctx context.Context, req *CreateBackupScheduleRequest) (*store.BackupSchedule, error)
+	UpdateBackupSchedule(ctx context.Context, id string, req *UpdateBackupScheduleRequest) (*store.BackupSchedule, error)
+	DeleteBackupSchedule(ctx context.Context, id string) error
 
 	// Ingress
 	ListDomains(ctx context.Context) ([]DomainBinding, error)
@@ -153,6 +159,7 @@ type DefaultController struct {
 	domains      map[string]*DomainBinding
 	builds       map[string]*store.Build
 	splits       map[string]*TrafficSplitDTO
+	schedules    map[string]*store.BackupSchedule
 }
 
 // NewDefaultController constructs a new DefaultController.
@@ -181,6 +188,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		domains:        make(map[string]*DomainBinding),
 		builds:         make(map[string]*store.Build),
 		splits:         make(map[string]*TrafficSplitDTO),
+		schedules:      make(map[string]*store.BackupSchedule),
 	}
 }
 
@@ -312,7 +320,7 @@ func (c *DefaultController) ListApps(ctx context.Context) ([]App, error) {
 	var result []App
 	if c.st != nil {
 		if db := c.st.DB(); db != nil {
-			query := `SELECT id, name, image, replicas, domain_names, status, created_at, updated_at FROM services WHERE type = 'app'`
+			query := `SELECT id, name, image, replicas, container_port, domain_names, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at FROM services WHERE type = 'app'`
 			rows, err := db.QueryContext(ctx, query)
 			if err == nil {
 				defer rows.Close()
@@ -320,8 +328,18 @@ func (c *DefaultController) ListApps(ctx context.Context) ([]App, error) {
 					var a App
 					var domJSON string
 					var crAt, upAt string
-					if err := rows.Scan(&a.ID, &a.Name, &a.Image, &a.Replicas, &domJSON, &a.Status, &crAt, &upAt); err == nil {
+					var port sql.NullInt64
+					var gitRepo, gitBranch, buildStrat, dockerfile, pubDir sql.NullString
+					if err := rows.Scan(&a.ID, &a.Name, &a.Image, &a.Replicas, &port, &domJSON, &a.Status, &gitRepo, &gitBranch, &buildStrat, &dockerfile, &pubDir, &crAt, &upAt); err == nil {
 						_ = json.Unmarshal([]byte(domJSON), &a.Domains)
+						if port.Valid {
+							a.ContainerPort = int(port.Int64)
+						}
+						a.GitRepoURL = gitRepo.String
+						a.GitBranch = gitBranch.String
+						a.BuildStrategy = buildStrat.String
+						a.DockerfilePath = dockerfile.String
+						a.PublishDirectory = pubDir.String
 						a.CreatedAt, _ = time.Parse(time.RFC3339, crAt)
 						a.UpdatedAt, _ = time.Parse(time.RFC3339, upAt)
 						result = append(result, a)
@@ -355,14 +373,22 @@ func (c *DefaultController) GetApp(ctx context.Context, id string) (*App, error)
 	if c.st != nil {
 		if svc, err := c.st.Services().GetByID(ctx, id); err == nil && svc != nil {
 			return &App{
-				ID:        svc.ID,
-				Name:      svc.Name,
-				Image:     svc.Image,
-				Replicas:  uint64(svc.Replicas),
-				Domains:   svc.DomainNames,
-				Status:    svc.Status,
-				CreatedAt: svc.CreatedAt,
-				UpdatedAt: svc.UpdatedAt,
+				ID:               svc.ID,
+				ProjectID:        svc.ProjectID,
+				StageID:          svc.StageID,
+				Name:             svc.Name,
+				Image:            svc.Image,
+				Replicas:         uint64(svc.Replicas),
+				ContainerPort:    svc.ContainerPort,
+				Domains:          svc.DomainNames,
+				Status:           svc.Status,
+				GitRepoURL:       svc.GitRepoURL,
+				GitBranch:        svc.GitBranch,
+				BuildStrategy:    svc.BuildStrategy,
+				DockerfilePath:   svc.DockerfilePath,
+				PublishDirectory: svc.PublishDirectory,
+				CreatedAt:        svc.CreatedAt,
+				UpdatedAt:        svc.UpdatedAt,
 			}, nil
 		}
 	}
@@ -382,31 +408,43 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 
 	appID := store.NewID("app")
 	app := &App{
-		ID:        appID,
-		Name:      req.Name,
-		Image:     req.Image,
-		Replicas:  req.Replicas,
-		Domains:   req.Domains,
-		Env:       req.Env,
-		Status:    "running",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:               appID,
+		Name:             req.Name,
+		Image:            req.Image,
+		Replicas:         req.Replicas,
+		ContainerPort:    req.ContainerPort,
+		Domains:          req.Domains,
+		Env:              req.Env,
+		Status:           "running",
+		GitRepoURL:       req.GitRepoURL,
+		GitBranch:        req.GitBranch,
+		BuildStrategy:    req.BuildStrategy,
+		DockerfilePath:   req.DockerfilePath,
+		PublishDirectory: req.PublishDirectory,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
 	}
 
 	c.apps[appID] = app
 
 	if c.st != nil {
 		_ = c.st.Services().Create(ctx, &store.Service{
-			ID:          appID,
-			ProjectID:   "default",
-			StageID:     "production",
-			Name:        req.Name,
-			Slug:        strings.ToLower(req.Name),
-			Type:        "app",
-			Image:       req.Image,
-			Replicas:    int(req.Replicas),
-			DomainNames: req.Domains,
-			Status:      "running",
+			ID:               appID,
+			ProjectID:        "default",
+			StageID:          "production",
+			Name:             req.Name,
+			Slug:             strings.ToLower(req.Name),
+			Type:             "app",
+			Image:            req.Image,
+			Replicas:         int(req.Replicas),
+			ContainerPort:    req.ContainerPort,
+			DomainNames:      req.Domains,
+			Status:           "running",
+			GitRepoURL:       req.GitRepoURL,
+			GitBranch:        req.GitBranch,
+			BuildStrategy:    req.BuildStrategy,
+			DockerfilePath:   req.DockerfilePath,
+			PublishDirectory: req.PublishDirectory,
 		})
 	}
 
@@ -439,13 +477,47 @@ func (c *DefaultController) UpdateApp(ctx context.Context, id string, req *Updat
 	if req.Replicas != nil {
 		app.Replicas = *req.Replicas
 	}
+	if req.ContainerPort != nil {
+		app.ContainerPort = *req.ContainerPort
+	}
 	if req.Domains != nil {
 		app.Domains = req.Domains
 	}
 	if req.Env != nil {
 		app.Env = req.Env
 	}
+	if req.GitRepoURL != "" {
+		app.GitRepoURL = req.GitRepoURL
+	}
+	if req.GitBranch != "" {
+		app.GitBranch = req.GitBranch
+	}
+	if req.BuildStrategy != "" {
+		app.BuildStrategy = req.BuildStrategy
+	}
+	if req.DockerfilePath != "" {
+		app.DockerfilePath = req.DockerfilePath
+	}
+	if req.PublishDirectory != "" {
+		app.PublishDirectory = req.PublishDirectory
+	}
 	app.UpdatedAt = time.Now().UTC()
+
+	if c.st != nil {
+		if svc, err := c.st.Services().GetByID(ctx, id); err == nil && svc != nil {
+			svc.Name = app.Name
+			svc.Image = app.Image
+			svc.Replicas = int(app.Replicas)
+			svc.ContainerPort = app.ContainerPort
+			svc.DomainNames = app.Domains
+			svc.GitRepoURL = app.GitRepoURL
+			svc.GitBranch = app.GitBranch
+			svc.BuildStrategy = app.BuildStrategy
+			svc.DockerfilePath = app.DockerfilePath
+			svc.PublishDirectory = app.PublishDirectory
+			_ = c.st.Services().Update(ctx, svc)
+		}
+	}
 
 	return app, nil
 }
@@ -497,16 +569,28 @@ func (c *DefaultController) DeployApp(ctx context.Context, id string, image stri
 
 	if c.orch != nil {
 		if c.orch.Mode() == orchestration.ModeSwarmLeader {
-			_ = c.orch.Swarm().UpdateService(ctx, id, 1, orchestration.ServiceSpec{
+			spec := orchestration.ServiceSpec{
 				Name:        app.Name,
 				Image:       app.Image,
 				Replicas:    app.Replicas,
 				Environment: envMap,
-			})
+			}
+			existing, err := c.orch.Swarm().InspectService(ctx, id)
+			if err != nil {
+				existing, err = c.orch.Swarm().InspectService(ctx, app.Name)
+			}
+			if err == nil && existing != nil {
+				_ = c.orch.Swarm().UpdateService(ctx, existing.ID, existing.Version, spec)
+			} else {
+				_, _ = c.orch.Swarm().CreateService(ctx, spec)
+			}
 		}
 	}
 
 	app.Status = "running"
+	if c.st != nil {
+		_ = c.st.Services().UpdateStatus(ctx, id, "running")
+	}
 	if c.wsHub != nil {
 		c.wsHub.Broadcast(WSMessage{
 			Channel:  "events",
@@ -583,6 +667,17 @@ func (c *DefaultController) SetAppEnv(ctx context.Context, id string, env map[st
 	return nil
 }
 
+func formatUpstream(target string, defaultPort int) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.Contains(target, ":") {
+		return target
+	}
+	return fmt.Sprintf("%s:%d", target, defaultPort)
+}
+
 func (c *DefaultController) GetAppTraffic(ctx context.Context, appID string) (*TrafficSplitDTO, error) {
 	app, err := c.GetApp(ctx, appID)
 	if err != nil {
@@ -623,11 +718,20 @@ func (c *DefaultController) GetAppTraffic(ctx context.Context, appID string) (*T
 		}
 	}
 
+	port := 80
+	if app.ContainerPort > 0 {
+		port = app.ContainerPort
+	}
+	upstreamID := app.ID
+	if upstreamID == "" {
+		upstreamID = app.Name
+	}
+
 	// Default fallback: 100% stable
 	return &TrafficSplitDTO{
 		AppID:          appID,
 		Domain:         domain,
-		StableUpstream: app.Name + ":80",
+		StableUpstream: fmt.Sprintf("%s:%d", upstreamID, port),
 		CanaryUpstream: "",
 		CanaryPercent:  0,
 	}, nil
@@ -652,14 +756,31 @@ func (c *DefaultController) SetAppTraffic(ctx context.Context, appID string, req
 		}
 	}
 
+	port := 80
+	if app.ContainerPort > 0 {
+		port = app.ContainerPort
+	}
+	upstreamID := app.ID
+	if upstreamID == "" {
+		upstreamID = app.Name
+	}
+
 	stableUpstream := req.StableUpstream
 	if stableUpstream == "" {
-		stableUpstream = app.Name + ":80"
+		stableUpstream = fmt.Sprintf("%s:%d", upstreamID, port)
+	} else {
+		stableUpstream = formatUpstream(stableUpstream, port)
 	}
 
 	canaryUpstream := req.CanaryUpstream
-	if req.CanaryPercent > 0 && canaryUpstream == "" {
-		canaryUpstream = app.Name + "_green:80"
+	if req.CanaryPercent > 0 {
+		if canaryUpstream == "" {
+			canaryUpstream = fmt.Sprintf("%s_green:%d", upstreamID, port)
+		} else {
+			canaryUpstream = formatUpstream(canaryUpstream, port)
+		}
+	} else if canaryUpstream != "" {
+		canaryUpstream = formatUpstream(canaryUpstream, port)
 	}
 
 	splitCfg := ingress.TrafficSplitConfig{
@@ -1187,6 +1308,217 @@ func (c *DefaultController) CreateBackupDestination(ctx context.Context, dest *B
 	}
 	c.destinations[dest.ID] = dest
 	return dest, nil
+}
+
+func (c *DefaultController) ListBackupSchedules(ctx context.Context, serviceID string) ([]*store.BackupSchedule, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.st != nil {
+		if serviceID != "" {
+			return c.st.Schedules().ListByService(ctx, serviceID)
+		}
+		return c.st.Schedules().ListActive(ctx)
+	}
+
+	var res []*store.BackupSchedule
+	for _, s := range c.schedules {
+		if serviceID == "" || s.ServiceID == serviceID {
+			res = append(res, s)
+		}
+	}
+	return res, nil
+}
+
+func (c *DefaultController) GetBackupSchedule(ctx context.Context, id string) (*store.BackupSchedule, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.st != nil {
+		return c.st.Schedules().GetByID(ctx, id)
+	}
+
+	if s, ok := c.schedules[id]; ok {
+		return s, nil
+	}
+	return nil, errors.New("backup schedule not found")
+}
+
+func (c *DefaultController) CreateBackupSchedule(ctx context.Context, req *CreateBackupScheduleRequest) (*store.BackupSchedule, error) {
+	if req.ServiceID == "" {
+		return nil, errors.New("service_id is required")
+	}
+
+	cronExpr := req.CronExpr
+	if cronExpr == "" {
+		cronExpr = req.CronExpression
+	}
+	if cronExpr == "" {
+		cronExpr = "0 0 * * *"
+	}
+
+	engine := req.Engine
+	if engine == "" {
+		engine = req.DatabaseType
+	}
+	if engine == "" {
+		engine = "postgres"
+	}
+
+	s3Bucket := req.S3Bucket
+	if s3Bucket == "" {
+		s3Bucket = "pikpik-backups"
+	}
+
+	retentionDaily := req.RetentionDaily
+	if retentionDaily == 0 && req.RetentionDays > 0 {
+		retentionDaily = req.RetentionDays
+	}
+	if retentionDaily == 0 {
+		retentionDaily = 7
+	}
+
+	compression := req.Compression
+	if compression == "" {
+		compression = "gzip"
+	}
+
+	isEnabled := true
+	if req.IsEnabled != nil {
+		isEnabled = *req.IsEnabled
+	}
+
+	schID := store.NewID("sch")
+	now := time.Now().UTC()
+
+	var nextRun *time.Time
+	if parsed, err := backup.ParseCron(cronExpr); err == nil {
+		t := parsed.Next(now)
+		if !t.IsZero() {
+			nextRun = &t
+		}
+	}
+
+	sch := &store.BackupSchedule{
+		ID:               schID,
+		ServiceID:        req.ServiceID,
+		CronExpr:         cronExpr,
+		Engine:           engine,
+		DatabaseName:     req.DatabaseName,
+		Username:         req.Username,
+		S3Bucket:         s3Bucket,
+		S3Endpoint:       req.S3Endpoint,
+		S3Region:         req.S3Region,
+		S3AccessKey:      req.S3AccessKey,
+		RetentionHourly:  req.RetentionHourly,
+		RetentionDaily:   retentionDaily,
+		RetentionWeekly:  req.RetentionWeekly,
+		RetentionMonthly: req.RetentionMonthly,
+		MaxBackups:       req.MaxBackups,
+		Compression:      compression,
+		IsEnabled:        isEnabled,
+		NextRunAt:        nextRun,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	c.mu.Lock()
+	c.schedules[schID] = sch
+	c.mu.Unlock()
+
+	if c.st != nil {
+		if err := c.st.Schedules().Create(ctx, sch); err != nil {
+			return nil, err
+		}
+	}
+
+	return sch, nil
+}
+
+func (c *DefaultController) UpdateBackupSchedule(ctx context.Context, id string, req *UpdateBackupScheduleRequest) (*store.BackupSchedule, error) {
+	sch, err := c.GetBackupSchedule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cronExpr := req.CronExpr
+	if cronExpr == "" {
+		cronExpr = req.CronExpression
+	}
+	if cronExpr != "" {
+		sch.CronExpr = cronExpr
+		if parsed, err := backup.ParseCron(cronExpr); err == nil {
+			t := parsed.Next(time.Now().UTC())
+			if !t.IsZero() {
+				sch.NextRunAt = &t
+			}
+		}
+	}
+	if req.Engine != "" {
+		sch.Engine = req.Engine
+	}
+	if req.DatabaseName != "" {
+		sch.DatabaseName = req.DatabaseName
+	}
+	if req.Username != "" {
+		sch.Username = req.Username
+	}
+	if req.S3Bucket != "" {
+		sch.S3Bucket = req.S3Bucket
+	}
+	if req.S3Endpoint != "" {
+		sch.S3Endpoint = req.S3Endpoint
+	}
+	if req.S3Region != "" {
+		sch.S3Region = req.S3Region
+	}
+	if req.S3AccessKey != "" {
+		sch.S3AccessKey = req.S3AccessKey
+	}
+	if req.RetentionHourly != nil {
+		sch.RetentionHourly = *req.RetentionHourly
+	}
+	if req.RetentionDaily != nil {
+		sch.RetentionDaily = *req.RetentionDaily
+	}
+	if req.RetentionWeekly != nil {
+		sch.RetentionWeekly = *req.RetentionWeekly
+	}
+	if req.RetentionMonthly != nil {
+		sch.RetentionMonthly = *req.RetentionMonthly
+	}
+	if req.MaxBackups != nil {
+		sch.MaxBackups = *req.MaxBackups
+	}
+	if req.Compression != "" {
+		sch.Compression = req.Compression
+	}
+	if req.IsEnabled != nil {
+		sch.IsEnabled = *req.IsEnabled
+	}
+	sch.UpdatedAt = time.Now().UTC()
+
+	if c.st != nil {
+		if err := c.st.Schedules().Update(ctx, sch); err != nil {
+			return nil, err
+		}
+	}
+
+	return sch, nil
+}
+
+func (c *DefaultController) DeleteBackupSchedule(ctx context.Context, id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.schedules, id)
+	if c.st != nil {
+		return c.st.Schedules().Delete(ctx, id)
+	}
+	return nil
 }
 
 // --- Ingress Operations ---

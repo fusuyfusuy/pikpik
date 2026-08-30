@@ -676,6 +676,83 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusCreated, saved, GetRequestID(r.Context()))
 	}))
 
+	// Backup Schedules Endpoints
+	mux.Handle("GET /api/v1/backups/schedules", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		serviceID := r.URL.Query().Get("service_id")
+		schedules, err := ctrl.ListBackupSchedules(r.Context(), serviceID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		if schedules == nil {
+			schedules = []*store.BackupSchedule{}
+		}
+		WriteJSON(w, http.StatusOK, schedules, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/backups/schedules", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateBackupScheduleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		saved, err := ctrl.CreateBackupSchedule(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, saved, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("GET /api/v1/backups/schedules/{id}", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		sch, err := ctrl.GetBackupSchedule(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Backup schedule not found", nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, sch, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("PATCH /api/v1/backups/schedules/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateBackupScheduleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		updated, err := ctrl.UpdateBackupSchedule(r.Context(), id, &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, updated, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("PUT /api/v1/backups/schedules/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateBackupScheduleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		updated, err := ctrl.UpdateBackupSchedule(r.Context(), id, &req)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, updated, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("DELETE /api/v1/backups/schedules/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteBackupSchedule(r.Context(), id); err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "schedule deleted"}, GetRequestID(r.Context()))
+	}))
+
 	// --- 7. Ingress Endpoints ---
 	mux.Handle("GET /api/v1/ingress/domains", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 		domains, err := ctrl.ListDomains(r.Context())
@@ -839,6 +916,16 @@ func RegisterRoutes(
 
 		mux.Handle("GET /api/v1/logs/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 			sseBroadcaster.ServeLogsStream(w, r, "")
+		}))
+
+		mux.Handle("GET /api/v1/projects/{pid}/services/{sid}/logs/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			sid := getPathParam(r, "sid")
+			sseBroadcaster.ServeLogsStream(w, r, sid)
+		}))
+
+		mux.Handle("GET /api/v1/apps/{id}/logs/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+			id := getPathParam(r, "id")
+			sseBroadcaster.ServeLogsStream(w, r, id)
 		}))
 
 		mux.Handle("GET /api/v1/stats/stream", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {

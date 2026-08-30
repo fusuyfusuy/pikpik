@@ -45,33 +45,51 @@ const (
 
 // App Models
 type App struct {
-	ID        string            `json:"id"`
-	ProjectID string            `json:"project_id,omitempty"`
-	StageID   string            `json:"stage_id,omitempty"`
-	Name      string            `json:"name"`
-	Image     string            `json:"image"`
-	Replicas  uint64            `json:"replicas"`
-	Domains   []string          `json:"domains"`
-	Env       map[string]string `json:"env,omitempty"`
-	Status    string            `json:"status"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID               string            `json:"id"`
+	ProjectID        string            `json:"project_id,omitempty"`
+	StageID          string            `json:"stage_id,omitempty"`
+	Name             string            `json:"name"`
+	Image            string            `json:"image"`
+	Replicas         uint64            `json:"replicas"`
+	ContainerPort    int               `json:"container_port,omitempty"`
+	Domains          []string          `json:"domains"`
+	Env              map[string]string `json:"env,omitempty"`
+	Status           string            `json:"status"`
+	GitRepoURL       string            `json:"git_repo_url,omitempty"`
+	GitBranch        string            `json:"git_branch,omitempty"`
+	BuildStrategy    string            `json:"build_strategy,omitempty"`
+	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
+	PublishDirectory string            `json:"publish_directory,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }
 
 type CreateAppRequest struct {
-	Name     string            `json:"name"`
-	Image    string            `json:"image"`
-	Replicas uint64            `json:"replicas"`
-	Domains  []string          `json:"domains,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	Name             string            `json:"name"`
+	Image            string            `json:"image"`
+	Replicas         uint64            `json:"replicas"`
+	ContainerPort    int               `json:"container_port,omitempty"`
+	Domains          []string          `json:"domains,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	GitRepoURL       string            `json:"git_repo_url,omitempty"`
+	GitBranch        string            `json:"git_branch,omitempty"`
+	BuildStrategy    string            `json:"build_strategy,omitempty"`
+	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
+	PublishDirectory string            `json:"publish_directory,omitempty"`
 }
 
 type UpdateAppRequest struct {
-	Name     string            `json:"name,omitempty"`
-	Image    string            `json:"image,omitempty"`
-	Replicas *uint64           `json:"replicas,omitempty"`
-	Domains  []string          `json:"domains,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Image            string            `json:"image,omitempty"`
+	Replicas         *uint64           `json:"replicas,omitempty"`
+	ContainerPort    *int              `json:"container_port,omitempty"`
+	Domains          []string          `json:"domains,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	GitRepoURL       string            `json:"git_repo_url,omitempty"`
+	GitBranch        string            `json:"git_branch,omitempty"`
+	BuildStrategy    string            `json:"build_strategy,omitempty"`
+	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
+	PublishDirectory string            `json:"publish_directory,omitempty"`
 }
 
 type DeployAppRequest struct {
@@ -206,6 +224,51 @@ type Backup struct {
 
 type CreateBackupRequest struct {
 	ServiceID string `json:"service_id"`
+}
+
+type CreateBackupScheduleRequest struct {
+	ServiceID            string `json:"service_id"`
+	CronExpr             string `json:"cron_expr,omitempty"`
+	CronExpression       string `json:"cron_expression,omitempty"`
+	Engine               string `json:"engine,omitempty"`
+	DatabaseType         string `json:"database_type,omitempty"`
+	DatabaseName         string `json:"database_name,omitempty"`
+	Username             string `json:"username,omitempty"`
+	Password             string `json:"password,omitempty"`
+	S3Bucket             string `json:"s3_bucket,omitempty"`
+	S3Endpoint           string `json:"s3_endpoint,omitempty"`
+	S3Region             string `json:"s3_region,omitempty"`
+	S3AccessKey          string `json:"s3_access_key,omitempty"`
+	S3SecretKey          string `json:"s3_secret_key,omitempty"`
+	RetentionHourly      int    `json:"retention_hourly,omitempty"`
+	RetentionDaily       int    `json:"retention_daily,omitempty"`
+	RetentionWeekly      int    `json:"retention_weekly,omitempty"`
+	RetentionMonthly     int    `json:"retention_monthly,omitempty"`
+	RetentionDays        int    `json:"retention_days,omitempty"`
+	MaxBackups           int    `json:"max_backups,omitempty"`
+	Compression          string `json:"compression,omitempty"`
+	IsEnabled            *bool  `json:"is_enabled,omitempty"`
+}
+
+type UpdateBackupScheduleRequest struct {
+	CronExpr             string `json:"cron_expr,omitempty"`
+	CronExpression       string `json:"cron_expression,omitempty"`
+	Engine               string `json:"engine,omitempty"`
+	DatabaseName         string `json:"database_name,omitempty"`
+	Username             string `json:"username,omitempty"`
+	Password             string `json:"password,omitempty"`
+	S3Bucket             string `json:"s3_bucket,omitempty"`
+	S3Endpoint           string `json:"s3_endpoint,omitempty"`
+	S3Region             string `json:"s3_region,omitempty"`
+	S3AccessKey          string `json:"s3_access_key,omitempty"`
+	S3SecretKey          string `json:"s3_secret_key,omitempty"`
+	RetentionHourly      *int   `json:"retention_hourly,omitempty"`
+	RetentionDaily       *int   `json:"retention_daily,omitempty"`
+	RetentionWeekly      *int   `json:"retention_weekly,omitempty"`
+	RetentionMonthly     *int   `json:"retention_monthly,omitempty"`
+	MaxBackups           *int   `json:"max_backups,omitempty"`
+	Compression          string `json:"compression,omitempty"`
+	IsEnabled            *bool  `json:"is_enabled,omitempty"`
 }
 
 type RestoreBackupRequest struct {

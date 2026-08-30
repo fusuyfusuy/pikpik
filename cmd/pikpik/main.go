@@ -48,6 +48,7 @@ type ServerConfig struct {
 	AdminEmail      string
 	AdminPassword   string
 	DataDir         string
+	AllowedOrigins  []string
 }
 
 func main() {
@@ -103,6 +104,7 @@ func parseConfig(args []string) ServerConfig {
 	}
 
 	var showVersion bool
+	var corsOrigins string
 
 	fs := flag.NewFlagSet("pikpik", flag.ContinueOnError)
 	fs.StringVarP(&cfg.ListenAddr, "listen", "l", getEnvOrDefault("PIKPIK_LISTEN_ADDR", ":8080"), "HTTP listen address (e.g. :8080 or 127.0.0.1:8080)")
@@ -113,9 +115,18 @@ func parseConfig(args []string) ServerConfig {
 	fs.StringVarP(&cfg.EnrollmentToken, "token", "t", getEnvOrDefault("PIKPIK_ENROLLMENT_TOKEN", ""), "Worker node agent enrollment token (auto-generated on first boot if not set)")
 	fs.StringVarP(&cfg.AdminEmail, "admin-email", "e", getEnvOrDefault("PIKPIK_ADMIN_EMAIL", "admin@pikpik.local"), "Initial bootstrap owner email")
 	fs.StringVarP(&cfg.AdminPassword, "admin-password", "p", getEnvOrDefault("PIKPIK_ADMIN_PASSWORD", ""), "Initial bootstrap owner password (auto-generated on first boot if not set)")
+	fs.StringVar(&corsOrigins, "cors-allowed-origins", getEnvOrDefault("PIKPIK_CORS_ALLOWED_ORIGINS", ""), "Comma-separated list of allowed CORS origins")
 	fs.BoolVarP(&showVersion, "version", "v", false, "Display pikpik server version")
 
 	_ = fs.Parse(args)
+
+	if corsOrigins != "" {
+		for _, o := range strings.Split(corsOrigins, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				cfg.AllowedOrigins = append(cfg.AllowedOrigins, trimmed)
+			}
+		}
+	}
 
 	if showVersion || (len(args) > 0 && args[0] == "version") {
 		fmt.Printf("pikpik unified control plane v%s\n", Version)
@@ -207,7 +218,7 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 	caddyCli := ingress.NewCaddyClient(cfg.CaddyAdminURL, 5*time.Second)
 	ingressMgr := ingress.NewIngressManager(caddyCli, nil)
 
-	// 5. Backup Engine
+	// 5. Backup Engine & Cron Scheduler
 	s3Cli, _ := s3.NewClient(s3.ClientOptions{
 		Bucket:   "pikpik-backups",
 		Provider: s3.ProviderAWS,
@@ -217,6 +228,12 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		execRunner = backup.NewSocketDockerExecRunner(rawDockerCli)
 	}
 	backupEng := backup.NewBackupEngine(s3Cli, execRunner)
+	cronScheduler := backup.NewCronScheduler(st, backupEng, s3Cli)
+	if err := cronScheduler.Start(ctx); err != nil {
+		log.Printf("Warning: failed to start backup cron scheduler: %v", err)
+	} else {
+		cleanups = append(cleanups, func() { cronScheduler.Stop() })
+	}
 
 	// 6. Registry Manager
 	htpasswdPath := filepath.Join(cfg.DataDir, "htpasswd")
@@ -301,6 +318,8 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		DeployWebhook:  nudgeHandler,
 		RateLimiter:    rateLimiter,
 		DockerClient:   rawDockerCli,
+		EnableCors:     true,
+		AllowedOrigins: cfg.AllowedOrigins,
 	})
 
 	// Unified HTTP Router

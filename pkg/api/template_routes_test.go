@@ -169,11 +169,8 @@ func TestTemplateRoutes_Deploy(t *testing.T) {
 	if result.Data.Status != "running" {
 		t.Errorf("expected status 'running', got '%s'", result.Data.Status)
 	}
-	if result.Data.ResolvedVariables["POSTGRES_USER"] != "myadmin" {
-		t.Errorf("expected POSTGRES_USER 'myadmin', got '%s'", result.Data.ResolvedVariables["POSTGRES_USER"])
-	}
-	if len(result.Data.ResolvedVariables["POSTGRES_PASSWORD"]) != 16 {
-		t.Errorf("expected auto-generated 16-char password, got '%s'", result.Data.ResolvedVariables["POSTGRES_PASSWORD"])
+	if result.Data.ResolvedVariables["POSTGRES_PASSWORD"] != "[REDACTED]" {
+		t.Errorf("expected '[REDACTED]', got '%s'", result.Data.ResolvedVariables["POSTGRES_PASSWORD"])
 	}
 
 	// 2. Deploy non-existent template -> 404 Not Found

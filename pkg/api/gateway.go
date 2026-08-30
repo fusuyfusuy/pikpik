@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	dockerclient "github.com/docker/docker/client"
@@ -77,15 +78,44 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 		opts.BuildManager,
 	)
 
-	// Wrap mux with standard CORS and Request ID middleware
+	// Wrap mux with standard CORS, MaxBytesReader (10MB limit) and Request ID middleware
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if len(opts.AllowedOrigins) > 0 {
+			for _, o := range opts.AllowedOrigins {
+				if o == "*" {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+					break
+				}
+				if origin != "" && (o == origin || strings.EqualFold(o, origin)) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Set("Vary", "Origin")
+					break
+				}
+			}
+		} else {
+			// Default CORS behavior if no specific allowed origins list provided
+			if origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Vary", "Origin")
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Sec-WebSocket-Protocol, X-Request-ID, X-Node-ID, X-Node-Name, X-Node-Role")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
+		}
+
+		// Enforce 10MB limit on incoming JSON/HTTP request bodies
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
 		}
 
 		mux.ServeHTTP(w, r)
