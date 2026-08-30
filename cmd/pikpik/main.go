@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -107,9 +110,9 @@ func parseConfig(args []string) ServerConfig {
 	fs.StringVar(&cfg.DBPath, "db", getEnvOrDefault("PIKPIK_DB_PATH", ""), "SQLite state database path (defaults to <data-dir>/pikpik.db)")
 	fs.StringVarP(&cfg.DockerSocket, "docker-socket", "s", getEnvOrDefault("PIKPIK_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker Engine Unix domain socket")
 	fs.StringVarP(&cfg.CaddyAdminURL, "caddy-url", "c", getEnvOrDefault("PIKPIK_CADDY_ADMIN_URL", "http://127.0.0.1:2019"), "Caddy dynamic Admin REST API URL")
-	fs.StringVarP(&cfg.EnrollmentToken, "token", "t", getEnvOrDefault("PIKPIK_ENROLLMENT_TOKEN", "pik_node_enrollment_secret_token"), "Worker node agent enrollment token")
+	fs.StringVarP(&cfg.EnrollmentToken, "token", "t", getEnvOrDefault("PIKPIK_ENROLLMENT_TOKEN", ""), "Worker node agent enrollment token (auto-generated on first boot if not set)")
 	fs.StringVarP(&cfg.AdminEmail, "admin-email", "e", getEnvOrDefault("PIKPIK_ADMIN_EMAIL", "admin@pikpik.local"), "Initial bootstrap owner email")
-	fs.StringVarP(&cfg.AdminPassword, "admin-password", "p", getEnvOrDefault("PIKPIK_ADMIN_PASSWORD", "pikpikAdmin123!"), "Initial bootstrap owner password")
+	fs.StringVarP(&cfg.AdminPassword, "admin-password", "p", getEnvOrDefault("PIKPIK_ADMIN_PASSWORD", ""), "Initial bootstrap owner password (auto-generated on first boot if not set)")
 	fs.BoolVarP(&showVersion, "version", "v", false, "Display pikpik server version")
 
 	_ = fs.Parse(args)
@@ -117,6 +120,28 @@ func parseConfig(args []string) ServerConfig {
 	if showVersion || (len(args) > 0 && args[0] == "version") {
 		fmt.Printf("pikpik unified control plane v%s\n", Version)
 		os.Exit(0)
+	}
+
+	// No operator-supplied admin password: generate a random one instead of a
+	// guessable hardcoded default. Shown once so the operator can capture it.
+	if cfg.AdminPassword == "" {
+		generated, err := generateSecureSecret(18)
+		if err != nil {
+			log.Fatalf("failed to generate initial admin password: %v", err)
+		}
+		cfg.AdminPassword = generated
+		log.Printf("PIKPIK_ADMIN_PASSWORD not set — generated initial admin password (save this, it will not be shown again): %s", generated)
+	}
+
+	// No operator-supplied enrollment token: generate a random one instead of
+	// the well-known hardcoded default.
+	if cfg.EnrollmentToken == "" {
+		generated, err := generateSecureSecret(24)
+		if err != nil {
+			log.Fatalf("failed to generate node enrollment token: %v", err)
+		}
+		cfg.EnrollmentToken = generated
+		log.Printf("PIKPIK_ENROLLMENT_TOKEN not set — generated node enrollment token (save this, it will not be shown again): %s", generated)
 	}
 
 	if cfg.DataDir == "" {
@@ -151,7 +176,14 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 	// 2. Argon2 Hasher, Crypto Vault, Config Manager & Auth Service
 	hasher := crypto.DefaultArgon2Hasher()
 	authSvc := auth.NewAuthService(st, hasher)
-	vault, _ := crypto.NewAESVault("pikpik_system_master_secret_32b!")
+	masterKey, err := loadOrCreateMasterKey(cfg.DataDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load/create AES master key: %w", err)
+	}
+	vault, err := crypto.NewAESVault(masterKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize AES vault: %w", err)
+	}
 	configMgr := config.NewConfigManager(st, vault)
 
 	// Bootstrap default admin owner if needed
@@ -229,7 +261,7 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 				return
 			case t := <-ticker.C:
 				hourStart := t.Truncate(time.Hour).Unix()
-				for key, buf := range ringBuffers {
+				for key, buf := range agentServer.RingBufferSnapshot() {
 					parts := strings.SplitN(key, ":", 2)
 					if len(parts) == 2 {
 						_ = downsampler.DownsampleAndSave(ctx, parts[0], parts[1], buf, hourStart)
@@ -323,4 +355,54 @@ func getEnvOrDefault(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+// generateSecureSecret returns a cryptographically random, URL-safe secret
+// string derived from nBytes of entropy.
+func generateSecureSecret(nBytes int) (string, error) {
+	raw := make([]byte, nBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// masterKeyFileName is the filename (relative to DataDir) that persists the
+// generated AES master encryption key across restarts.
+const masterKeyFileName = "master.key"
+
+// loadOrCreateMasterKey resolves the AES vault master key with no hardcoded
+// fallback: PIKPIK_MASTER_KEY takes precedence, then a previously persisted
+// key file in dataDir, then a freshly generated 32-byte key that is
+// persisted to that file (mode 0600) so it survives restarts.
+func loadOrCreateMasterKey(dataDir string) (string, error) {
+	if key := os.Getenv("PIKPIK_MASTER_KEY"); key != "" {
+		return key, nil
+	}
+
+	keyPath := filepath.Join(dataDir, masterKeyFileName)
+	if data, err := os.ReadFile(keyPath); err == nil {
+		if key := strings.TrimSpace(string(data)); key != "" {
+			return key, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to read master key file %s: %w", keyPath, err)
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("failed to generate master key: %w", err)
+	}
+	key := hex.EncodeToString(raw)
+
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create data directory %s: %w", dataDir, err)
+	}
+	if err := os.WriteFile(keyPath, []byte(key), 0600); err != nil {
+		return "", fmt.Errorf("failed to persist master key to %s: %w", keyPath, err)
+	}
+
+	log.Printf("Generated new AES-256 master encryption key on first boot and persisted it to %s (mode 0600). Back this file up — losing it makes all encrypted secrets-at-rest unrecoverable.", keyPath)
+
+	return key, nil
 }

@@ -109,6 +109,126 @@ func TestHealthCheckEndpoint(t *testing.T) {
 	}
 }
 
+func TestParseConfig_GeneratesSecretsWhenUnset(t *testing.T) {
+	os.Unsetenv("PIKPIK_ADMIN_PASSWORD")
+	os.Unsetenv("PIKPIK_ENROLLMENT_TOKEN")
+
+	cfg := parseConfig([]string{"--listen", ":9099"})
+
+	if cfg.AdminPassword == "" || cfg.AdminPassword == "pikpikAdmin123!" {
+		t.Fatalf("expected a generated non-default admin password, got %q", cfg.AdminPassword)
+	}
+	if cfg.EnrollmentToken == "" || cfg.EnrollmentToken == "pik_node_enrollment_secret_token" {
+		t.Fatalf("expected a generated non-default enrollment token, got %q", cfg.EnrollmentToken)
+	}
+
+	// Independent invocations must not reuse the same generated secrets.
+	cfg2 := parseConfig([]string{"--listen", ":9098"})
+	if cfg.AdminPassword == cfg2.AdminPassword {
+		t.Fatalf("expected distinct generated admin passwords across invocations")
+	}
+	if cfg.EnrollmentToken == cfg2.EnrollmentToken {
+		t.Fatalf("expected distinct generated enrollment tokens across invocations")
+	}
+}
+
+func TestParseConfig_HonorsExplicitSecrets(t *testing.T) {
+	// Explicit CLI flags must be honored unchanged.
+	cfg := parseConfig([]string{"--admin-password", "explicit-pw-123", "--token", "explicit-token-456"})
+	if cfg.AdminPassword != "explicit-pw-123" {
+		t.Errorf("expected explicit admin password via flag to be honored, got %q", cfg.AdminPassword)
+	}
+	if cfg.EnrollmentToken != "explicit-token-456" {
+		t.Errorf("expected explicit enrollment token via flag to be honored, got %q", cfg.EnrollmentToken)
+	}
+
+	// Explicit env vars must be honored unchanged.
+	t.Setenv("PIKPIK_ADMIN_PASSWORD", "env-pw-789")
+	t.Setenv("PIKPIK_ENROLLMENT_TOKEN", "env-token-789")
+	cfgEnv := parseConfig(nil)
+	if cfgEnv.AdminPassword != "env-pw-789" {
+		t.Errorf("expected explicit admin password via env to be honored, got %q", cfgEnv.AdminPassword)
+	}
+	if cfgEnv.EnrollmentToken != "env-token-789" {
+		t.Errorf("expected explicit enrollment token via env to be honored, got %q", cfgEnv.EnrollmentToken)
+	}
+}
+
+func TestLoadOrCreateMasterKey_ExplicitEnvHonored(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pikpik-masterkey-env-test-*")
+	if err != nil {
+		t.Fatalf("temp dir creation failed: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Setenv("PIKPIK_MASTER_KEY", "explicit-operator-supplied-master-key-32b")
+
+	key, err := loadOrCreateMasterKey(tempDir)
+	if err != nil {
+		t.Fatalf("loadOrCreateMasterKey failed: %v", err)
+	}
+	if key != "explicit-operator-supplied-master-key-32b" {
+		t.Fatalf("expected explicit PIKPIK_MASTER_KEY to be honored, got %q", key)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, masterKeyFileName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no master key file to be written when an explicit key is supplied")
+	}
+}
+
+func TestMasterKeyPersistsAcrossRestarts(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pikpik-masterkey-test-*")
+	if err != nil {
+		t.Fatalf("temp dir creation failed: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := ServerConfig{
+		ListenAddr:      ":0",
+		DBPath:          filepath.Join(tempDir, "state.db"),
+		DataDir:         tempDir,
+		AdminEmail:      "admin@pikpik.test",
+		AdminPassword:   "testpassword123!",
+		EnrollmentToken: "test_enrollment_token",
+	}
+
+	ctx := context.Background()
+
+	_, cleanup1, err := setupUnifiedServer(ctx, cfg)
+	if err != nil {
+		t.Fatalf("first setupUnifiedServer failed: %v", err)
+	}
+
+	keyPath := filepath.Join(tempDir, masterKeyFileName)
+	firstKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("expected master key file to be created on first boot: %v", err)
+	}
+	cleanup1()
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat master key file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected master key file mode 0600, got %v", perm)
+	}
+
+	_, cleanup2, err := setupUnifiedServer(ctx, cfg)
+	if err != nil {
+		t.Fatalf("second setupUnifiedServer failed: %v", err)
+	}
+	defer cleanup2()
+
+	secondKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("failed to re-read master key file: %v", err)
+	}
+
+	if string(firstKey) != string(secondKey) {
+		t.Fatalf("expected master key to persist unchanged across restarts against the same data dir")
+	}
+}
+
 type testResponseWriter struct {
 	header     http.Header
 	statusCode int

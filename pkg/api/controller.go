@@ -1482,8 +1482,8 @@ func (c *DefaultController) Rebuild(ctx context.Context, buildID string) (*store
 }
 
 func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret string, signature string, payload []byte) (*store.Build, error) {
-	if secret != "" && signature != "" {
-		if !git.VerifyGitHubSignature(secret, payload, signature) {
+	if secret != "" {
+		if signature == "" || !git.VerifyGitHubSignature(secret, payload, signature) {
 			return nil, errors.New("invalid webhook signature")
 		}
 	}

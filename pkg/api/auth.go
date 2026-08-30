@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -98,17 +99,12 @@ func ExtractToken(r *http.Request) string {
 	return ""
 }
 
-// ExtractClientIP returns the caller's IP address.
+// ExtractClientIP returns the caller's IP address, used as a rate-limit key.
+// It intentionally ignores X-Forwarded-For/X-Real-IP: this daemon has no
+// trusted-reverse-proxy configuration, so honoring those headers would let
+// any caller mint a fresh rate-limit bucket per request just by setting an
+// arbitrary header value.
 func ExtractClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-			return strings.TrimSpace(parts[0])
-		}
-	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return strings.TrimSpace(xrip)
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
@@ -160,7 +156,11 @@ func AuthMiddleware(authSvc auth.AuthService, st store.Store, requiredRole strin
 				if authSvc != nil {
 					apiTok, err := authSvc.ValidateAPIToken(ctx, rawSecret, "")
 					if err != nil {
-						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "Invalid or expired API token", nil, reqID)
+						msg := "Invalid or expired API token"
+						if errors.Is(err, auth.ErrSessionRevoked) {
+							msg = "Session revoked; please log in again"
+						}
+						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, msg, nil, reqID)
 						return
 					}
 					// Fetch user to determine role

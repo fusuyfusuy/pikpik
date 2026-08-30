@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -255,5 +256,99 @@ func TestAPIGateway_Routes(t *testing.T) {
 	delResp := authedRequest("DELETE", "/api/v1/apps/"+appID, nil)
 	if delResp.StatusCode != http.StatusOK {
 		t.Fatalf("delete app failed: status %d", delResp.StatusCode)
+	}
+}
+
+// 5. Test Login Endpoint Rate Limiting (brute-force protection)
+func TestLoginEndpoint_RateLimited(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	loginBody, _ := json.Marshal(api.LoginRequest{
+		Email:    "admin@pikpik.local",
+		Password: "wrong-password",
+	})
+
+	// The login limiter allows 5 attempts/min; all of these should succeed
+	// (the mock controller accepts any credentials when no auth service is wired).
+	for i := 1; i <= 5; i++ {
+		resp, err := http.Post(server.URL+"/api/v1/auth/login", "application/json", bytes.NewReader(loginBody))
+		if err != nil {
+			t.Fatalf("request %d failed: %v", i, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: expected 200 within rate limit, got %d", i, resp.StatusCode)
+		}
+	}
+
+	// The 6th request from the same client IP within the window must be rejected.
+	resp, err := http.Post(server.URL+"/api/v1/auth/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("6th request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests after exceeding login rate limit, got %d", resp.StatusCode)
+	}
+
+	var errResp api.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error envelope: %v", err)
+	}
+	if errResp.Success || errResp.Error.Code != api.ErrCodeRateLimited {
+		t.Fatalf("expected standard rate-limit error envelope, got: %+v", errResp)
+	}
+}
+
+// TestLoginEndpoint_SpoofedForwardedForDoesNotBypassRateLimit guards against
+// a regression where the login rate limiter was keyed on the spoofable
+// X-Forwarded-For/X-Real-IP headers instead of the actual TCP peer address,
+// letting an attacker mint a fresh rate-limit bucket per request.
+func TestLoginEndpoint_SpoofedForwardedForDoesNotBypassRateLimit(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	loginBody, _ := json.Marshal(api.LoginRequest{
+		Email:    "admin@pikpik.local",
+		Password: "wrong-password",
+	})
+
+	client := &http.Client{}
+	post := func(fakeIP string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/auth/login", bytes.NewReader(loginBody))
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", fakeIP)
+		req.Header.Set("X-Real-IP", fakeIP)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return resp
+	}
+
+	// All requests share the same real TCP peer (httptest's loopback client)
+	// but each carries a distinct spoofed X-Forwarded-For/X-Real-IP. If the
+	// limiter trusted those headers, each would land in its own bucket and
+	// never trip the 5/min limit.
+	for i := 1; i <= 5; i++ {
+		resp := post(fmt.Sprintf("10.0.0.%d", i))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: expected 200 within rate limit, got %d", i, resp.StatusCode)
+		}
+	}
+
+	resp := post("10.0.0.99")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("spoofed X-Forwarded-For bypassed the login rate limit: expected 429, got %d", resp.StatusCode)
 	}
 }

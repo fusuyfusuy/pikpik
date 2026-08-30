@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -12,10 +13,23 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// withRole wraps a PTYHandler in a middleware that injects the given role
+// into the request context, simulating what AuthMiddleware does in
+// production. Passing "" simulates a request that reached the handler
+// without authentication (e.g. AuthMiddleware misconfigured/bypassed).
+func withRole(h *api.PTYHandler, role string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if role != "" {
+			r = r.WithContext(api.ContextWithRole(r.Context(), role))
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // 1. Test Host Machine Interactive PTY Session (Echo, Resize & Clean Exit)
 func TestPTY_HostMachine_Interactive(t *testing.T) {
 	ptyHandler := api.NewPTYHandler(nil)
-	server := httptest.NewServer(ptyHandler)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleAdmin))
 	defer server.Close()
 
 	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh"
@@ -197,7 +211,7 @@ func TestPTY_UnsupportedTargetType(t *testing.T) {
 // 6. Test Host PTY Signals & Interruption (0x02 SIGINT Frame)
 func TestPTY_HostMachine_SIGINT(t *testing.T) {
 	ptyHandler := api.NewPTYHandler(nil)
-	server := httptest.NewServer(ptyHandler)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleOwner))
 	defer server.Close()
 
 	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh+-i"
@@ -240,7 +254,7 @@ func TestPTY_HostMachine_SIGINT(t *testing.T) {
 // 7. Test Concurrent Host PTY Sessions (Race-Free)
 func TestPTY_ConcurrentHostSessions_RaceFree(t *testing.T) {
 	ptyHandler := api.NewPTYHandler(nil)
-	server := httptest.NewServer(ptyHandler)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleAdmin))
 	defer server.Close()
 
 	var wg sync.WaitGroup
@@ -271,4 +285,113 @@ func TestPTY_ConcurrentHostSessions_RaceFree(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// 8. Security regression: a host_machine PTY request that reaches the
+// handler with NO role in context (e.g. AuthMiddleware not applied, or
+// context propagation failed) must be rejected, not silently granted a
+// root host shell. This reproduces the fail-open bypass: calling
+// PTYHandler.ServeHTTP directly, without AuthMiddleware in front of it.
+func TestPTY_HostMachine_NoRole_Forbidden(t *testing.T) {
+	ptyHandler := api.NewPTYHandler(nil)
+	server := httptest.NewServer(withRole(ptyHandler, ""))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial pty websocket: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msgType, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected forbidden exit frame, got error: %v", err)
+	}
+	if msgType != websocket.BinaryMessage || len(payload) == 0 || payload[0] != 0xFF {
+		t.Fatalf("expected 0xFF exit error frame, got msgType=%d, payload=%q", msgType, string(payload))
+	}
+
+	var exitMsg api.TermExitMessage
+	_ = json.Unmarshal(payload[1:], &exitMsg)
+	if exitMsg.ExitCode != 1 || !strings.Contains(exitMsg.Error, "forbidden") {
+		t.Fatalf("expected forbidden exit message, got code=%d error=%q", exitMsg.ExitCode, exitMsg.Error)
+	}
+}
+
+// 9. Security regression: a non-privileged role (e.g. viewer) must also be
+// rejected from host_machine access — only admin/owner are permitted.
+func TestPTY_HostMachine_ViewerRole_Forbidden(t *testing.T) {
+	ptyHandler := api.NewPTYHandler(nil)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleViewer))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial pty websocket: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected forbidden exit frame, got error: %v", err)
+	}
+	var exitMsg api.TermExitMessage
+	if len(payload) > 1 {
+		_ = json.Unmarshal(payload[1:], &exitMsg)
+	}
+	if len(payload) == 0 || payload[0] != 0xFF || !strings.Contains(exitMsg.Error, "forbidden") {
+		t.Fatalf("expected forbidden exit frame for viewer role, got payload=%q", string(payload))
+	}
+}
+
+// 10. Positive control: admin and owner roles must still be granted
+// host_machine PTY access (the deny-by-default fix must not overreach).
+func TestPTY_HostMachine_PrivilegedRoles_Allowed(t *testing.T) {
+	for _, role := range []string{api.RoleAdmin, api.RoleOwner} {
+		t.Run(role, func(t *testing.T) {
+			ptyHandler := api.NewPTYHandler(nil)
+			server := httptest.NewServer(withRole(ptyHandler, role))
+			defer server.Close()
+
+			wsURL := "ws" + server.URL[4:] + "?target_type=host_machine&cmd=/bin/sh"
+			dialer := websocket.Dialer{}
+			conn, _, err := dialer.Dial(wsURL, nil)
+			if err != nil {
+				t.Fatalf("failed to dial pty websocket: %v", err)
+			}
+			defer conn.Close()
+
+			inputCmd := []byte("echo hello_" + role + "\n")
+			stdinFrame := append([]byte{0x00}, inputCmd...)
+			if err := conn.WriteMessage(websocket.BinaryMessage, stdinFrame); err != nil {
+				t.Fatalf("failed to write stdin frame: %v", err)
+			}
+
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			foundOutput := false
+			for i := 0; i < 10; i++ {
+				msgType, payload, err := conn.ReadMessage()
+				if err != nil {
+					break
+				}
+				if msgType == websocket.BinaryMessage && len(payload) > 1 && payload[0] == 0x00 {
+					if strings.Contains(string(payload[1:]), "hello_"+role) {
+						foundOutput = true
+						break
+					}
+				}
+			}
+			if !foundOutput {
+				t.Fatalf("expected role %q to be granted a working host shell", role)
+			}
+
+			_ = conn.WriteMessage(websocket.BinaryMessage, []byte{0xFF})
+		})
+	}
 }

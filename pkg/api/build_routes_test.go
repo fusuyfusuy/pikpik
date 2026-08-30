@@ -123,6 +123,44 @@ func TestBuildEndpoints_GitHubWebhook_InvalidSignature(t *testing.T) {
 	}
 }
 
+func TestBuildEndpoints_GitHubWebhook_MissingSignature(t *testing.T) {
+	st, err := store.Open("file:" + store.NewID("db") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	secret := "github-webhook-test-secret"
+	_ = os.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	defer os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+
+	ctrl := api.NewDefaultController(api.ControllerDependencies{
+		Store: st,
+	})
+	gw := api.NewAPIGatewayWithOptions(api.APIGatewayOptions{
+		Controller: ctrl,
+		Store:      st,
+	})
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	payload := `{"ref":"refs/heads/main","after":"123"}`
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/github", strings.NewReader(payload))
+	// Deliberately omit the X-Hub-Signature-256 header even though a secret
+	// is configured server-side: this must be rejected, not fail open.
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized when signature header is missing, got %d", resp.StatusCode)
+	}
+}
+
 func TestBuildEndpoints_GenericGitWebhook(t *testing.T) {
 	st, err := store.Open("file:" + store.NewID("db") + "?mode=memory&cache=shared")
 	if err != nil {

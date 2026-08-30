@@ -99,6 +99,10 @@ func RegisterRoutes(
 	rateLimiter *RateLimiter,
 	buildMgr *build.BuildManager,
 ) {
+	// Dedicated login rate limiter: 5 attempts/min per client IP, to mitigate
+	// credential brute-forcing against the unauthenticated login endpoint.
+	loginLimiter := NewRateLimiter(5, time.Minute)
+
 	authWrap := func(role string, h http.HandlerFunc) http.Handler {
 		mw := AuthMiddleware(authSvc, st, role)
 		return mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +125,13 @@ func RegisterRoutes(
 	// --- 1. Auth Endpoints ---
 	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		reqID := GenerateRequestID()
+		clientIP := ExtractClientIP(r)
+		allowed, rem, retry := loginLimiter.Allow(clientIP)
+		SetRateLimitHeaders(w, 5, rem, retry)
+		if !allowed {
+			WriteError(w, http.StatusTooManyRequests, ErrCodeRateLimited, "Too many login attempts, please try again later", nil, reqID)
+			return
+		}
 		var req LoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed login request", nil, reqID)

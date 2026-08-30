@@ -116,7 +116,7 @@ func (h *PTYHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case "host_machine", "host", "node":
 		role := GetRoleFromContext(r.Context())
-		if role != "" && role != RoleAdmin && role != RoleOwner {
+		if role != RoleAdmin && role != RoleOwner {
 			safeConn.WriteExit(1, "forbidden: host machine terminal requires admin or owner role")
 			return
 		}
