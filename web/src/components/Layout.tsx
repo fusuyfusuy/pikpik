@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
+  Folder,
   Box,
   Layers,
   Database as DbIcon,
@@ -18,7 +19,6 @@ import {
   Store,
   Search,
   Plus,
-  ChevronDown,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
@@ -26,6 +26,7 @@ import { User } from '../lib/types';
 import { cn } from '../lib/utils';
 import { SSEConnectionStatus } from '../hooks/useSSE';
 import { CommandPalette } from './CommandPalette';
+import { UniversalCreateModal } from './UniversalCreateModal';
 
 export interface LayoutProps {
   currentView: string;
@@ -49,39 +50,35 @@ interface NavCategory {
 
 const NAV_CATEGORIES: NavCategory[] = [
   {
-    title: 'Overview & Catalog',
+    title: 'Workspaces & Services',
     items: [
       { id: 'dashboard', label: 'Cluster Overview', icon: LayoutDashboard },
-      { id: 'marketplace', label: '1-Click Marketplace', icon: Store, badge: 'Recipes', badgeVariant: 'purple' },
-    ],
-  },
-  {
-    title: 'Workloads & Compute',
-    items: [
+      { id: 'projects', label: 'Project Workspaces', icon: Folder, badge: 'Workspaces', badgeVariant: 'info' },
       { id: 'apps', label: 'Applications', icon: Box },
       { id: 'stacks', label: 'Compose Stacks', icon: Layers },
       { id: 'databases', label: 'Managed Databases', icon: DbIcon },
     ],
   },
   {
-    title: 'Traffic & Ingress',
+    title: 'Catalog & Deploy',
     items: [
-      { id: 'ingress', label: 'Ingress & TLS Mesh', icon: Globe, badge: 'Auto-TLS', badgeVariant: 'warning' },
+      { id: 'marketplace', label: '1-Click Marketplace', icon: Store, badge: '22 Recipes', badgeVariant: 'purple' },
     ],
   },
   {
-    title: 'Fleet & Storage',
+    title: 'Infrastructure & Traffic',
     items: [
+      { id: 'ingress', label: 'Ingress & TLS Mesh', icon: Globe, badge: 'Auto-TLS', badgeVariant: 'warning' },
       { id: 'nodes', label: 'Machine Fleet', icon: Server },
-      { id: 'registry', label: 'Container Registry', icon: HardDrive },
       { id: 'backups', label: 'Backups & S3', icon: Archive },
+      { id: 'registry', label: 'Container Registry', icon: HardDrive },
     ],
   },
   {
     title: 'Platform & Governance',
     items: [
+      { id: 'settings', label: 'Access & Notifications', icon: Key },
       { id: 'system', label: 'System Health', icon: Cpu },
-      { id: 'settings', label: 'Access & Security', icon: Key },
     ],
   },
 ];
@@ -96,7 +93,8 @@ export function Layout({
 }: LayoutProps) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [isDeployMenuOpen, setIsDeployMenuOpen] = useState(false);
+  const [isUniversalCreateOpen, setIsUniversalCreateOpen] = useState(false);
+  const [universalCreateTab, setUniversalCreateTab] = useState<'git' | 'image' | 'database' | 'stack' | 'template'>('git');
 
   // Global keyboard shortcut for Command Palette (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -118,6 +116,14 @@ export function Layout({
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         onNavigate={onNavigate}
+      />
+
+      {/* Global Universal Resource Provisioner Modal */}
+      <UniversalCreateModal
+        isOpen={isUniversalCreateOpen}
+        onClose={() => setIsUniversalCreateOpen(false)}
+        onNavigate={onNavigate}
+        defaultTab={universalCreateTab}
       />
 
       {/* Top Navbar Context Bar */}
@@ -179,83 +185,19 @@ export function Layout({
 
         {/* Right Side: Quick Deploy, Live Status & User Info */}
         <div className="flex items-center gap-3 sm:gap-4">
-          {/* Quick Deploy Dropdown */}
-          <div className="relative">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => setIsDeployMenuOpen(!isDeployMenuOpen)}
-              className="text-xs py-1.5 px-3 shadow-md shadow-cyan-950/40"
-              leftIcon={<Plus className="h-3.5 w-3.5" />}
-              rightIcon={<ChevronDown className="h-3 w-3 ml-0.5" />}
-            >
-              <span className="hidden sm:inline">Deploy</span>
-            </Button>
-
-            {isDeployMenuOpen && (
-              <>
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setIsDeployMenuOpen(false)}
-                />
-                <div className="absolute right-0 mt-2 w-52 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl p-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 text-xs">
-                  <button
-                    onClick={() => {
-                      setIsDeployMenuOpen(false);
-                      onNavigate('apps');
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-zinc-200 hover:bg-zinc-800 text-left"
-                  >
-                    <Box className="h-4 w-4 text-cyan-400" />
-                    <div>
-                      <div className="font-medium">New Application</div>
-                      <div className="text-[10px] text-zinc-500">Deploy container or repo</div>
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsDeployMenuOpen(false);
-                      onNavigate('databases');
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-zinc-200 hover:bg-zinc-800 text-left"
-                  >
-                    <DbIcon className="h-4 w-4 text-purple-400" />
-                    <div>
-                      <div className="font-medium">New Database</div>
-                      <div className="text-[10px] text-zinc-500">Postgres, Redis, MySQL</div>
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsDeployMenuOpen(false);
-                      onNavigate('stacks');
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-zinc-200 hover:bg-zinc-800 text-left"
-                  >
-                    <Layers className="h-4 w-4 text-amber-400" />
-                    <div>
-                      <div className="font-medium">Compose Stack</div>
-                      <div className="text-[10px] text-zinc-500">Multi-service YAML</div>
-                    </div>
-                  </button>
-                  <div className="h-px bg-zinc-800 my-1" />
-                  <button
-                    onClick={() => {
-                      setIsDeployMenuOpen(false);
-                      onNavigate('marketplace');
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-zinc-200 hover:bg-zinc-800 text-left"
-                  >
-                    <Store className="h-4 w-4 text-emerald-400" />
-                    <div>
-                      <div className="font-medium">1-Click Recipes</div>
-                      <div className="text-[10px] text-zinc-500">Explore template catalog</div>
-                    </div>
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          {/* Universal New Resource CTA */}
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setUniversalCreateTab('git');
+              setIsUniversalCreateOpen(true);
+            }}
+            className="text-xs py-1.5 px-3.5 shadow-md shadow-cyan-950/40 flex items-center gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5 text-zinc-950 stroke-[2.5]" />
+            <span className="font-semibold text-zinc-950">New Resource</span>
+          </Button>
 
           {/* Real-time SSE / Cluster Status Pill */}
           <div className="flex items-center gap-2 bg-zinc-900/90 border border-zinc-800 px-2.5 py-1 rounded-full text-xs">

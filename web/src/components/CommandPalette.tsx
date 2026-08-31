@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Search,
   LayoutDashboard,
+  Folder,
   Box,
   Layers,
   Database as DbIcon,
@@ -41,6 +42,12 @@ export function CommandPalette({ isOpen, onClose, onNavigate }: CommandPalettePr
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Fetch dynamic entities for live search
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.projects.list(),
+    enabled: isOpen,
+  });
+
   const { data: apps } = useQuery({
     queryKey: ['apps'],
     queryFn: () => api.apps.list(),
@@ -68,6 +75,14 @@ export function CommandPalette({ isOpen, onClose, onNavigate }: CommandPalettePr
       subtitle: 'Real-time telemetry, resource metrics & aggregate health',
       icon: LayoutDashboard,
       action: () => onNavigate('dashboard'),
+    },
+    {
+      id: 'nav-projects',
+      title: 'Project Workspaces',
+      category: 'Navigation',
+      subtitle: 'Group applications, databases, stacks, and domains by environment',
+      icon: Folder,
+      action: () => onNavigate('projects'),
     },
     {
       id: 'nav-marketplace',
@@ -170,6 +185,19 @@ export function CommandPalette({ isOpen, onClose, onNavigate }: CommandPalettePr
 
   // Dynamic entity commands
   const dynamicCommands: CommandItem[] = [];
+
+  if (projects && projects.length > 0) {
+    projects.forEach((proj) => {
+      dynamicCommands.push({
+        id: `project-${proj.id}`,
+        title: proj.name,
+        category: 'Workloads',
+        subtitle: `Project Workspace · ${proj.slug || proj.id}`,
+        icon: Folder,
+        action: () => onNavigate('projects'),
+      });
+    });
+  }
 
   if (apps && apps.length > 0) {
     apps.forEach((app) => {

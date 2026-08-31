@@ -9,6 +9,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 // Lazy-loaded Views for route-level code splitting
 const LoginView = lazy(() => import('./views/LoginView').then((m) => ({ default: m.LoginView })));
 const DashboardView = lazy(() => import('./views/DashboardView').then((m) => ({ default: m.DashboardView })));
+const ProjectsView = lazy(() => import('./views/ProjectsView').then((m) => ({ default: m.ProjectsView })));
 const MarketplaceView = lazy(() => import('./views/MarketplaceView').then((m) => ({ default: m.MarketplaceView })));
 const AppsView = lazy(() => import('./views/AppsView').then((m) => ({ default: m.AppsView })));
 const StacksView = lazy(() => import('./views/StacksView').then((m) => ({ default: m.StacksView })));
@@ -119,6 +120,7 @@ export function App() {
       <ErrorBoundary key={currentView}>
         <Suspense fallback={<ViewLoader />}>
           {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
+          {currentView === 'projects' && <ProjectsView onNavigate={handleNavigate} />}
           {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
           {currentView === 'apps' && <AppsView />}
           {currentView === 'stacks' && <StacksView />}

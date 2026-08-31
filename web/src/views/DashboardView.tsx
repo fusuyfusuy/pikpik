@@ -5,6 +5,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { formatBytes } from '../lib/utils';
 import {
+  Folder,
   Box,
   Server,
   Database,
@@ -41,6 +42,14 @@ const mockTelemetry = Array.from({ length: 20 }, (_, i) => ({
 }));
 
 export function DashboardView({ onNavigate }: DashboardViewProps) {
+  const {
+    data: projects = [],
+    refetch: refetchProjects,
+  } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.projects.list(),
+  });
+
   const {
     data: apps,
     isError: isAppsError,
@@ -118,6 +127,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
   const activeDatabasesCount = databases?.filter((d) => d.status === 'running').length || 0;
 
   const handleRefreshAll = () => {
+    refetchProjects();
     refetchApps();
     refetchStacks();
     refetchNodes();
@@ -158,7 +168,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
             Refresh
           </Button>
           <Button variant="primary" size="sm" onClick={() => onNavigate('apps')} leftIcon={<Plus className="h-3.5 w-3.5" />}>
-            New Application
+            New Resource
           </Button>
         </div>
       </div>
@@ -172,16 +182,33 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       )}
 
       {/* Categorized Metric Cards Grid (5 Pillars) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Workloads Card */}
-        <Card className="cursor-pointer hover:border-cyan-500/50 transition-all" onClick={() => onNavigate('apps')}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+        {/* Project Workspaces Card */}
+        <Card className="cursor-pointer hover:border-cyan-500/50 transition-all" onClick={() => onNavigate('projects')}>
           <div className="flex items-center justify-between">
-            <div className="p-2.5 rounded-lg bg-cyan-950/50 border border-cyan-800/40 text-cyan-400">
-              <Box className="h-5 w-5" />
+            <div className="p-2 rounded-lg bg-cyan-950/50 border border-cyan-800/40 text-cyan-400">
+              <Folder className="h-4 w-4" />
+            </div>
+            <Badge variant="info">Workspaces</Badge>
+          </div>
+          <div className="mt-3">
+            <div className="text-2xl font-bold font-mono text-zinc-100">{projects?.length ?? 1}</div>
+            <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
+              <span>Projects</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Scoped</span>
+            </div>
+          </div>
+        </Card>
+
+        {/* Workloads Card */}
+        <Card className="cursor-pointer hover:border-blue-500/50 transition-all" onClick={() => onNavigate('apps')}>
+          <div className="flex items-center justify-between">
+            <div className="p-2 rounded-lg bg-blue-950/50 border border-blue-800/40 text-blue-400">
+              <Box className="h-4 w-4" />
             </div>
             <Badge variant="info">{activeAppsCount} running</Badge>
           </div>
-          <div className="mt-4">
+          <div className="mt-3">
             <div className="text-2xl font-bold font-mono text-zinc-100">{apps?.length ?? 0}</div>
             <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
               <span>Applications</span>
@@ -193,12 +220,12 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         {/* Managed Databases */}
         <Card className="cursor-pointer hover:border-purple-500/50 transition-all" onClick={() => onNavigate('databases')}>
           <div className="flex items-center justify-between">
-            <div className="p-2.5 rounded-lg bg-purple-950/50 border border-purple-800/40 text-purple-400">
-              <Database className="h-5 w-5" />
+            <div className="p-2 rounded-lg bg-purple-950/50 border border-purple-800/40 text-purple-400">
+              <Database className="h-4 w-4" />
             </div>
             <Badge variant="purple">{activeDatabasesCount} active</Badge>
           </div>
-          <div className="mt-4">
+          <div className="mt-3">
             <div className="text-2xl font-bold font-mono text-zinc-100">{databases?.length ?? 0}</div>
             <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
               <span>Databases</span>
@@ -210,16 +237,16 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         {/* Ingress & Traffic */}
         <Card className="cursor-pointer hover:border-amber-500/50 transition-all" onClick={() => onNavigate('ingress')}>
           <div className="flex items-center justify-between">
-            <div className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-800/40 text-amber-400">
-              <Globe className="h-5 w-5" />
+            <div className="p-2 rounded-lg bg-amber-950/50 border border-amber-800/40 text-amber-400">
+              <Globe className="h-4 w-4" />
             </div>
             <Badge variant="warning">Auto-TLS</Badge>
           </div>
-          <div className="mt-4">
+          <div className="mt-3">
             <div className="text-2xl font-bold font-mono text-zinc-100">{domains?.length ?? 0}</div>
             <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
-              <span>Ingress Domains</span>
-              <span className="text-[10px] text-zinc-500 font-mono">Caddy Proxy</span>
+              <span>Domains</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Caddy</span>
             </div>
           </div>
         </Card>
@@ -227,16 +254,16 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         {/* Machine Fleet */}
         <Card className="cursor-pointer hover:border-emerald-500/50 transition-all" onClick={() => onNavigate('nodes')}>
           <div className="flex items-center justify-between">
-            <div className="p-2.5 rounded-lg bg-emerald-950/50 border border-emerald-800/40 text-emerald-400">
-              <Server className="h-5 w-5" />
+            <div className="p-2 rounded-lg bg-emerald-950/50 border border-emerald-800/40 text-emerald-400">
+              <Server className="h-4 w-4" />
             </div>
             <Badge variant="success">{readyNodesCount} ready</Badge>
           </div>
-          <div className="mt-4">
+          <div className="mt-3">
             <div className="text-2xl font-bold font-mono text-zinc-100">{nodes?.length ?? 1}</div>
             <div className="text-xs text-zinc-400 font-medium mt-0.5 flex items-center justify-between">
-              <span>Swarm Nodes</span>
-              <span className="text-[10px] text-zinc-500 font-mono">Agent WSS</span>
+              <span>Nodes</span>
+              <span className="text-[10px] text-zinc-500 font-mono">Swarm</span>
             </div>
           </div>
         </Card>
