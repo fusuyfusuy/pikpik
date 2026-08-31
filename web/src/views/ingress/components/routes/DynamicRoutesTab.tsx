@@ -72,10 +72,14 @@ export function DynamicRoutesTab() {
     },
   });
 
+  // Safe arrays
+  const safeDomains = domains || [];
+  const safeApps = apps || [];
+
   // Filtered domains
-  const filteredDomains = domains.filter((d) => {
+  const filteredDomains = safeDomains.filter((d) => {
     const query = searchQuery.toLowerCase();
-    const app = apps.find((a) => a.id === d.app_id);
+    const app = safeApps.find((a) => a.id === d.app_id);
     return (
       d.domain.toLowerCase().includes(query) ||
       d.app_id.toLowerCase().includes(query) ||
@@ -84,7 +88,7 @@ export function DynamicRoutesTab() {
   });
 
   const getAppName = (appId: string) => {
-    const app = apps.find((a) => a.id === appId);
+    const app = safeApps.find((a) => a.id === appId);
     return app ? app.name : appId || '—';
   };
 
@@ -278,7 +282,7 @@ export function DynamicRoutesTab() {
       <NewRouteModal
         isOpen={isNewRouteModalOpen}
         onClose={() => setIsNewRouteModalOpen(false)}
-        apps={apps}
+        apps={safeApps}
       />
     </div>
   );

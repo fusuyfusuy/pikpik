@@ -50,6 +50,8 @@ export function RegistryView() {
     queryFn: () => api.registry.getCredentials(),
   });
 
+  const safeCredentials = credentials || [];
+
   const gcMutation = useMutation({
     mutationFn: api.registry.garbageCollect,
     onSuccess: () => {
@@ -217,14 +219,14 @@ export function RegistryView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(!credentials || credentials.length === 0) ? (
+              {safeCredentials.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center py-6 text-zinc-500">
                     Default cluster robot credential active.
                   </TableCell>
                 </TableRow>
               ) : (
-                credentials.map((cred) => (
+                safeCredentials.map((cred) => (
                   <TableRow key={cred.id}>
                     <TableCell className="font-semibold text-xs text-zinc-200">
                       <div className="flex items-center gap-2">

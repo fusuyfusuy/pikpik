@@ -57,6 +57,18 @@ import {
   JoinSwarmRequest,
   NotificationChannel,
   CreateNotificationChannelRequest,
+  TeamUser,
+  InviteUserRequest,
+  TeamInvitationResponse,
+  AcceptInviteRequest,
+  UpdateUserRoleRequest,
+  ResetPasswordRequest,
+  ProjectMember,
+  SetProjectMemberRequest,
+  Integration,
+  CreateIntegrationRequest,
+  UpdateIntegrationRequest,
+  TestIntegrationResponse,
 } from './types';
 
 const TOKEN_KEY = 'pikpik_token';
@@ -125,7 +137,8 @@ async function request<T>(
     throw new ApiClientError(apiErr);
   }
 
-  return (json as ApiResponse<T>).data;
+  const data = (json as ApiResponse<T>).data;
+  return (data !== undefined ? data : null) as T;
 }
 
 export const api = {
@@ -541,6 +554,71 @@ export const api = {
       request(`/api/v1/notifications/channels/${id}`, { method: 'DELETE' }),
     test: (id: string): Promise<{ status: string; message: string }> =>
       request<{ status: string; message: string }>(`/api/v1/notifications/channels/${id}/test`, {
+        method: 'POST',
+      }),
+  },
+
+  // --- Team & User Management ---
+  users: {
+    list: (): Promise<TeamUser[]> => request<TeamUser[]>('/api/v1/users'),
+    invite: (req: InviteUserRequest): Promise<TeamInvitationResponse> =>
+      request<TeamInvitationResponse>('/api/v1/users/invite', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    acceptInvite: (req: AcceptInviteRequest): Promise<LoginResponse> =>
+      request<LoginResponse>('/api/v1/users/accept-invite', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    updateRole: (id: string, req: UpdateUserRoleRequest): Promise<{ message: string }> =>
+      request<{ message: string }>(`/api/v1/users/${id}/role`, {
+        method: 'PUT',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request<{ message: string }>(`/api/v1/users/${id}`, { method: 'DELETE' }),
+    resetPassword: (id: string, req: ResetPasswordRequest): Promise<{ message: string }> =>
+      request<{ message: string }>(`/api/v1/users/${id}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+  },
+
+  // --- Project Memberships ---
+  projectMembers: {
+    list: (projectId: string): Promise<ProjectMember[]> =>
+      request<ProjectMember[]>(`/api/v1/projects/${projectId}/members`),
+    set: (projectId: string, req: SetProjectMemberRequest): Promise<ProjectMember> =>
+      request<ProjectMember>(`/api/v1/projects/${projectId}/members`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    remove: (projectId: string, userId: string): Promise<{ message: string }> =>
+      request<{ message: string }>(`/api/v1/projects/${projectId}/members/${userId}`, {
+        method: 'DELETE',
+      }),
+  },
+
+  // --- Developer Integrations Hub ---
+  integrations: {
+    list: (orgId?: string): Promise<Integration[]> =>
+      request<Integration[]>(`/api/v1/integrations${orgId ? `?org_id=${orgId}` : ''}`),
+    get: (id: string): Promise<Integration> => request<Integration>(`/api/v1/integrations/${id}`),
+    create: (req: CreateIntegrationRequest, orgId?: string): Promise<Integration> =>
+      request<Integration>(`/api/v1/integrations${orgId ? `?org_id=${orgId}` : ''}`, {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    update: (id: string, req: UpdateIntegrationRequest): Promise<Integration> =>
+      request<Integration>(`/api/v1/integrations/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request<{ message: string }>(`/api/v1/integrations/${id}`, { method: 'DELETE' }),
+    test: (id: string): Promise<TestIntegrationResponse> =>
+      request<TestIntegrationResponse>(`/api/v1/integrations/${id}/test`, {
         method: 'POST',
       }),
   },

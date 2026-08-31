@@ -609,7 +609,9 @@ export interface User {
   id: string;
   email: string;
   role: 'owner' | 'admin' | 'developer' | 'viewer' | string;
+  totp_enabled?: boolean;
   created_at: string;
+  updated_at?: string;
 }
 
 export type UserDTO = User;
@@ -781,4 +783,93 @@ export interface CreateNotificationChannelRequest {
   events?: string[];
   enabled?: boolean;
 }
+
+// --- Team & User Management Models ---
+export interface TeamUser {
+  id: string;
+  email: string;
+  role: 'owner' | 'admin' | 'developer' | 'viewer' | string;
+  totp_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InviteUserRequest {
+  email: string;
+  role: 'owner' | 'admin' | 'developer' | 'viewer' | string;
+  expires_in_days?: number;
+}
+
+export interface TeamInvitationResponse {
+  id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  invite_url: string;
+  invited_by: string;
+  expires_at: string;
+  accepted_at?: string;
+  created_at: string;
+}
+
+export interface AcceptInviteRequest {
+  token: string;
+  password: string;
+}
+
+export interface UpdateUserRoleRequest {
+  role: 'owner' | 'admin' | 'developer' | 'viewer' | string;
+}
+
+export interface ResetPasswordRequest {
+  new_password: string;
+}
+
+// --- Project Membership Models ---
+export interface ProjectMember {
+  id: string;
+  project_id: string;
+  user_id: string;
+  user_email: string;
+  role: 'admin' | 'developer' | 'viewer' | string;
+  created_at: string;
+}
+
+export interface SetProjectMemberRequest {
+  user_id: string;
+  role: 'admin' | 'developer' | 'viewer' | string;
+}
+
+// --- Developer Integration Models ---
+export interface Integration {
+  id: string;
+  org_id: string;
+  name: string;
+  type: 'git_github' | 'git_gitlab' | 'git_gitea' | 'git_generic' | 'registry_dockerhub' | 'registry_ghcr' | 'registry_ecr' | 'storage_s3' | 'storage_r2' | 'storage_minio' | string;
+  config_json: string;
+  status: 'active' | 'error' | 'disabled' | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateIntegrationRequest {
+  name: string;
+  type: string;
+  credentials: string;
+  config_json?: string;
+}
+
+export interface UpdateIntegrationRequest {
+  name?: string;
+  credentials?: string;
+  config_json?: string;
+  status?: string;
+}
+
+export interface TestIntegrationResponse {
+  success: boolean;
+  message: string;
+  latency_ms: number;
+}
+
 

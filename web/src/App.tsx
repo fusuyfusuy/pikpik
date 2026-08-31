@@ -19,6 +19,7 @@ const IngressView = lazy(() => import('./views/IngressView').then((m) => ({ defa
 const BackupsView = lazy(() => import('./views/BackupsView').then((m) => ({ default: m.BackupsView })));
 const RegistryView = lazy(() => import('./views/RegistryView').then((m) => ({ default: m.RegistryView })));
 const SystemView = lazy(() => import('./views/SystemView').then((m) => ({ default: m.SystemView })));
+const IntegrationsView = lazy(() => import('./views/IntegrationsView').then((m) => ({ default: m.IntegrationsView })));
 const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })));
 
 function ViewLoader() {
@@ -129,6 +130,7 @@ export function App() {
           {currentView === 'ingress' && <IngressView />}
           {currentView === 'backups' && <BackupsView />}
           {currentView === 'registry' && <RegistryView />}
+          {currentView === 'integrations' && <IntegrationsView />}
           {currentView === 'system' && <SystemView />}
           {currentView === 'settings' && <SettingsView user={currentUser} />}
         </Suspense>

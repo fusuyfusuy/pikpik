@@ -135,8 +135,14 @@ export function usePTY(options: UsePTYOptions = {}) {
       setStatus('error');
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       setStatus('disconnected');
+      if (event.code === 1008 || event.code === 4401 || event.code === 4001) {
+        setError('Authentication expired or unauthorized. Please re-login.');
+        if (terminalRef.current) {
+          terminalRef.current.writeln('\r\n\x1b[31mAuthentication expired or unauthorized. Please re-authenticate.\x1b[0m');
+        }
+      }
     };
   }, [targetType, targetId, cmd, disconnect, sendResize]);
 

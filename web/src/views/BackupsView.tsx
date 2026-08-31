@@ -100,6 +100,11 @@ export function BackupsView() {
     queryFn: api.backups.listDestinations,
   });
 
+  const safeBackups = backups || [];
+  const safeSchedules = schedules || [];
+  const safeDatabases = databases || [];
+  const safeDestinations = destinations || [];
+
   // Snapshot Mutations
   const createSnapshotMutation = useMutation({
     mutationFn: (targetService: string) => api.backups.create(targetService),
@@ -305,14 +310,14 @@ export function BackupsView() {
                     Loading backup snapshots...
                   </TableCell>
                 </TableRow>
-              ) : !backups || backups.length === 0 ? (
+              ) : safeBackups.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-10 text-zinc-500">
                     No backup archives found. Click "Create Snapshot" or create a Cron schedule.
                   </TableCell>
                 </TableRow>
               ) : (
-                backups.map((b) => (
+                safeBackups.map((b) => (
                   <TableRow key={b.id}>
                     <TableCell className="font-semibold text-zinc-100">
                       <div className="flex items-center gap-2">
@@ -410,14 +415,14 @@ export function BackupsView() {
                     Loading backup schedules...
                   </TableCell>
                 </TableRow>
-              ) : !schedules || schedules.length === 0 ? (
+              ) : safeSchedules.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-10 text-zinc-500">
                     No recurring backup schedules found. Click "New Cron Schedule" to configure automated dumps.
                   </TableCell>
                 </TableRow>
               ) : (
-                schedules.map((sch) => (
+                safeSchedules.map((sch) => (
                   <TableRow key={sch.id}>
                     <TableCell className="font-semibold text-zinc-100">
                       <div className="flex items-center gap-2">
@@ -495,8 +500,8 @@ export function BackupsView() {
                 onRetry={refetchDestinations}
               />
             </div>
-          ) : destinations && destinations.length > 0 ? (
-            destinations.map((d) => (
+          ) : safeDestinations.length > 0 ? (
+            safeDestinations.map((d) => (
               <Card key={d.id} className="p-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-zinc-800 rounded-lg text-cyan-400">
@@ -556,7 +561,7 @@ export function BackupsView() {
               required
             >
               <option value="">Select database...</option>
-              {databases?.map((db) => (
+              {safeDatabases.map((db) => (
                 <option key={db.id} value={db.name}>
                   {db.name} ({db.engine})
                 </option>
@@ -597,12 +602,12 @@ export function BackupsView() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className="block text-xs font-medium text-zinc-300">Target Service / DB</label>
-              {databases && databases.length > 0 ? (
+              {safeDatabases.length > 0 ? (
                 <select
                   value={scheduleServiceId}
                   onChange={(e) => {
                     setScheduleServiceId(e.target.value);
-                    const selected = databases.find((d) => d.name === e.target.value);
+                    const selected = safeDatabases.find((d) => d.name === e.target.value);
                     if (selected) {
                       setScheduleDbEngine(selected.engine);
                     }
@@ -611,7 +616,7 @@ export function BackupsView() {
                   required
                 >
                   <option value="">Select database...</option>
-                  {databases.map((db) => (
+                  {safeDatabases.map((db) => (
                     <option key={db.id} value={db.name}>
                       {db.name} ({db.engine})
                     </option>

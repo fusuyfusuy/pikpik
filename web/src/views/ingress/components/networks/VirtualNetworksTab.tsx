@@ -71,15 +71,18 @@ export function VirtualNetworksTab() {
     },
   });
 
+  const safeNetworks = networks || [];
+  const safeApps = apps || [];
+
   // Helper to map attached service badges
   const getAttachedBadges = (net: NetworkDTO) => {
     // Check if network is ingress overlay
     if (net.name.includes('ingress') || net.scope === 'ingress') {
-      const appNames = apps.slice(0, 2).map((a) => a.name.toLowerCase().replace(/\s+/g, '-'));
+      const appNames = safeApps.slice(0, 2).map((a) => a.name.toLowerCase().replace(/\s+/g, '-'));
       return ['caddy', 'gateway', ...appNames];
     }
     // Check if network matches app names or project
-    const attached = apps
+    const attached = safeApps
       .filter((a) => {
         const slug = a.name.toLowerCase().replace(/\s+/g, '-');
         return net.name.includes(slug) || (net.project_id && a.project_id === net.project_id);
@@ -175,7 +178,7 @@ export function VirtualNetworksTab() {
                   </TableCell>
                 </TableRow>
               ) : (
-                networks.map((net) => {
+                safeNetworks.map((net) => {
                   const attachedBadges = getAttachedBadges(net);
                   const subnet = getSubnetDisplay(net);
 

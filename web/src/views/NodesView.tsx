@@ -134,7 +134,10 @@ export function NodesView() {
     setTimeout(() => setCopiedType(null), 2000);
   };
 
-  const filteredMachines = machines.filter(
+  const safeMachines = machines || [];
+  const safeNodes = nodes || [];
+
+  const filteredMachines = safeMachines.filter(
     (m) =>
       m.hostname.toLowerCase().includes(searchQuery.toLowerCase()) ||
       m.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -142,9 +145,9 @@ export function NodesView() {
       m.role.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const onlineMachinesCount = machines.filter((m) => m.status === 'online').length;
-  const swarmManagersCount = nodes.filter((n) => n.role === 'manager').length;
-  const swarmWorkersCount = nodes.filter((n) => n.role === 'worker').length;
+  const onlineMachinesCount = safeMachines.filter((m) => m.status === 'online').length;
+  const swarmManagersCount = safeNodes.filter((n) => n.role === 'manager').length;
+  const swarmWorkersCount = safeNodes.filter((n) => n.role === 'worker').length;
 
   return (
     <div className="space-y-6">

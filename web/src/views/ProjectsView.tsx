@@ -111,34 +111,39 @@ export function ProjectsView({ onNavigate }: ProjectsViewProps) {
     }));
   };
 
+  const safeProjects = projects || [];
+  const safeApps = apps || [];
+  const safeDatabases = databases || [];
+  const safeStacks = stacks || [];
+
   // Group workloads by project
   const projectWorkloads = useMemo(() => {
     const map: Record<string, { apps: App[]; databases: Database[]; stacks: Stack[] }> = {};
-    projects.forEach((p) => {
+    safeProjects.forEach((p) => {
       map[p.id] = { apps: [], databases: [], stacks: [] };
     });
 
-    apps.forEach((a) => {
+    safeApps.forEach((a) => {
       const pid = a.project_id || 'prj_default';
       if (!map[pid]) map[pid] = { apps: [], databases: [], stacks: [] };
       map[pid].apps.push(a);
     });
 
     // Databases belong to projects or fallback to default
-    databases.forEach((d) => {
+    safeDatabases.forEach((d) => {
       const pid = 'prj_default';
       if (!map[pid]) map[pid] = { apps: [], databases: [], stacks: [] };
       map[pid].databases.push(d);
     });
 
-    stacks.forEach((s) => {
+    safeStacks.forEach((s) => {
       const pid = s.project_id || 'prj_default';
       if (!map[pid]) map[pid] = { apps: [], databases: [], stacks: [] };
       map[pid].stacks.push(s);
     });
 
     return map;
-  }, [projects, apps, databases, stacks]);
+  }, [safeProjects, safeApps, safeDatabases, safeStacks]);
 
   // Filter projects by search query & tag
   const filteredProjects = useMemo(() => {

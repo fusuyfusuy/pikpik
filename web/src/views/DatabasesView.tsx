@@ -79,6 +79,9 @@ export function DatabasesView() {
     queryFn: api.backups.listDestinations,
   });
 
+  const safeDatabases = databases || [];
+  const safeDestinations = destinations || [];
+
   const createMutation = useMutation({
     mutationFn: (req: CreateDatabaseRequest) => api.databases.create(req),
     onSuccess: (newDb) => {
@@ -219,7 +222,7 @@ export function DatabasesView() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {databases.map((db) => (
+          {safeDatabases.map((db) => (
             <Card key={db.id} className="flex flex-col justify-between hover:border-zinc-700">
               <div>
                 <div className="flex items-start justify-between">
@@ -498,8 +501,8 @@ export function DatabasesView() {
                 <select
                   className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs text-zinc-100 focus:border-cyan-500 focus:outline-none"
                 >
-                  {destinations && destinations.length > 0 ? (
-                    destinations.map((d) => (
+                  {safeDestinations.length > 0 ? (
+                    safeDestinations.map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.name} ({d.bucket})
                       </option>

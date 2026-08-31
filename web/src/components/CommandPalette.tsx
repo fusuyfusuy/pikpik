@@ -17,6 +17,7 @@ import {
   Plus,
   ArrowRight,
   Zap,
+  Link2,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { cn } from '../lib/utils';
@@ -155,6 +156,14 @@ export function CommandPalette({ isOpen, onClose, onNavigate }: CommandPalettePr
       subtitle: 'Host specs, Docker cache pruning & engine logs',
       icon: Cpu,
       action: () => onNavigate('system'),
+    },
+    {
+      id: 'nav-integrations',
+      title: 'Developer Integrations',
+      category: 'Navigation',
+      subtitle: 'Git providers, container registries & S3 storage destinations',
+      icon: Link2,
+      action: () => onNavigate('integrations'),
     },
     {
       id: 'nav-settings',

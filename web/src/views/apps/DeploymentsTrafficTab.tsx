@@ -53,6 +53,8 @@ export function DeploymentsTrafficTab({ app }: DeploymentsTrafficTabProps) {
     refetchInterval: 4000,
   });
 
+  const safeBuilds = builds || [];
+
   // In-place Redeploy mutation
   const deployMutation = useMutation({
     mutationFn: () => api.apps.deploy(app.id, { image: app.image }),
@@ -200,7 +202,7 @@ export function DeploymentsTrafficTab({ app }: DeploymentsTrafficTabProps) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {builds.map((b) => (
+              {safeBuilds.map((b) => (
                 <TableRow key={b.id} className="hover:bg-zinc-900/50">
                   <TableCell className="font-mono text-xs">
                     <div className="flex items-center gap-1.5">

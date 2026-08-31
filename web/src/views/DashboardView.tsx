@@ -118,13 +118,17 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     queryFn: api.system.getDiskUsage,
   });
 
+  const safeApps = apps || [];
+  const safeNodes = nodes || [];
+  const safeDatabases = databases || [];
+
   const isAllError = isAppsError && isNodesError && isDatabasesError;
   const hasAnyError = isAppsError || isStacksError || isNodesError || isDatabasesError || isDomainsError || isSystemInfoError;
   const firstError = appsError || nodesError || databasesError || stacksError || domainsError || systemInfoError;
 
-  const activeAppsCount = apps?.filter((a) => a.status === 'running').length || 0;
-  const readyNodesCount = nodes?.filter((n) => n.status === 'ready').length || 0;
-  const activeDatabasesCount = databases?.filter((d) => d.status === 'running').length || 0;
+  const activeAppsCount = safeApps.filter((a) => a.status === 'running').length;
+  const readyNodesCount = safeNodes.filter((n) => n.status === 'ready').length;
+  const activeDatabasesCount = safeDatabases.filter((d) => d.status === 'running').length;
 
   const handleRefreshAll = () => {
     refetchProjects();

@@ -108,11 +108,15 @@ export function AppsView() {
       }),
   });
 
+  const safeProjects = projects || [];
+  const safeApps = apps || [];
+  const safeTagsList = tagsList || [];
+
   // Currently selected app object
   const selectedApp = useMemo(() => {
     if (!selectedAppId) return null;
-    return apps.find((a) => a.id === selectedAppId) || null;
-  }, [apps, selectedAppId]);
+    return safeApps.find((a) => a.id === selectedAppId) || null;
+  }, [safeApps, selectedAppId]);
 
   // Project Grouping Memo
   const groupedProjects = useMemo(() => {
@@ -128,7 +132,7 @@ export function AppsView() {
       updated_at: new Date().toISOString(),
     };
 
-    const projectList = projects.length > 0 ? projects : [defaultProj];
+    const projectList = safeProjects.length > 0 ? safeProjects : [defaultProj];
     const map = new Map<string, Project & { apps: App[] }>();
     for (const p of projectList) {
       map.set(p.id, { ...p, apps: [] });
@@ -138,7 +142,7 @@ export function AppsView() {
       map.set('prj_default', { ...defaultProj, apps: [] });
     }
 
-    for (const app of apps) {
+    for (const app of safeApps) {
       const pid = app.project_id || 'prj_default';
       if (map.has(pid)) {
         map.get(pid)!.apps.push(app);
@@ -155,7 +159,7 @@ export function AppsView() {
       list = list.filter((p) => p.id === selectedProject || p.slug === selectedProject);
     }
     return list;
-  }, [projects, apps, selectedProject]);
+  }, [safeProjects, safeApps, selectedProject]);
 
   // Mutations
   const createProjectMutation = useMutation({
@@ -447,10 +451,10 @@ export function AppsView() {
             >
               <Folder className="h-3 w-3" />
               <span>All Projects</span>
-              <span className="text-[10px] opacity-70">({apps.length})</span>
+              <span className="text-[10px] opacity-70">({safeApps.length})</span>
             </button>
 
-            {projects.map((p) => (
+            {safeProjects.map((p) => (
               <button
                 key={p.id}
                 onClick={() => setSelectedProject(selectedProject === p.id ? '' : p.id)}
@@ -468,7 +472,7 @@ export function AppsView() {
         </div>
 
         {/* Tag Chip Filter Bar */}
-        {tagsList.length > 0 && (
+        {safeTagsList.length > 0 && (
           <div className="pt-2 border-t border-zinc-800/60 flex items-center gap-2 overflow-x-auto scrollbar-none">
             <div className="flex items-center gap-1 text-zinc-500 text-[11px] font-medium shrink-0">
               <Filter className="h-3 w-3" />

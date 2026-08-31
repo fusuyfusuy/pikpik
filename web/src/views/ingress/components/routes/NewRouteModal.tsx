@@ -18,14 +18,15 @@ interface NewRouteModalProps {
 export function NewRouteModal({
   isOpen,
   onClose,
-  apps,
+  apps = [],
   onSuccess,
 }: NewRouteModalProps) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
+  const safeApps = apps || [];
   const [domain, setDomain] = useState('');
-  const [appId, setAppId] = useState(apps[0]?.id || '');
+  const [appId, setAppId] = useState(safeApps[0]?.id || '');
   const [pathPrefix, setPathPrefix] = useState('/*');
   const [autoTLS, setAutoTLS] = useState(true);
 
@@ -110,11 +111,17 @@ export function NewRouteModal({
               className="w-full pl-9 pr-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-500/50"
               required
             >
-              {apps.map((app) => (
-                <option key={app.id} value={app.id}>
-                  {app.name} - Port {app.container_port || 80}
+              {safeApps.length === 0 ? (
+                <option value="" disabled>
+                  No apps available — create an app first
                 </option>
-              ))}
+              ) : (
+                safeApps.map((app) => (
+                  <option key={app.id} value={app.id}>
+                    {app.name} - Port {app.container_port || 80}
+                  </option>
+                ))
+              )}
             </select>
           </div>
         </div>

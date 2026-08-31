@@ -103,6 +103,10 @@ export function StacksView() {
     queryFn: () => api.volumes.list(),
   });
 
+  const safeStacks = stacks || [];
+  const safeNetworks = networks || [];
+  const safeVolumes = volumes || [];
+
   // --- Stack Mutations ---
   const createStackMutation = useMutation({
     mutationFn: (req: CreateStackRequest) => api.stacks.create(req),
@@ -338,7 +342,7 @@ export function StacksView() {
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {stacks.map((stack) => (
+              {safeStacks.map((stack) => (
                 <Card
                   key={stack.id}
                   className="flex flex-col justify-between hover:border-zinc-700 cursor-pointer transition-all"
@@ -494,7 +498,7 @@ export function StacksView() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60 font-mono">
-                    {networks.map((net) => (
+                    {safeNetworks.map((net) => (
                       <tr key={net.id} className="hover:bg-zinc-900/30 transition-colors">
                         <td className="py-3 px-4 font-semibold text-zinc-200 flex items-center gap-2">
                           <Network className="h-3.5 w-3.5 text-cyan-400" />
@@ -573,7 +577,7 @@ export function StacksView() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60 font-mono">
-                    {volumes.map((vol) => (
+                    {safeVolumes.map((vol) => (
                       <tr key={vol.id} className="hover:bg-zinc-900/30 transition-colors">
                         <td className="py-3 px-4 font-semibold text-zinc-200 flex items-center gap-2">
                           <HardDrive className="h-3.5 w-3.5 text-amber-400" />

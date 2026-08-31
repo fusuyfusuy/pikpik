@@ -41,7 +41,8 @@ export function TLSTab() {
   });
 
   // Synthesize certificate records from domains & custom additions
-  const domainCerts: CertificateRecord[] = domains
+  const safeDomains = domains || [];
+  const domainCerts: CertificateRecord[] = safeDomains
     .filter((d) => d.auto_tls)
     .map((d) => ({
       id: `cert_${d.id}`,

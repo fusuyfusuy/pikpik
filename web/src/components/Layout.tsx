@@ -19,6 +19,7 @@ import {
   Store,
   Search,
   Plus,
+  Link2,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { Button } from './ui/Button';
@@ -77,6 +78,7 @@ const NAV_CATEGORIES: NavCategory[] = [
   {
     title: 'Platform & Governance',
     items: [
+      { id: 'integrations', label: 'Developer Integrations', icon: Link2 },
       { id: 'settings', label: 'Access & Notifications', icon: Key },
       { id: 'system', label: 'System Health', icon: Cpu },
     ],

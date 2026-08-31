@@ -214,6 +214,8 @@ export function TwoColumnConfigEditor({
     queryFn: () => api.volumes.list(projectId),
   });
 
+  const safeProjectVolumes = projectVolumes || [];
+
   // Debounced AST Inspection
   useEffect(() => {
     if (strategy !== 'compose' || !composeYAML.trim()) {
@@ -1207,10 +1209,10 @@ export function TwoColumnConfigEditor({
               </Button>
             </div>
 
-            {projectVolumes && projectVolumes.length > 0 && (
+            {safeProjectVolumes.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap pt-1">
                 <span className="text-[10px] text-zinc-500 font-mono">Workspace Volumes:</span>
-                {projectVolumes.map((pv) => (
+                {safeProjectVolumes.map((pv) => (
                   <button
                     key={pv.id}
                     type="button"
