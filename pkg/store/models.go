@@ -273,4 +273,19 @@ type ManagedMachine struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+// NotificationChannel represents an alert destination (webhook, discord, slack, telegram).
+type NotificationChannel struct {
+	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
+	ProjectID string    `json:"project_id,omitempty"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"` // "webhook", "discord", "slack", "telegram"
+	TargetURL string    `json:"target_url"`
+	AuthToken string    `json:"auth_token,omitempty"`
+	Events    []string  `json:"events"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 

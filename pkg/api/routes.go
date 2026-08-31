@@ -1449,5 +1449,80 @@ func RegisterRoutes(
 		}
 		WriteJSON(w, http.StatusCreated, resp, GetRequestID(r.Context()))
 	}))
+
+	// --- 14. Notification Channel Endpoints ---
+	// GET /api/v1/notifications/channels (List notification channels)
+	mux.Handle("GET /api/v1/notifications/channels", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.URL.Query().Get("project_id")
+		channels, err := ctrl.ListNotificationChannels(r.Context(), projectID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, channels, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/notifications/channels (Create notification channel)
+	mux.Handle("POST /api/v1/notifications/channels", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateNotificationChannelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid notification channel payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		ch, err := ctrl.CreateNotificationChannel(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, ch, GetRequestID(r.Context()))
+	}))
+
+	// PUT /api/v1/notifications/channels/{id} (Update notification channel)
+	mux.Handle("PUT /api/v1/notifications/channels/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateNotificationChannelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Invalid notification channel payload", nil, GetRequestID(r.Context()))
+			return
+		}
+		ch, err := ctrl.UpdateNotificationChannel(r.Context(), id, &req)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Notification channel not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, ch, GetRequestID(r.Context()))
+	}))
+
+	// DELETE /api/v1/notifications/channels/{id} (Delete notification channel)
+	mux.Handle("DELETE /api/v1/notifications/channels/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteNotificationChannel(r.Context(), id); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Notification channel not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "notification channel deleted"}, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/notifications/channels/{id}/test (Send test notification ping)
+	mux.Handle("POST /api/v1/notifications/channels/{id}/test", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.TestNotificationChannel(r.Context(), id); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Notification channel not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "delivered", "message": "Test notification sent successfully"}, GetRequestID(r.Context()))
+	}))
 }
 

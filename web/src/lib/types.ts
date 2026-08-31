@@ -757,3 +757,28 @@ export interface DeployTemplateResponse {
   message?: string;
 }
 
+// --- Notification Channel Models ---
+export interface NotificationChannel {
+  id: string;
+  org_id: string;
+  project_id?: string;
+  name: string;
+  type: 'webhook' | 'discord' | 'slack' | 'telegram' | string;
+  target_url: string;
+  auth_token?: string;
+  events: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateNotificationChannelRequest {
+  name: string;
+  project_id?: string;
+  type?: 'webhook' | 'discord' | 'slack' | 'telegram' | string;
+  target_url: string;
+  auth_token?: string;
+  events?: string[];
+  enabled?: boolean;
+}
+

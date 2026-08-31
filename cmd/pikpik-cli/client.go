@@ -721,4 +721,40 @@ func (c *APIClient) DeleteBackupSchedule(ctx context.Context, id string) error {
 	return c.doRequest(ctx, "DELETE", "/api/v1/backups/schedules/"+id, nil, &res)
 }
 
+// --- Notification Channel Client Methods ---
+
+// ListNotificationChannels lists configured notification channels.
+func (c *APIClient) ListNotificationChannels(ctx context.Context, projectID string) ([]api.NotificationChannel, error) {
+	url := "/api/v1/notifications/channels"
+	if projectID != "" {
+		url += "?project_id=" + projectID
+	}
+	var res api.Response[[]api.NotificationChannel]
+	if err := c.doRequest(ctx, "GET", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// CreateNotificationChannel registers a new notification channel.
+func (c *APIClient) CreateNotificationChannel(ctx context.Context, req api.CreateNotificationChannelRequest) (*api.NotificationChannel, error) {
+	var res api.Response[api.NotificationChannel]
+	if err := c.doRequest(ctx, "POST", "/api/v1/notifications/channels", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// DeleteNotificationChannel removes a notification channel.
+func (c *APIClient) DeleteNotificationChannel(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "DELETE", "/api/v1/notifications/channels/"+id, nil, &res)
+}
+
+// TestNotificationChannel sends a test notification ping.
+func (c *APIClient) TestNotificationChannel(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "POST", "/api/v1/notifications/channels/"+id+"/test", nil, &res)
+}
+
 

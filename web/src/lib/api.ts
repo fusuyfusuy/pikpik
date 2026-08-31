@@ -55,6 +55,8 @@ import {
   HostMetrics,
   EnrollMachineResponse,
   JoinSwarmRequest,
+  NotificationChannel,
+  CreateNotificationChannelRequest,
 } from './types';
 
 const TOKEN_KEY = 'pikpik_token';
@@ -517,5 +519,29 @@ export const api = {
       }),
     delete: (id: string): Promise<{ message: string }> =>
       request(`/api/v1/backups/schedules/${id}`, { method: 'DELETE' }),
+  },
+
+  // --- Notification Channels ---
+  notifications: {
+    list: (projectId?: string): Promise<NotificationChannel[]> =>
+      request<NotificationChannel[]>(
+        `/api/v1/notifications/channels${projectId ? `?project_id=${projectId}` : ''}`
+      ),
+    create: (req: CreateNotificationChannelRequest): Promise<NotificationChannel> =>
+      request<NotificationChannel>('/api/v1/notifications/channels', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    update: (id: string, req: Partial<CreateNotificationChannelRequest>): Promise<NotificationChannel> =>
+      request<NotificationChannel>(`/api/v1/notifications/channels/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(req),
+      }),
+    delete: (id: string): Promise<{ message: string }> =>
+      request(`/api/v1/notifications/channels/${id}`, { method: 'DELETE' }),
+    test: (id: string): Promise<{ status: string; message: string }> =>
+      request<{ status: string; message: string }>(`/api/v1/notifications/channels/${id}/test`, {
+        method: 'POST',
+      }),
   },
 };

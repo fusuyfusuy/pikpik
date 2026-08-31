@@ -577,3 +577,38 @@ type TermExitMessage struct {
 	ExitCode int    `json:"exit_code"`
 	Error    string `json:"error,omitempty"`
 }
+
+// Notification Channel Models
+type CreateNotificationChannelRequest struct {
+	Name      string   `json:"name"`
+	ProjectID string   `json:"project_id,omitempty"`
+	Type      string   `json:"type"` // webhook, discord, slack, telegram
+	TargetURL string   `json:"target_url"`
+	AuthToken string   `json:"auth_token,omitempty"`
+	Events    []string `json:"events,omitempty"`
+	Enabled   *bool    `json:"enabled,omitempty"`
+}
+
+type UpdateNotificationChannelRequest struct {
+	Name      string   `json:"name,omitempty"`
+	ProjectID string   `json:"project_id,omitempty"`
+	Type      string   `json:"type,omitempty"`
+	TargetURL string   `json:"target_url,omitempty"`
+	AuthToken string   `json:"auth_token,omitempty"`
+	Events    []string `json:"events,omitempty"`
+	Enabled   *bool    `json:"enabled,omitempty"`
+}
+
+type NotificationChannel struct {
+	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
+	ProjectID string    `json:"project_id,omitempty"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	TargetURL string    `json:"target_url"`
+	AuthToken string    `json:"auth_token,omitempty"`
+	Events    []string  `json:"events"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

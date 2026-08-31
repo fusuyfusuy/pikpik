@@ -25,6 +25,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/git"
 	"github.com/fusuycorp/pikpik/pkg/ingress"
+	"github.com/fusuycorp/pikpik/pkg/notifications"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/registry"
 	"github.com/fusuycorp/pikpik/pkg/store"
@@ -160,6 +161,13 @@ type Controller interface {
 	ListTemplates(ctx context.Context, category, search string) ([]templates.Template, error)
 	GetTemplate(ctx context.Context, id string) (*templates.Template, error)
 	DeployTemplate(ctx context.Context, id string, req *templates.DeployTemplateRequest) (*templates.DeployTemplateResponse, error)
+
+	// Notifications
+	ListNotificationChannels(ctx context.Context, projectID string) ([]NotificationChannel, error)
+	CreateNotificationChannel(ctx context.Context, req *CreateNotificationChannelRequest) (*NotificationChannel, error)
+	UpdateNotificationChannel(ctx context.Context, id string, req *UpdateNotificationChannelRequest) (*NotificationChannel, error)
+	DeleteNotificationChannel(ctx context.Context, id string) error
+	TestNotificationChannel(ctx context.Context, id string) error
 }
 
 // ControllerDependencies bundles underlying pikpik core subsystems.
@@ -177,6 +185,7 @@ type ControllerDependencies struct {
 	BuildManager   *build.BuildManager
 	Deployer       templates.Deployer
 	AgentServer    telemetry.AgentServer
+	Dispatcher     notifications.Dispatcher
 }
 
 // DefaultController implements Controller.
@@ -194,21 +203,23 @@ type DefaultController struct {
 	buildMgr       *build.BuildManager
 	deployer       templates.Deployer
 	agentServer    telemetry.AgentServer
+	dispatcher     notifications.Dispatcher
 
 	// In-memory fallbacks / caches for standalone or testing modes
-	mu           sync.RWMutex
-	apps         map[string]*App
-	stacks       map[string]*Stack
-	databases    map[string]*Database
-	backups      map[string]*Backup
-	destinations map[string]*BackupDestination
-	domains      map[string]*DomainBinding
-	builds       map[string]*store.Build
-	schedules    map[string]*store.BackupSchedule
+	mu            sync.RWMutex
+	apps          map[string]*App
+	stacks        map[string]*Stack
+	databases     map[string]*Database
+	backups       map[string]*Backup
+	destinations  map[string]*BackupDestination
+	domains       map[string]*DomainBinding
+	builds        map[string]*store.Build
+	schedules     map[string]*store.BackupSchedule
 	networks      map[string]*NetworkDTO
 	volumes       map[string]*VolumeDTO
 	machines      map[string]*MachineDTO
 	trafficSplits map[string]*TrafficSplitResponse
+	channels      map[string]*NotificationChannel
 }
 
 // NewDefaultController constructs a new DefaultController.
@@ -217,6 +228,11 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 	if deployer == nil {
 		deployer = templates.NewDeployer(templates.DefaultCatalog(), deps.Store, deps.Orchestrator, deps.Vault)
 	}
+	dispatcher := deps.Dispatcher
+	if dispatcher == nil && deps.Store != nil && deps.Store.Notifications() != nil {
+		dispatcher = notifications.NewDispatcher(context.Background(), deps.Store.Notifications())
+	}
+
 	return &DefaultController{
 		st:             deps.Store,
 		authSvc:        deps.AuthService,
@@ -231,6 +247,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		buildMgr:       deps.BuildManager,
 		deployer:       deployer,
 		agentServer:    deps.AgentServer,
+		dispatcher:     dispatcher,
 		apps:           make(map[string]*App),
 		stacks:         make(map[string]*Stack),
 		databases:      make(map[string]*Database),
@@ -243,6 +260,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		volumes:        make(map[string]*VolumeDTO),
 		machines:       make(map[string]*MachineDTO),
 		trafficSplits:  make(map[string]*TrafficSplitResponse),
+		channels:      make(map[string]*NotificationChannel),
 	}
 }
 
@@ -3571,6 +3589,258 @@ func (c *DefaultController) DeployTemplate(ctx context.Context, id string, req *
 		c.recordAudit(ctx, "template:deploy", "template", id, fmt.Sprintf(`{"name":%q}`, req.Name))
 	}
 	return res, err
+}
+
+// --- Notification Channel Operations ---
+
+func (c *DefaultController) ListNotificationChannels(ctx context.Context, projectID string) ([]NotificationChannel, error) {
+	orgID := "org_default"
+
+	if c.st != nil && c.st.Notifications() != nil {
+		var list []*store.NotificationChannel
+		var err error
+		if projectID != "" {
+			list, err = c.st.Notifications().ListByProject(ctx, projectID)
+		} else {
+			list, err = c.st.Notifications().ListByOrg(ctx, orgID)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to list notification channels: %w", err)
+		}
+		dtos := make([]NotificationChannel, len(list))
+		for i, ch := range list {
+			dtos[i] = NotificationChannel{
+				ID:        ch.ID,
+				OrgID:     ch.OrgID,
+				ProjectID: ch.ProjectID,
+				Name:      ch.Name,
+				Type:      ch.Type,
+				TargetURL: ch.TargetURL,
+				AuthToken: ch.AuthToken,
+				Events:    ch.Events,
+				Enabled:   ch.Enabled,
+				CreatedAt: ch.CreatedAt,
+				UpdatedAt: ch.UpdatedAt,
+			}
+		}
+		return dtos, nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var dtos []NotificationChannel
+	for _, ch := range c.channels {
+		if projectID != "" && ch.ProjectID != projectID {
+			continue
+		}
+		if ch.OrgID == orgID || ch.OrgID == "" {
+			dtos = append(dtos, *ch)
+		}
+	}
+	return dtos, nil
+}
+
+func (c *DefaultController) CreateNotificationChannel(ctx context.Context, req *CreateNotificationChannelRequest) (*NotificationChannel, error) {
+	if req == nil || req.Name == "" || req.TargetURL == "" {
+		return nil, fmt.Errorf("name and target_url are required")
+	}
+
+	orgID := "org_default"
+
+	chType := req.Type
+	if chType == "" {
+		chType = "webhook"
+	}
+
+	events := req.Events
+	if len(events) == 0 {
+		events = []string{"deploy:failure", "deploy:success", "backup:failure", "backup:success"}
+	}
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	now := time.Now().UTC()
+	chModel := &store.NotificationChannel{
+		ID:        store.NewID("ntf"),
+		OrgID:     orgID,
+		ProjectID: req.ProjectID,
+		Name:      req.Name,
+		Type:      chType,
+		TargetURL: req.TargetURL,
+		AuthToken: req.AuthToken,
+		Events:    events,
+		Enabled:   enabled,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if c.st != nil && c.st.Notifications() != nil {
+		if err := c.st.Notifications().Create(ctx, chModel); err != nil {
+			return nil, fmt.Errorf("failed to create notification channel: %w", err)
+		}
+	}
+
+	dto := &NotificationChannel{
+		ID:        chModel.ID,
+		OrgID:     chModel.OrgID,
+		ProjectID: chModel.ProjectID,
+		Name:      chModel.Name,
+		Type:      chModel.Type,
+		TargetURL: chModel.TargetURL,
+		AuthToken: chModel.AuthToken,
+		Events:    chModel.Events,
+		Enabled:   chModel.Enabled,
+		CreatedAt: chModel.CreatedAt,
+		UpdatedAt: chModel.UpdatedAt,
+	}
+
+	c.mu.Lock()
+	c.channels[dto.ID] = dto
+	c.mu.Unlock()
+
+	c.recordAudit(ctx, "notification:create", "notification_channel", dto.ID, fmt.Sprintf(`{"name":%q,"type":%q}`, dto.Name, dto.Type))
+	return dto, nil
+}
+
+func (c *DefaultController) UpdateNotificationChannel(ctx context.Context, id string, req *UpdateNotificationChannelRequest) (*NotificationChannel, error) {
+	if req == nil {
+		return nil, fmt.Errorf("empty update payload")
+	}
+
+	var existing *store.NotificationChannel
+	if c.st != nil && c.st.Notifications() != nil {
+		var err error
+		existing, err = c.st.Notifications().GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		c.mu.RLock()
+		mem, ok := c.channels[id]
+		c.mu.RUnlock()
+		if !ok {
+			return nil, store.ErrNotFound
+		}
+		existing = &store.NotificationChannel{
+			ID:        mem.ID,
+			OrgID:     mem.OrgID,
+			ProjectID: mem.ProjectID,
+			Name:      mem.Name,
+			Type:      mem.Type,
+			TargetURL: mem.TargetURL,
+			AuthToken: mem.AuthToken,
+			Events:    mem.Events,
+			Enabled:   mem.Enabled,
+			CreatedAt: mem.CreatedAt,
+			UpdatedAt: mem.UpdatedAt,
+		}
+	}
+
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+	if req.Type != "" {
+		existing.Type = req.Type
+	}
+	if req.TargetURL != "" {
+		existing.TargetURL = req.TargetURL
+	}
+	if req.AuthToken != "" {
+		existing.AuthToken = req.AuthToken
+	}
+	if req.ProjectID != "" {
+		existing.ProjectID = req.ProjectID
+	}
+	if req.Events != nil {
+		existing.Events = req.Events
+	}
+	if req.Enabled != nil {
+		existing.Enabled = *req.Enabled
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	if c.st != nil && c.st.Notifications() != nil {
+		if err := c.st.Notifications().Update(ctx, existing); err != nil {
+			return nil, fmt.Errorf("failed to update notification channel: %w", err)
+		}
+	}
+
+	dto := &NotificationChannel{
+		ID:        existing.ID,
+		OrgID:     existing.OrgID,
+		ProjectID: existing.ProjectID,
+		Name:      existing.Name,
+		Type:      existing.Type,
+		TargetURL: existing.TargetURL,
+		AuthToken: existing.AuthToken,
+		Events:    existing.Events,
+		Enabled:   existing.Enabled,
+		CreatedAt: existing.CreatedAt,
+		UpdatedAt: existing.UpdatedAt,
+	}
+
+	c.mu.Lock()
+	c.channels[id] = dto
+	c.mu.Unlock()
+
+	c.recordAudit(ctx, "notification:update", "notification_channel", id, fmt.Sprintf(`{"name":%q}`, dto.Name))
+	return dto, nil
+}
+
+func (c *DefaultController) DeleteNotificationChannel(ctx context.Context, id string) error {
+	if c.st != nil && c.st.Notifications() != nil {
+		if err := c.st.Notifications().Delete(ctx, id); err != nil {
+			return fmt.Errorf("failed to delete notification channel: %w", err)
+		}
+	}
+
+	c.mu.Lock()
+	delete(c.channels, id)
+	c.mu.Unlock()
+
+	c.recordAudit(ctx, "notification:delete", "notification_channel", id, "")
+	return nil
+}
+
+func (c *DefaultController) TestNotificationChannel(ctx context.Context, id string) error {
+	var ch *store.NotificationChannel
+	if c.st != nil && c.st.Notifications() != nil {
+		var err error
+		ch, err = c.st.Notifications().GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+	} else {
+		c.mu.RLock()
+		mem, ok := c.channels[id]
+		c.mu.RUnlock()
+		if !ok {
+			return store.ErrNotFound
+		}
+		ch = &store.NotificationChannel{
+			ID:        mem.ID,
+			OrgID:     mem.OrgID,
+			ProjectID: mem.ProjectID,
+			Name:      mem.Name,
+			Type:      mem.Type,
+			TargetURL: mem.TargetURL,
+			AuthToken: mem.AuthToken,
+			Events:    mem.Events,
+			Enabled:   mem.Enabled,
+		}
+	}
+
+	if c.dispatcher != nil {
+		return c.dispatcher.TestChannel(ctx, ch)
+	}
+
+	// Direct test fallback
+	disp := notifications.NewDispatcher(ctx, nil)
+	defer disp.Close()
+	return disp.TestChannel(ctx, ch)
 }
 
 

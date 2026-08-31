@@ -44,6 +44,7 @@ type Store interface {
 	GitHubInstallations() GitHubInstallationStore
 	Schedules() ScheduleStore
 	Machines() MachineStore
+	Notifications() NotificationStore
 
 	// WithTx executes the supplied operation inside an atomic database transaction.
 	WithTx(ctx context.Context, fn func(tx Store) error) error
@@ -223,6 +224,17 @@ type MachineStore interface {
 	Update(ctx context.Context, m *ManagedMachine) error
 	Upsert(ctx context.Context, m *ManagedMachine) error
 	UpdateStatus(ctx context.Context, id string, status string, lastSeen time.Time) error
+	Delete(ctx context.Context, id string) error
+}
+
+// NotificationStore handles notification channel destinations and event routing.
+type NotificationStore interface {
+	Create(ctx context.Context, ch *NotificationChannel) error
+	GetByID(ctx context.Context, id string) (*NotificationChannel, error)
+	ListByOrg(ctx context.Context, orgID string) ([]*NotificationChannel, error)
+	ListByProject(ctx context.Context, projectID string) ([]*NotificationChannel, error)
+	ListForEvent(ctx context.Context, orgID, projectID, event string) ([]*NotificationChannel, error)
+	Update(ctx context.Context, ch *NotificationChannel) error
 	Delete(ctx context.Context, id string) error
 }
 

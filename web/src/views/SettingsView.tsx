@@ -19,6 +19,8 @@ import {
   Check,
   Shield,
   User as UserIcon,
+  Bell,
+  Send,
 } from 'lucide-react';
 
 const AVAILABLE_SCOPES = [
@@ -43,6 +45,14 @@ export function SettingsView({ user }: SettingsViewProps) {
   const [selectedScopes, setSelectedScopes] = useState<string[]>(['read:apps', 'write:apps']);
   const [copiedToken, setCopiedToken] = useState(false);
 
+  // Notification Channels State
+  const [isNotifyModalOpen, setIsNotifyModalOpen] = useState(false);
+  const [notifyName, setNotifyName] = useState('');
+  const [notifyType, setNotifyType] = useState<'webhook' | 'discord' | 'slack' | 'telegram'>('discord');
+  const [notifyURL, setNotifyURL] = useState('');
+  const [notifyAuthToken, setNotifyAuthToken] = useState('');
+  const [notifyEvents, setNotifyEvents] = useState('deploy:failure,deploy:success,backup:failure,backup:success');
+
   const {
     data: tokens,
     isLoading,
@@ -52,6 +62,17 @@ export function SettingsView({ user }: SettingsViewProps) {
   } = useQuery({
     queryKey: ['apiTokens'],
     queryFn: api.auth.listTokens,
+  });
+
+  const {
+    data: notificationChannels,
+    isLoading: isNotifyLoading,
+    isError: isNotifyError,
+    error: notifyError,
+    refetch: refetchNotify,
+  } = useQuery({
+    queryKey: ['notificationChannels'],
+    queryFn: () => api.notifications.list(),
   });
 
   const createMutation = useMutation({
@@ -72,6 +93,37 @@ export function SettingsView({ user }: SettingsViewProps) {
       toast.success('Token Revoked', 'API token successfully invalidated');
     },
     onError: (err: Error) => toast.error('Revocation Failed', err.message),
+  });
+
+  const createNotifyMutation = useMutation({
+    mutationFn: (req: { name: string; type: string; target_url: string; auth_token?: string; events: string[] }) =>
+      api.notifications.create(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notificationChannels'] });
+      toast.success('Channel Added', 'New alert destination registered');
+      setIsNotifyModalOpen(false);
+      setNotifyName('');
+      setNotifyURL('');
+      setNotifyAuthToken('');
+    },
+    onError: (err: Error) => toast.error('Creation Failed', err.message),
+  });
+
+  const deleteNotifyMutation = useMutation({
+    mutationFn: (id: string) => api.notifications.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notificationChannels'] });
+      toast.success('Channel Removed', 'Notification destination deleted');
+    },
+    onError: (err: Error) => toast.error('Deletion Failed', err.message),
+  });
+
+  const testNotifyMutation = useMutation({
+    mutationFn: (id: string) => api.notifications.test(id),
+    onSuccess: (res) => {
+      toast.success('Ping Delivered', res.message || 'Test alert sent successfully');
+    },
+    onError: (err: Error) => toast.error('Delivery Failed', err.message),
   });
 
   const toggleScope = (scopeId: string) => {
@@ -239,6 +291,119 @@ export function SettingsView({ user }: SettingsViewProps) {
             </TableBody>
           </Table>
         </Card>
+
+        {/* Notification Channels Card */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Bell className="h-4 w-4 text-cyan-400" />
+                <span>Multi-Channel Alert Destinations</span>
+              </CardTitle>
+              <p className="text-xs text-zinc-400 mt-1">
+                Real-time incident notifications dispatched to Webhooks, Discord, Slack, and Telegram
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsNotifyModalOpen(true)}
+              className="flex items-center gap-1.5"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Add Channel</span>
+            </Button>
+          </CardHeader>
+
+          {isNotifyError && (
+            <div className="p-4 border-b border-zinc-800">
+              <QueryErrorAlert error={notifyError} title="Failed to load notification channels" onRetry={() => refetchNotify()} />
+            </div>
+          )}
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Channel Name</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Target URL</TableHead>
+                <TableHead>Triggers</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isNotifyLoading ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-6 text-zinc-500 text-xs">
+                    Loading notification channels...
+                  </TableCell>
+                </TableRow>
+              ) : notificationChannels?.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-6 text-zinc-500 text-xs">
+                    No notification destinations configured yet.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                notificationChannels?.map((ch) => (
+                  <TableRow key={ch.id}>
+                    <TableCell className="font-semibold text-zinc-200">
+                      <div className="flex items-center gap-2">
+                        <Bell className="h-4 w-4 text-cyan-400 shrink-0" />
+                        <span>{ch.name}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="capitalize text-[11px]">
+                        {ch.type}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-zinc-400 max-w-xs truncate">
+                      {ch.target_url}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {ch.events?.map((ev) => (
+                          <span
+                            key={ev}
+                            className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-[11px] font-mono text-zinc-300"
+                          >
+                            {ev}
+                          </span>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Send test ping"
+                          onClick={() => testNotifyMutation.mutate(ch.id)}
+                          isLoading={testNotifyMutation.isPending && testNotifyMutation.variables === ch.id}
+                        >
+                          <Send className="h-3.5 w-3.5 text-cyan-400" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Delete channel"
+                          onClick={() => {
+                            if (confirm(`Delete notification channel ${ch.name}?`)) {
+                              deleteNotifyMutation.mutate(ch.id);
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
       </div>
 
       {/* Generate Token Modal */}
@@ -356,6 +521,95 @@ export function SettingsView({ user }: SettingsViewProps) {
             </div>
           </form>
         )}
+      </Modal>
+
+      {/* Add Notification Channel Modal */}
+      <Modal
+        isOpen={isNotifyModalOpen}
+        onClose={() => setIsNotifyModalOpen(false)}
+        title="Add Notification Channel"
+        description="Register a Discord, Slack, Telegram, or Webhook alert destination"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const eventsArr = notifyEvents.split(',').map((s) => s.trim()).filter(Boolean);
+            createNotifyMutation.mutate({
+              name: notifyName,
+              type: notifyType,
+              target_url: notifyURL,
+              auth_token: notifyAuthToken || undefined,
+              events: eventsArr,
+            });
+          }}
+          className="space-y-4"
+        >
+          <Input
+            label="Channel Name"
+            placeholder="e.g. Production Incidents Discord"
+            value={notifyName}
+            onChange={(e) => setNotifyName(e.target.value)}
+            required
+          />
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-300 mb-1.5">Channel Type</label>
+            <select
+              value={notifyType}
+              onChange={(e) => setNotifyType(e.target.value as any)}
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 focus:border-cyan-500 focus:outline-none"
+            >
+              <option value="discord">Discord Webhook</option>
+              <option value="slack">Slack Incoming Webhook</option>
+              <option value="telegram">Telegram Bot</option>
+              <option value="webhook">Generic JSON Webhook</option>
+            </select>
+          </div>
+
+          <Input
+            label="Target Webhook URL"
+            placeholder="https://discord.com/api/webhooks/..."
+            value={notifyURL}
+            onChange={(e) => setNotifyURL(e.target.value)}
+            required
+          />
+
+          {notifyType === 'webhook' && (
+            <Input
+              label="Authorization Bearer Token (Optional)"
+              placeholder="secret_token_123"
+              value={notifyAuthToken}
+              onChange={(e) => setNotifyAuthToken(e.target.value)}
+            />
+          )}
+
+          <Input
+            label="Event Triggers (Comma-separated)"
+            placeholder="deploy:failure,deploy:success,backup:failure,backup:success"
+            value={notifyEvents}
+            onChange={(e) => setNotifyEvents(e.target.value)}
+            required
+          />
+
+          <div className="flex justify-end gap-2 pt-4 border-t border-zinc-800">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsNotifyModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              isLoading={createNotifyMutation.isPending}
+            >
+              Register Channel
+            </Button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

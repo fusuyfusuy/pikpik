@@ -509,3 +509,54 @@ func TestParseUpstreamWeight(t *testing.T) {
 		}
 	}
 }
+
+// 7. Test Notification Channel Client API Methods
+func TestAPIClient_Notifications(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	client := NewAPIClient(Context{
+		ServerURL: ts.URL,
+		Token:     "test-token",
+	})
+	ctx := context.Background()
+
+	// 1. Create notification channel
+	ch, err := client.CreateNotificationChannel(ctx, api.CreateNotificationChannelRequest{
+		Name:      "Discord Deploy Alerts",
+		Type:      "discord",
+		TargetURL: "https://discord.com/api/webhooks/123/abc",
+		Events:    []string{"deploy:failure", "deploy:success"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create notification channel: %v", err)
+	}
+	if ch.Name != "Discord Deploy Alerts" || ch.Type != "discord" {
+		t.Fatalf("unexpected created channel: %+v", ch)
+	}
+
+	// 2. List notification channels
+	list, err := client.ListNotificationChannels(ctx, "")
+	if err != nil {
+		t.Fatalf("failed to list notification channels: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != ch.ID {
+		t.Fatalf("unexpected channels list: %+v", list)
+	}
+
+	// 3. Delete notification channel
+	if err := client.DeleteNotificationChannel(ctx, ch.ID); err != nil {
+		t.Fatalf("failed to delete notification channel: %v", err)
+	}
+
+	// 4. Verify empty list
+	afterList, err := client.ListNotificationChannels(ctx, "")
+	if err != nil {
+		t.Fatalf("failed to list notification channels: %v", err)
+	}
+	if len(afterList) != 0 {
+		t.Fatalf("expected 0 channels after deletion, got %d", len(afterList))
+	}
+}

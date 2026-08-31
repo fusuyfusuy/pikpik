@@ -68,6 +68,8 @@ func main() {
 		runTemplate(args)
 	case "schedule", "schedules":
 		runSchedule(args)
+	case "notify", "notification", "notifications":
+		runNotify(args)
 	case "stack", "stacks":
 		runStack(args)
 	case "network", "networks":
@@ -2132,6 +2134,121 @@ func runSchedule(args []string) {
 
 	default:
 		fmt.Printf("Unknown schedule subcommand: %s\nUsage: pikpik schedule [list|create|rm]\n", sub)
+		os.Exit(1)
+	}
+}
+
+func runNotify(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: pikpik notify [list|add|test|rm] [flags]")
+		return
+	}
+
+	client, _, _ := getClient()
+	sub := args[0]
+
+	switch sub {
+	case "list", "ls":
+		fs := flag.NewFlagSet("notify list", flag.ExitOnError)
+		project := fs.String("project", "", "Filter channels by project ID")
+		jsonOutput := fs.Bool("json", false, "Output in raw JSON format")
+		_ = fs.Parse(args[1:])
+
+		channels, err := client.ListNotificationChannels(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing notification channels failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonOutput {
+			data, _ := json.MarshalIndent(channels, "", "  ")
+			fmt.Println(string(data))
+			return
+		}
+
+		if len(channels) == 0 {
+			fmt.Println("No notification channels configured.")
+			return
+		}
+
+		fmt.Printf("%-24s %-20s %-10s %-8s %-30s %s\n", "ID", "NAME", "TYPE", "ENABLED", "EVENTS", "TARGET URL")
+		fmt.Println(strings.Repeat("-", 110))
+		for _, ch := range channels {
+			eventsStr := strings.Join(ch.Events, ",")
+			if len(eventsStr) > 28 {
+				eventsStr = eventsStr[:25] + "..."
+			}
+			urlStr := ch.TargetURL
+			if len(urlStr) > 35 {
+				urlStr = urlStr[:32] + "..."
+			}
+			enabledStr := "yes"
+			if !ch.Enabled {
+				enabledStr = "no"
+			}
+			fmt.Printf("%-24s %-20s %-10s %-8s %-30s %s\n", ch.ID, ch.Name, ch.Type, enabledStr, eventsStr, urlStr)
+		}
+
+	case "add", "create":
+		fs := flag.NewFlagSet("notify add", flag.ExitOnError)
+		name := fs.String("name", "", "Display name for the channel (required)")
+		chType := fs.String("type", "webhook", "Channel type: webhook, discord, slack, telegram")
+		targetURL := fs.String("url", "", "Target webhook URL or API endpoint (required)")
+		project := fs.String("project", "", "Optional project ID scope")
+		authToken := fs.String("auth-token", "", "Optional Bearer auth token for generic webhook")
+		events := fs.String("events", "deploy:failure,deploy:success,backup:failure,backup:success", "Comma-separated event triggers")
+		_ = fs.Parse(args[1:])
+
+		if *name == "" || *targetURL == "" {
+			fmt.Println("Usage: pikpik notify add --name <name> --type <webhook|discord|slack|telegram> --url <url> [--events <e1,e2>]")
+			os.Exit(1)
+		}
+
+		eventList := strings.Split(*events, ",")
+		for i := range eventList {
+			eventList[i] = strings.TrimSpace(eventList[i])
+		}
+
+		ch, err := client.CreateNotificationChannel(context.Background(), api.CreateNotificationChannelRequest{
+			Name:      *name,
+			ProjectID: *project,
+			Type:      *chType,
+			TargetURL: *targetURL,
+			AuthToken: *authToken,
+			Events:    eventList,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Creating notification channel failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Notification channel %q created successfully (ID: %s, Type: %s)\n", ch.Name, ch.ID, ch.Type)
+
+	case "test", "ping":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik notify test <channel_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.TestNotificationChannel(context.Background(), id); err != nil {
+			fmt.Fprintf(os.Stderr, "Testing notification channel failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Test notification ping sent successfully to channel %q.\n", id)
+
+	case "rm", "delete", "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik notify rm <channel_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.DeleteNotificationChannel(context.Background(), id); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting notification channel failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Notification channel %q deleted successfully.\n", id)
+
+	default:
+		fmt.Printf("Unknown notification subcommand: %s\nUsage: pikpik notify [list|add|test|rm]\n", sub)
 		os.Exit(1)
 	}
 }
