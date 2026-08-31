@@ -757,4 +757,102 @@ func (c *APIClient) TestNotificationChannel(ctx context.Context, id string) erro
 	return c.doRequest(ctx, "POST", "/api/v1/notifications/channels/"+id+"/test", nil, &res)
 }
 
+// --- Team & User Management Client Methods ---
+
+// ListUsers retrieves all team members.
+func (c *APIClient) ListUsers(ctx context.Context) ([]api.UserResponse, error) {
+	var res api.Response[[]api.UserResponse]
+	if err := c.doRequest(ctx, "GET", "/api/v1/users", nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// InviteUser generates a shareable team invitation.
+func (c *APIClient) InviteUser(ctx context.Context, email, role string, expiresInDays int) (*api.TeamInvitationResponse, error) {
+	req := api.InviteUserRequest{
+		Email:         email,
+		Role:          role,
+		ExpiresInDays: expiresInDays,
+	}
+	var res api.Response[api.TeamInvitationResponse]
+	if err := c.doRequest(ctx, "POST", "/api/v1/users/invite", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// UpdateUserRole changes a user's cluster role.
+func (c *APIClient) UpdateUserRole(ctx context.Context, id, role string) error {
+	req := api.UpdateUserRoleRequest{Role: role}
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "PUT", "/api/v1/users/"+id+"/role", req, &res)
+}
+
+// DeleteUser removes a user from the organization.
+func (c *APIClient) DeleteUser(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "DELETE", "/api/v1/users/"+id, nil, &res)
+}
+
+// ResetUserPassword resets a user's password and revokes previous sessions.
+func (c *APIClient) ResetUserPassword(ctx context.Context, id, newPassword string) error {
+	req := api.ResetPasswordRequest{NewPassword: newPassword}
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "POST", "/api/v1/users/"+id+"/reset-password", req, &res)
+}
+
+// --- Developer Integrations Client Methods ---
+
+// ListIntegrations retrieves all configured integrations.
+func (c *APIClient) ListIntegrations(ctx context.Context, orgID string) ([]api.IntegrationResponse, error) {
+	url := "/api/v1/integrations"
+	if orgID != "" {
+		url += "?org_id=" + orgID
+	}
+	var res api.Response[[]api.IntegrationResponse]
+	if err := c.doRequest(ctx, "GET", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// CreateIntegration registers a new external provider integration.
+func (c *APIClient) CreateIntegration(ctx context.Context, orgID string, req api.CreateIntegrationRequest) (*api.IntegrationResponse, error) {
+	url := "/api/v1/integrations"
+	if orgID != "" {
+		url += "?org_id=" + orgID
+	}
+	var res api.Response[api.IntegrationResponse]
+	if err := c.doRequest(ctx, "POST", url, req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// GetIntegration retrieves an integration by ID.
+func (c *APIClient) GetIntegration(ctx context.Context, id string) (*api.IntegrationResponse, error) {
+	var res api.Response[api.IntegrationResponse]
+	if err := c.doRequest(ctx, "GET", "/api/v1/integrations/"+id, nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// DeleteIntegration removes an integration.
+func (c *APIClient) DeleteIntegration(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "DELETE", "/api/v1/integrations/"+id, nil, &res)
+}
+
+// TestIntegration performs live connection testing.
+func (c *APIClient) TestIntegration(ctx context.Context, id string) (*api.TestIntegrationResponse, error) {
+	var res api.Response[api.TestIntegrationResponse]
+	if err := c.doRequest(ctx, "POST", "/api/v1/integrations/"+id+"/test", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+
 

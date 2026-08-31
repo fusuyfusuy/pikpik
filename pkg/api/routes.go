@@ -85,7 +85,8 @@ func RegisterRoutes(
 
 	authWrap := func(role string, h http.HandlerFunc) http.Handler {
 		mw := AuthMiddleware(authSvc, st, role)
-		return mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner := mw(h)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if rateLimiter != nil {
 				key := ExtractToken(r)
 				if key == "" {
@@ -98,8 +99,8 @@ func RegisterRoutes(
 					return
 				}
 			}
-			h(w, r)
-		}))
+			inner.ServeHTTP(w, r)
+		})
 	}
 
 	// --- 1. Auth Endpoints ---
@@ -1524,5 +1525,266 @@ func RegisterRoutes(
 		}
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "delivered", "message": "Test notification sent successfully"}, GetRequestID(r.Context()))
 	}))
+
+	// ============================================================================
+	// Team & User Management Endpoints
+	// ============================================================================
+
+	// GET /api/v1/users (List all users)
+	mux.Handle("GET /api/v1/users", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		users, err := ctrl.ListUsers(r.Context(), 100, 0)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, users, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/users/invite (Invite user)
+	mux.Handle("POST /api/v1/users/invite", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		var req InviteUserRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed invite request", nil, GetRequestID(r.Context()))
+			return
+		}
+		inviterID := ""
+		if u, ok := GetUserFromContext(r.Context()); ok && u != nil {
+			inviterID = u.ID
+		}
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "http://" + r.Host
+		}
+		inv, err := ctrl.InviteUser(r.Context(), inviterID, &req, origin)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, inv, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/users/accept-invite (Public: Accept invitation and register)
+	mux.HandleFunc("POST /api/v1/users/accept-invite", func(w http.ResponseWriter, r *http.Request) {
+		reqID := GenerateRequestID()
+		var req AcceptInviteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed accept invite request", nil, reqID)
+			return
+		}
+		resp, err := ctrl.AcceptInvitation(r.Context(), &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     "pikpik_auth",
+			Value:    resp.Token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  time.Now().Add(7 * 24 * time.Hour),
+		})
+		WriteJSON(w, http.StatusOK, resp, reqID)
+	})
+
+	// PUT /api/v1/users/{id}/role (Update user role)
+	mux.Handle("PUT /api/v1/users/{id}/role", authWrap(RoleOwner, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateUserRoleRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed role request", nil, GetRequestID(r.Context()))
+			return
+		}
+		if err := ctrl.UpdateUserRole(r.Context(), id, req.Role); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "User not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "User role updated successfully"}, GetRequestID(r.Context()))
+	}))
+
+	// DELETE /api/v1/users/{id} (Delete user)
+	mux.Handle("DELETE /api/v1/users/{id}", authWrap(RoleOwner, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteUser(r.Context(), id); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "User not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "User deleted successfully"}, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/users/{id}/reset-password (Admin password reset)
+	mux.Handle("POST /api/v1/users/{id}/reset-password", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req ResetPasswordRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed password reset request", nil, GetRequestID(r.Context()))
+			return
+		}
+		if err := ctrl.ResetUserPassword(r.Context(), id, req.NewPassword); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "User not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "Password reset successfully"}, GetRequestID(r.Context()))
+	}))
+
+	// ============================================================================
+	// Project Memberships Endpoints
+	// ============================================================================
+
+	// GET /api/v1/projects/{id}/members (List project members)
+	mux.Handle("GET /api/v1/projects/{id}/members", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		projectID := getPathParam(r, "id")
+		members, err := ctrl.ListProjectMembers(r.Context(), projectID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, members, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/projects/{id}/members (Assign/Update project member)
+	mux.Handle("POST /api/v1/projects/{id}/members", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		projectID := getPathParam(r, "id")
+		var req SetProjectMemberRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed member request", nil, GetRequestID(r.Context()))
+			return
+		}
+		member, err := ctrl.SetProjectMember(r.Context(), projectID, &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, member, GetRequestID(r.Context()))
+	}))
+
+	// DELETE /api/v1/projects/{id}/members/{user_id} (Remove project member)
+	mux.Handle("DELETE /api/v1/projects/{id}/members/{user_id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		projectID := getPathParam(r, "id")
+		userID := getPathParam(r, "user_id")
+		if err := ctrl.RemoveProjectMember(r.Context(), projectID, userID); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Member not found in project", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "Project member removed"}, GetRequestID(r.Context()))
+	}))
+
+	// ============================================================================
+	// Developer Integrations Endpoints
+	// ============================================================================
+
+	// GET /api/v1/integrations (List all integrations)
+	mux.Handle("GET /api/v1/integrations", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		orgID := r.URL.Query().Get("org_id")
+		if orgID == "" {
+			orgID = "org_default"
+		}
+		items, err := ctrl.ListIntegrations(r.Context(), orgID)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, items, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/integrations (Create integration)
+	mux.Handle("POST /api/v1/integrations", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		var req CreateIntegrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed integration request", nil, GetRequestID(r.Context()))
+			return
+		}
+		orgID := r.URL.Query().Get("org_id")
+		if orgID == "" {
+			orgID = "org_default"
+		}
+		it, err := ctrl.CreateIntegration(r.Context(), orgID, &req)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusCreated, it, GetRequestID(r.Context()))
+	}))
+
+	// GET /api/v1/integrations/{id} (Get integration)
+	mux.Handle("GET /api/v1/integrations/{id}", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		it, err := ctrl.GetIntegration(r.Context(), id)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Integration not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, it, GetRequestID(r.Context()))
+	}))
+
+	// PUT /api/v1/integrations/{id} (Update integration)
+	mux.Handle("PUT /api/v1/integrations/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req UpdateIntegrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Malformed integration update request", nil, GetRequestID(r.Context()))
+			return
+		}
+		it, err := ctrl.UpdateIntegration(r.Context(), id, &req)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Integration not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, it, GetRequestID(r.Context()))
+	}))
+
+	// DELETE /api/v1/integrations/{id} (Delete integration)
+	mux.Handle("DELETE /api/v1/integrations/{id}", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		if err := ctrl.DeleteIntegration(r.Context(), id); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Integration not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"message": "Integration deleted successfully"}, GetRequestID(r.Context()))
+	}))
+
+	// POST /api/v1/integrations/{id}/test (Test integration connection)
+	mux.Handle("POST /api/v1/integrations/{id}/test", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		resp, err := ctrl.TestIntegration(r.Context(), id)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, "Integration not found", nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, resp, GetRequestID(r.Context()))
+	}))
 }
+
 

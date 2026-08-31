@@ -560,3 +560,76 @@ func TestAPIClient_Notifications(t *testing.T) {
 		t.Fatalf("expected 0 channels after deletion, got %d", len(afterList))
 	}
 }
+
+// 8. Test User Management Client API Methods
+func TestAPIClient_UserManagement(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	client := NewAPIClient(Context{
+		ServerURL: ts.URL,
+		Token:     "test-token",
+	})
+	ctx := context.Background()
+
+	// 1. Invite user
+	inv, err := client.InviteUser(ctx, "member@pikpik.dev", "developer", 7)
+	if err != nil {
+		t.Fatalf("failed to invite user: %v", err)
+	}
+	if inv.Email != "member@pikpik.dev" || inv.Role != "developer" {
+		t.Fatalf("unexpected invitation response: %+v", inv)
+	}
+
+	// 2. List users (empty or registered)
+	users, err := client.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("failed to list users: %v", err)
+	}
+	_ = users
+}
+
+// 9. Test Developer Integrations Client API Methods
+func TestAPIClient_Integrations(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	ts := httptest.NewServer(gw)
+	defer ts.Close()
+
+	client := NewAPIClient(Context{
+		ServerURL: ts.URL,
+		Token:     "test-token",
+	})
+	ctx := context.Background()
+
+	// 1. Create integration
+	it, err := client.CreateIntegration(ctx, "org_default", api.CreateIntegrationRequest{
+		Name:        "Docker Hub Main",
+		Type:        "registry_dockerhub",
+		Credentials: "dckr_pat_secret123",
+		ConfigJSON:  `{"username":"pikpik"}`,
+	})
+	if err != nil {
+		t.Fatalf("failed to create integration: %v", err)
+	}
+	if it.Name != "Docker Hub Main" || it.Type != "registry_dockerhub" {
+		t.Fatalf("unexpected integration response: %+v", it)
+	}
+
+	// 2. List integrations
+	list, err := client.ListIntegrations(ctx, "org_default")
+	if err != nil {
+		t.Fatalf("failed to list integrations: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != it.ID {
+		t.Fatalf("unexpected integrations list: %+v", list)
+	}
+
+	// 3. Delete integration
+	if err := client.DeleteIntegration(ctx, it.ID); err != nil {
+		t.Fatalf("failed to delete integration: %v", err)
+	}
+}
+

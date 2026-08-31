@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/api"
@@ -84,6 +85,10 @@ func main() {
 		runExec(args)
 	case "context":
 		runContext(args)
+	case "user", "users":
+		runUser(args)
+	case "integration", "integrations":
+		runIntegration(args)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\nRun 'pikpik help' for available commands.\n", cmd)
 		os.Exit(1)
@@ -2266,6 +2271,277 @@ func formatBytesInt(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
+
+func runUser(args []string) {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`Manage cluster team members, roles, invitations, and passwords
+
+Usage:
+  pikpik user <command> [arguments]
+
+Commands:
+  list              List all users and assigned roles (--json for JSON output)
+  invite            Generate a shareable team invitation link
+  role              Update a user's role (owner, admin, developer, viewer)
+  passwd            Reset a user's password and invalidate active sessions
+  rm                Remove a user from the organization
+
+Flags for 'invite':
+  --email string    Invited user email (required)
+  --role string     Role to assign: owner, admin, developer, viewer (default: developer)
+  --days int        Invitation expiry in days (default: 7)
+
+Flags for 'role':
+  --role string     New role: owner, admin, developer, viewer (required)
+
+Flags for 'passwd':
+  --password string New password (min 8 chars) (required)`)
+		return
+	}
+
+	client, _, _ := getClient()
+	sub := args[0]
+
+	switch sub {
+	case "list", "ls":
+		fs := flag.NewFlagSet("user list", flag.ExitOnError)
+		jsonFlag := fs.Bool("json", false, "Output in JSON format")
+		_ = fs.Parse(args[1:])
+
+		users, err := client.ListUsers(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing users failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonFlag {
+			data, _ := json.MarshalIndent(users, "", "  ")
+			fmt.Println(string(data))
+			return
+		}
+
+		if len(users) == 0 {
+			fmt.Println("No users registered.")
+			return
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "USER ID\tEMAIL\tROLE\t2FA\tCREATED")
+		for _, u := range users {
+			totpStr := "disabled"
+			if u.TOTPEnabled {
+				totpStr = "enabled"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				u.ID, u.Email, strings.ToUpper(u.Role), totpStr, u.CreatedAt.Format("2006-01-02 15:04"),
+			)
+		}
+		w.Flush()
+
+	case "invite":
+		fs := flag.NewFlagSet("user invite", flag.ExitOnError)
+		email := fs.String("email", "", "Invited email address")
+		role := fs.String("role", "developer", "Role: owner, admin, developer, viewer")
+		days := fs.Int("days", 7, "Expiration in days")
+		_ = fs.Parse(args[1:])
+
+		if *email == "" {
+			fmt.Fprintln(os.Stderr, "Error: --email is required")
+			os.Exit(1)
+		}
+
+		inv, err := client.InviteUser(context.Background(), *email, *role, *days)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Inviting user failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("Team invitation created successfully!")
+		fmt.Printf("Email:       %s\n", inv.Email)
+		fmt.Printf("Role:        %s\n", strings.ToUpper(inv.Role))
+		fmt.Printf("Expires:     %s\n", inv.ExpiresAt.Format("2006-01-02 15:04:05 UTC"))
+		fmt.Printf("Invite URL:  %s\n", inv.InviteURL)
+
+	case "role":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik user role <user_id> --role <role>")
+			os.Exit(1)
+		}
+		userID := args[1]
+		fs := flag.NewFlagSet("user role", flag.ExitOnError)
+		role := fs.String("role", "", "New role: owner, admin, developer, viewer")
+		_ = fs.Parse(args[2:])
+
+		if *role == "" {
+			fmt.Fprintln(os.Stderr, "Error: --role is required")
+			os.Exit(1)
+		}
+
+		if err := client.UpdateUserRole(context.Background(), userID, *role); err != nil {
+			fmt.Fprintf(os.Stderr, "Updating role failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Role for user %q updated to %q.\n", userID, strings.ToUpper(*role))
+
+	case "passwd":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik user passwd <user_id> --password <new_password>")
+			os.Exit(1)
+		}
+		userID := args[1]
+		fs := flag.NewFlagSet("user passwd", flag.ExitOnError)
+		pwd := fs.String("password", "", "New password (min 8 characters)")
+		_ = fs.Parse(args[2:])
+
+		if len(*pwd) < 8 {
+			fmt.Fprintln(os.Stderr, "Error: --password must be at least 8 characters")
+			os.Exit(1)
+		}
+
+		if err := client.ResetUserPassword(context.Background(), userID, *pwd); err != nil {
+			fmt.Fprintf(os.Stderr, "Password reset failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Password for user %q reset successfully and active sessions invalidated.\n", userID)
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik user rm <user_id>")
+			os.Exit(1)
+		}
+		userID := args[1]
+		if err := client.DeleteUser(context.Background(), userID); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting user failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("User %q removed successfully.\n", userID)
+
+	default:
+		fmt.Printf("Unknown user subcommand: %s\nRun 'pikpik user --help' for available commands.\n", sub)
+		os.Exit(1)
+	}
+}
+
+func runIntegration(args []string) {
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Println(`Manage external Git providers, Container Registries, and S3 Storage destinations
+
+Usage:
+  pikpik integration <command> [arguments]
+
+Commands:
+  list              List all registered integrations (--json for JSON output)
+  add               Register a new external provider integration
+  test              Perform a live connectivity test
+  rm                Delete an integration
+
+Flags for 'add':
+  --name string     Display name (required)
+  --type string     Type: git_github, git_gitlab, git_gitea, registry_dockerhub, registry_ghcr, storage_s3 (required)
+  --credentials str Secret token, API key, or registry password (required)
+  --config string   Optional JSON configuration string`)
+		return
+	}
+
+	client, _, _ := getClient()
+	sub := args[0]
+
+	switch sub {
+	case "list", "ls":
+		fs := flag.NewFlagSet("integration list", flag.ExitOnError)
+		orgFlag := fs.String("org", "org_default", "Organization ID")
+		jsonFlag := fs.Bool("json", false, "Output in JSON format")
+		_ = fs.Parse(args[1:])
+
+		items, err := client.ListIntegrations(context.Background(), *orgFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing integrations failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *jsonFlag {
+			data, _ := json.MarshalIndent(items, "", "  ")
+			fmt.Println(string(data))
+			return
+		}
+
+		if len(items) == 0 {
+			fmt.Println("No integrations registered. Add one using 'pikpik integration add'.")
+			return
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "ID\tNAME\tTYPE\tSTATUS\tCREATED")
+		for _, it := range items {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				it.ID, it.Name, it.Type, strings.ToUpper(it.Status), it.CreatedAt.Format("2006-01-02 15:04"),
+			)
+		}
+		w.Flush()
+
+	case "add", "create":
+		fs := flag.NewFlagSet("integration add", flag.ExitOnError)
+		orgFlag := fs.String("org", "org_default", "Organization ID")
+		name := fs.String("name", "", "Integration name")
+		intType := fs.String("type", "", "Type: git_github, git_gitlab, registry_dockerhub, registry_ghcr, storage_s3")
+		creds := fs.String("credentials", "", "API token or secret key")
+		cfg := fs.String("config", "{}", "JSON configuration")
+		_ = fs.Parse(args[1:])
+
+		if *name == "" || *intType == "" || *creds == "" {
+			fmt.Fprintln(os.Stderr, "Error: --name, --type, and --credentials are required")
+			os.Exit(1)
+		}
+
+		it, err := client.CreateIntegration(context.Background(), *orgFlag, api.CreateIntegrationRequest{
+			Name:        *name,
+			Type:        *intType,
+			Credentials: *creds,
+			ConfigJSON:  *cfg,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Creating integration failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Integration %q (%s) registered successfully [ID: %s]\n", it.Name, it.Type, it.ID)
+
+	case "test":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik integration test <integration_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		res, err := client.TestIntegration(context.Background(), id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Testing integration failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		status := "FAILED"
+		if res.Success {
+			status = "SUCCESS"
+		}
+		fmt.Printf("[%s] %s (latency: %dms)\n", status, res.Message, res.LatencyMS)
+
+	case "rm", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik integration rm <integration_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.DeleteIntegration(context.Background(), id); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting integration failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Integration %q deleted successfully.\n", id)
+
+	default:
+		fmt.Printf("Unknown integration subcommand: %s\nRun 'pikpik integration --help' for available commands.\n", sub)
+		os.Exit(1)
+	}
+}
+
 
 
 

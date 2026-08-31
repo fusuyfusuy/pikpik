@@ -11,7 +11,7 @@ import (
 // Standard Response Envelope
 type Response[T any] struct {
 	Success bool     `json:"success"`
-	Data    T        `json:"data,omitempty"`
+	Data    T        `json:"data"`
 	Meta    MetaInfo `json:"meta"`
 }
 
@@ -116,6 +116,8 @@ type App struct {
 	BuildStrategy    string            `json:"build_strategy,omitempty"`
 	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
 	PublishDirectory string            `json:"publish_directory,omitempty"`
+	HasWebhookSecret bool              `json:"has_webhook_secret,omitempty"`
+	WebhookSecret    string            `json:"webhook_secret,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 }
@@ -137,6 +139,8 @@ type CreateAppRequest struct {
 	BuildStrategy    string            `json:"build_strategy,omitempty"`
 	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
 	PublishDirectory string            `json:"publish_directory,omitempty"`
+	WebhookSecret    string            `json:"webhook_secret,omitempty"`
+	DeployToken      string            `json:"deploy_token,omitempty"`
 }
 
 type UpdateAppRequest struct {
@@ -156,6 +160,8 @@ type UpdateAppRequest struct {
 	BuildStrategy    string            `json:"build_strategy,omitempty"`
 	DockerfilePath   string            `json:"dockerfile_path,omitempty"`
 	PublishDirectory string            `json:"publish_directory,omitempty"`
+	WebhookSecret    *string           `json:"webhook_secret,omitempty"`
+	DeployToken      *string           `json:"deploy_token,omitempty"`
 }
 
 type DeployAppRequest struct {
@@ -342,6 +348,7 @@ type CreateBackupRequest struct {
 
 type CreateBackupScheduleRequest struct {
 	ServiceID            string `json:"service_id"`
+	S3DestinationID      string `json:"s3_destination_id,omitempty"`
 	CronExpr             string `json:"cron_expr,omitempty"`
 	CronExpression       string `json:"cron_expression,omitempty"`
 	Engine               string `json:"engine,omitempty"`
@@ -365,6 +372,7 @@ type CreateBackupScheduleRequest struct {
 }
 
 type UpdateBackupScheduleRequest struct {
+	S3DestinationID      string `json:"s3_destination_id,omitempty"`
 	CronExpr             string `json:"cron_expr,omitempty"`
 	CronExpression       string `json:"cron_expression,omitempty"`
 	Engine               string `json:"engine,omitempty"`
@@ -612,3 +620,92 @@ type NotificationChannel struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// User Management DTOs
+type UserResponse struct {
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	Role        string    `json:"role"`
+	TOTPEnabled bool      `json:"totp_enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type InviteUserRequest struct {
+	Email          string `json:"email"`
+	Role           string `json:"role"`
+	ExpiresInDays  int    `json:"expires_in_days,omitempty"`
+}
+
+type TeamInvitationResponse struct {
+	ID         string     `json:"id"`
+	OrgID      string     `json:"org_id"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"`
+	InviteURL  string     `json:"invite_url"`
+	InvitedBy  string     `json:"invited_by"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+type AcceptInviteRequest struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+type UpdateUserRoleRequest struct {
+	Role string `json:"role"`
+}
+
+type ResetPasswordRequest struct {
+	NewPassword string `json:"new_password"`
+}
+
+// Project Membership DTOs
+type ProjectMemberDTO struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	UserID    string    `json:"user_id"`
+	UserEmail string    `json:"user_email"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type SetProjectMemberRequest struct {
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
+}
+
+// Developer Integration DTOs
+type IntegrationResponse struct {
+	ID         string    `json:"id"`
+	OrgID      string    `json:"org_id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	ConfigJSON string    `json:"config_json"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type CreateIntegrationRequest struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Credentials string `json:"credentials"` // Raw token/key, will be AES-256-GCM encrypted
+	ConfigJSON  string `json:"config_json,omitempty"`
+}
+
+type UpdateIntegrationRequest struct {
+	Name        string `json:"name,omitempty"`
+	Credentials string `json:"credentials,omitempty"`
+	ConfigJSON  string `json:"config_json,omitempty"`
+	Status      string `json:"status,omitempty"`
+}
+
+type TestIntegrationResponse struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	LatencyMS int64  `json:"latency_ms"`
+}
+
