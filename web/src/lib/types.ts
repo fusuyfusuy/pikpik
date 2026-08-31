@@ -141,6 +141,24 @@ export interface DeployAppRequest {
   image?: string;
 }
 
+// --- Traffic Splitting & Canary Models ---
+export interface UpstreamWeight {
+  upstream: string;
+  weight: number;
+}
+
+export interface SetTrafficSplitRequest {
+  splits?: UpstreamWeight[];
+  upstreams?: UpstreamWeight[];
+  reset?: boolean;
+}
+
+export interface TrafficSplitResponse {
+  app_id: string;
+  domain?: string;
+  splits: UpstreamWeight[];
+}
+
 export interface ComposeVariableDef {
   name: string;
   defaultValue?: string;

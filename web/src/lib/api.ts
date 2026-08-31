@@ -5,6 +5,8 @@ import {
   CreateAppRequest,
   UpdateAppRequest,
   DeployAppRequest,
+  SetTrafficSplitRequest,
+  TrafficSplitResponse,
   SwarmNode,
   UpdateNodeRequest,
   JoinTokensResponse,
@@ -251,6 +253,13 @@ export const api = {
       request(`/api/v1/apps/${id}/env`, {
         method: 'PUT',
         body: JSON.stringify(env),
+      }),
+    getTraffic: (id: string): Promise<TrafficSplitResponse> =>
+      request<TrafficSplitResponse>(`/api/v1/apps/${id}/traffic`),
+    setTraffic: (id: string, req: SetTrafficSplitRequest): Promise<TrafficSplitResponse> =>
+      request<TrafficSplitResponse>(`/api/v1/apps/${id}/traffic`, {
+        method: 'POST',
+        body: JSON.stringify(req),
       }),
   },
 

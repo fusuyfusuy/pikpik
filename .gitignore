@@ -27,6 +27,7 @@ web/node_modules/
 .vite/
 web/.vite/
 
-# OS artifacts
+# OS & Agent artifacts
 .DS_Store
 Thumbs.db
+.agents/

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import { App, Build } from '../../lib/types';
+import { App, Build, UpstreamWeight, SetTrafficSplitRequest } from '../../lib/types';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
+import { Input } from '../../components/ui/Input';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/Table';
 import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/Toast';
@@ -22,6 +23,13 @@ import {
   Check,
   Copy,
   Layers,
+  Sliders,
+  Shuffle,
+  Plus,
+  Trash2,
+  Globe,
+  CheckCircle2,
+  Server,
 } from 'lucide-react';
 
 const ansi = new AnsiUp();
@@ -152,7 +160,10 @@ export function DeploymentsTrafficTab({ app }: DeploymentsTrafficTabProps) {
         </div>
       </Card>
 
-      {/* 2. Git Deployments & Build History */}
+      {/* 2. Canary Traffic Splitting & Upstream Load Balancing */}
+      <CanaryTrafficControlCard app={app} />
+
+      {/* 3. Git Deployments & Build History */}
       <Card className="p-0 overflow-hidden border-zinc-800 bg-zinc-950/40">
         <div className="p-3.5 bg-zinc-900/90 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -287,6 +298,529 @@ export function DeploymentsTrafficTab({ app }: DeploymentsTrafficTabProps) {
         />
       )}
     </div>
+  );
+}
+
+function CanaryTrafficControlCard({ app }: { app: App }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const defaultPort = app.container_port || 80;
+  const defaultStableUpstream = `${app.name}:${defaultPort}`;
+  const defaultCanaryUpstream = `${app.name}-canary:${defaultPort}`;
+
+  // Query Traffic Split
+  const { data: trafficData, isLoading: isTrafficLoading } = useQuery({
+    queryKey: ['app-traffic', app.id],
+    queryFn: () => api.apps.getTraffic(app.id),
+    refetchInterval: 5000,
+  });
+
+  const [splits, setSplits] = useState<UpstreamWeight[]>([
+    { upstream: defaultStableUpstream, weight: 100 },
+  ]);
+  const [isDirty, setIsDirty] = useState(false);
+
+  useEffect(() => {
+    if (trafficData?.splits && !isDirty) {
+      if (trafficData.splits.length === 0) {
+        setSplits([{ upstream: defaultStableUpstream, weight: 100 }]);
+      } else {
+        setSplits(trafficData.splits);
+      }
+    } else if (!trafficData?.splits && !isDirty) {
+      setSplits([{ upstream: defaultStableUpstream, weight: 100 }]);
+    }
+  }, [trafficData, isDirty, defaultStableUpstream]);
+
+  // Mutations
+  const trafficMutation = useMutation({
+    mutationFn: (req: SetTrafficSplitRequest) => api.apps.setTraffic(app.id, req),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['app-traffic', app.id] });
+      setIsDirty(false);
+      const splitSummary = res.splits.map((s) => `${s.upstream}: ${s.weight}`).join(', ');
+      toast.success(
+        'Traffic Split Applied',
+        `Dynamic ingress updated in <15ms (${splitSummary})`
+      );
+    },
+    onError: (err: Error) => toast.error('Traffic Split Failed', err.message),
+  });
+
+  const resetTrafficMutation = useMutation({
+    mutationFn: () => api.apps.setTraffic(app.id, { reset: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['app-traffic', app.id] });
+      setIsDirty(false);
+      setSplits([{ upstream: defaultStableUpstream, weight: 100 }]);
+      toast.info('Traffic Reset', 'Ingress routed 100% to primary stable upstream');
+    },
+    onError: (err: Error) => toast.error('Reset Failed', err.message),
+  });
+
+  // Calculate weights & percentages
+  const totalWeight = splits.reduce((acc, curr) => acc + (Math.max(0, curr.weight) || 0), 0);
+
+  // Dual Upstream logic (Stable vs Canary)
+  const isDual = splits.length === 2;
+  const stableWeight = splits[0]?.weight ?? 100;
+  const canaryWeight = isDual ? (splits[1]?.weight ?? 0) : 0;
+  const dualTotal = stableWeight + canaryWeight;
+  const canaryPct = dualTotal > 0 ? Math.round((canaryWeight / dualTotal) * 100) : 0;
+  const stablePct = 100 - canaryPct;
+
+  const handleSliderChange = (newCanaryVal: number) => {
+    setIsDirty(true);
+    const newStableVal = 100 - newCanaryVal;
+    if (splits.length < 2) {
+      setSplits([
+        { upstream: splits[0]?.upstream || defaultStableUpstream, weight: newStableVal },
+        { upstream: defaultCanaryUpstream, weight: newCanaryVal },
+      ]);
+    } else {
+      setSplits((prev) => [
+        { ...prev[0], weight: newStableVal },
+        { ...prev[1], weight: newCanaryVal },
+        ...prev.slice(2),
+      ]);
+    }
+  };
+
+  const handlePreset = (stableW: number, canaryW: number) => {
+    setIsDirty(true);
+    const u1 = splits[0]?.upstream || defaultStableUpstream;
+    const u2 = splits[1]?.upstream || defaultCanaryUpstream;
+    if (canaryW === 0 && splits.length <= 2) {
+      setSplits([
+        { upstream: u1, weight: 100 },
+        { upstream: u2, weight: 0 },
+      ]);
+    } else {
+      setSplits([
+        { upstream: u1, weight: stableW },
+        { upstream: u2, weight: canaryW },
+      ]);
+    }
+  };
+
+  const handleAddressChange = (index: number, newAddress: string) => {
+    setIsDirty(true);
+    setSplits((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], upstream: newAddress };
+      return copy;
+    });
+  };
+
+  const handleWeightChange = (index: number, newWeightStr: string) => {
+    setIsDirty(true);
+    const parsed = parseInt(newWeightStr, 10);
+    const weight = isNaN(parsed) ? 0 : Math.max(0, parsed);
+    setSplits((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], weight };
+      return copy;
+    });
+  };
+
+  const handleAddTarget = () => {
+    setIsDirty(true);
+    const nextIdx = splits.length;
+    const suggested = nextIdx === 1
+      ? defaultCanaryUpstream
+      : `${app.name}-v${nextIdx + 1}:${defaultPort}`;
+    setSplits((prev) => [...prev, { upstream: suggested, weight: 0 }]);
+  };
+
+  const handleRemoveTarget = (index: number) => {
+    if (splits.length <= 1) return;
+    setIsDirty(true);
+    setSplits((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleApply = () => {
+    const emptyAddr = splits.some((s) => !s.upstream.trim());
+    if (emptyAddr) {
+      toast.error('Validation Error', 'All upstream targets must have a valid host:port address');
+      return;
+    }
+    if (totalWeight <= 0) {
+      toast.error('Validation Error', 'Sum of upstream weights must be greater than 0');
+      return;
+    }
+    trafficMutation.mutate({
+      splits: splits.map((s) => ({ upstream: s.upstream.trim(), weight: Math.max(0, s.weight) })),
+    });
+  };
+
+  const isPresetActive = (sW: number, cW: number) => {
+    if (splits.length !== 2) return false;
+    const t = (splits[0].weight || 0) + (splits[1].weight || 0);
+    if (t === 0) return false;
+    const actualC = Math.round(((splits[1].weight || 0) / t) * 100);
+    const targetC = Math.round((cW / (sW + cW)) * 100);
+    return actualC === targetC;
+  };
+
+  const isCanaryActive = splits.length === 2 && (splits[1].weight || 0) > 0;
+  const isMultiCustom = splits.length > 2;
+
+  const segmentColors = [
+    'from-cyan-500 to-cyan-600',
+    'from-purple-500 to-indigo-600',
+    'from-amber-500 to-amber-600',
+    'from-rose-500 to-rose-600',
+    'from-emerald-500 to-emerald-600',
+  ];
+
+  return (
+    <Card className="p-5 bg-zinc-950/60 border-zinc-800 space-y-5">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800 pb-3.5">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 rounded-lg bg-purple-950/40 border border-purple-800/30 text-purple-400">
+            <Sliders className="h-4 w-4" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-sm text-zinc-100">
+                Canary & Traffic Splitting
+              </span>
+              {isTrafficLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />
+              ) : isCanaryActive ? (
+                <Badge variant="purple" dot pulse>
+                  Canary Active ({canaryPct}%)
+                </Badge>
+              ) : isMultiCustom ? (
+                <Badge variant="info" dot>
+                  Multi-Target Split ({splits.length})
+                </Badge>
+              ) : (
+                <Badge variant="outline">
+                  100% Stable
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              Dynamic weighted load balancing via Caddy Dynamic Admin API (Invariant 3) in &lt;15ms with zero downtime.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => resetTrafficMutation.mutate()}
+            isLoading={resetTrafficMutation.isPending}
+            disabled={resetTrafficMutation.isPending || (!isCanaryActive && !isMultiCustom && !isDirty)}
+            leftIcon={<RotateCw className="h-3 w-3" />}
+          >
+            Reset to Stable
+          </Button>
+        </div>
+      </div>
+
+      {/* Visual Progress Bar */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="font-medium text-zinc-300 flex items-center gap-1.5">
+            <Shuffle className="h-3.5 w-3.5 text-cyan-400" />
+            Live Ingress Distribution
+          </span>
+          <span className="text-[11px] font-mono text-zinc-400">
+            {totalWeight > 0 ? `${totalWeight} total weight points` : '0 weight configured'}
+          </span>
+        </div>
+
+        {/* Multi-segment visualizer bar */}
+        <div className="h-3.5 w-full bg-zinc-900 rounded-full overflow-hidden flex border border-zinc-800 shadow-inner">
+          {splits.map((s, idx) => {
+            const pct = totalWeight > 0 ? ((Math.max(0, s.weight) || 0) / totalWeight) * 100 : 0;
+            if (pct <= 0) return null;
+            const gradient = segmentColors[idx % segmentColors.length];
+            return (
+              <div
+                key={idx}
+                style={{ width: `${pct}%` }}
+                className={`h-full bg-gradient-to-r ${gradient} transition-all duration-300 flex items-center justify-center text-[9px] font-bold text-zinc-950 truncate px-1`}
+                title={`${s.upstream || `Target #${idx + 1}`}: ${s.weight} (${pct.toFixed(1)}%)`}
+              >
+                {pct >= 12 ? `${pct.toFixed(0)}%` : ''}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Legend */}
+        <div className="flex flex-wrap items-center gap-3 pt-0.5 text-xs">
+          {splits.map((s, idx) => {
+            const pct = totalWeight > 0 ? (((Math.max(0, s.weight) || 0) / totalWeight) * 100).toFixed(1) : '0.0';
+            const dotColor = idx === 0
+              ? 'bg-cyan-400'
+              : idx === 1
+              ? 'bg-purple-400'
+              : idx === 2
+              ? 'bg-amber-400'
+              : 'bg-rose-400';
+            return (
+              <div key={idx} className="flex items-center gap-1.5 text-zinc-400 font-mono text-[11px]">
+                <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+                <span className="text-zinc-300 font-medium truncate max-w-[140px] sm:max-w-[200px]">
+                  {s.upstream || `Target #${idx + 1}`}
+                </span>
+                <span className="text-zinc-500">({pct}%)</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Quick Presets */}
+      <div className="space-y-2 pt-1">
+        <span className="text-[11px] font-semibold uppercase text-zinc-500 tracking-wider block">
+          Rollout & Canary Presets
+        </span>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          <button
+            type="button"
+            onClick={() => handlePreset(100, 0)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all text-left flex flex-col justify-between ${
+              isPresetActive(100, 0)
+                ? 'bg-cyan-950/40 border-cyan-500/60 text-cyan-200 shadow-sm shadow-cyan-500/10 ring-1 ring-cyan-500/30'
+                : 'bg-zinc-900/60 border-zinc-800 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <span className="font-semibold text-zinc-100">100% Stable</span>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">100 / 0</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePreset(90, 10)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all text-left flex flex-col justify-between ${
+              isPresetActive(90, 10)
+                ? 'bg-purple-950/40 border-purple-500/60 text-purple-200 shadow-sm shadow-purple-500/10 ring-1 ring-purple-500/30'
+                : 'bg-zinc-900/60 border-zinc-800 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <span className="font-semibold text-zinc-100">90 / 10 Canary</span>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">10% Probation</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePreset(80, 20)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all text-left flex flex-col justify-between ${
+              isPresetActive(80, 20)
+                ? 'bg-purple-950/40 border-purple-500/60 text-purple-200 shadow-sm shadow-purple-500/10 ring-1 ring-purple-500/30'
+                : 'bg-zinc-900/60 border-zinc-800 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <span className="font-semibold text-zinc-100">80 / 20 Canary</span>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">20% Soak Test</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePreset(50, 50)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all text-left flex flex-col justify-between ${
+              isPresetActive(50, 50)
+                ? 'bg-indigo-950/40 border-indigo-500/60 text-indigo-200 shadow-sm shadow-indigo-500/10 ring-1 ring-indigo-500/30'
+                : 'bg-zinc-900/60 border-zinc-800 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <span className="font-semibold text-zinc-100">50 / 50 Blue-Green</span>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">Equal Load</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePreset(0, 100)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium border transition-all text-left flex flex-col justify-between ${
+              isPresetActive(0, 100)
+                ? 'bg-purple-950/40 border-purple-500/60 text-purple-200 shadow-sm shadow-purple-500/10 ring-1 ring-purple-500/30'
+                : 'bg-zinc-900/60 border-zinc-800 text-zinc-300 hover:bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <span className="font-semibold text-zinc-100">100% Canary</span>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">Full Cutover</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Dual Weight Slider */}
+      <div className="p-4 bg-zinc-900/40 border border-zinc-800/80 rounded-xl space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-zinc-200">
+              Interactive Canary Weight Slider
+            </span>
+            <span className="text-[11px] text-zinc-500">
+              (Two-way synchronized)
+            </span>
+          </div>
+          <div className="flex items-center gap-3 font-mono text-xs">
+            <span className="text-cyan-400 font-medium">
+              Stable: {stablePct}%
+            </span>
+            <span className="text-zinc-600">|</span>
+            <span className="text-purple-400 font-medium">
+              Canary: {canaryPct}%
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={canaryPct}
+            onChange={(e) => handleSliderChange(parseInt(e.target.value, 10) || 0)}
+            className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+          />
+          <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+            <span>0% Canary (100% Stable)</span>
+            <span>25%</span>
+            <span>50% (Equal)</span>
+            <span>75%</span>
+            <span>100% Canary (Full Rollout)</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Dynamic Upstream Targets Table */}
+      <div className="space-y-2.5 pt-1">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+            <Server className="h-3.5 w-3.5 text-zinc-400" />
+            Upstream Target Endpoints
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleAddTarget}
+            leftIcon={<Plus className="h-3 w-3 text-cyan-400" />}
+            className="text-xs"
+          >
+            Add Upstream Target
+          </Button>
+        </div>
+
+        <div className="space-y-2">
+          {splits.map((s, idx) => {
+            const pct = totalWeight > 0 ? (((Math.max(0, s.weight) || 0) / totalWeight) * 100).toFixed(1) : '0.0';
+            const label = idx === 0 ? 'Stable Primary' : idx === 1 ? 'Canary Target' : `Target #${idx + 1}`;
+            return (
+              <div
+                key={idx}
+                className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 p-2.5 bg-zinc-900/60 border border-zinc-800 rounded-lg"
+              >
+                <div className="flex items-center gap-2 min-w-[120px]">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      idx === 0 ? 'bg-cyan-400' : idx === 1 ? 'bg-purple-400' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span className="text-xs font-semibold text-zinc-300 font-mono">
+                    {label}
+                  </span>
+                </div>
+
+                <div className="flex-1">
+                  <Input
+                    placeholder="host:port (e.g. app-name:8080 or 10.0.1.25:3000)"
+                    value={s.upstream}
+                    onChange={(e) => handleAddressChange(idx, e.target.value)}
+                    className="font-mono text-xs py-1.5 h-8"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="w-24">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="10000"
+                      placeholder="Weight"
+                      value={s.weight}
+                      onChange={(e) => handleWeightChange(idx, e.target.value)}
+                      className="font-mono text-xs py-1.5 h-8 text-right"
+                    />
+                  </div>
+                  <div className="w-16 text-right font-mono text-xs font-bold text-zinc-300">
+                    {pct}%
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRemoveTarget(idx)}
+                    disabled={splits.length <= 1}
+                    className="p-1 h-8 w-8 text-zinc-500 hover:text-rose-400 disabled:opacity-30"
+                    title="Remove target"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Footer Actions & Ingress Details */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-zinc-800/80">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+          <div className="flex items-center gap-1.5 font-mono text-[11px] bg-zinc-900 px-2 py-1 rounded border border-zinc-800">
+            <Globe className="h-3 w-3 text-cyan-400" />
+            <span>{trafficData?.domain || app.domains?.[0] || 'Default Route'}</span>
+          </div>
+          <Badge variant="outline" className="text-[10px]">
+            &lt;15ms Dynamic Route Reconciler
+          </Badge>
+          {isDirty && (
+            <span className="text-amber-400 text-xs font-medium flex items-center gap-1">
+              ● Unsaved Split Changes
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 self-end sm:self-auto">
+          {isDirty && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                if (trafficData?.splits) {
+                  setSplits(trafficData.splits);
+                } else {
+                  setSplits([{ upstream: defaultStableUpstream, weight: 100 }]);
+                }
+                setIsDirty(false);
+              }}
+              disabled={trafficMutation.isPending}
+            >
+              Discard
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleApply}
+            isLoading={trafficMutation.isPending}
+            leftIcon={<CheckCircle2 className="h-3.5 w-3.5" />}
+          >
+            Apply Traffic Split
+          </Button>
+        </div>
+      </div>
+    </Card>
   );
 }
 
