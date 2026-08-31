@@ -565,3 +565,60 @@ func TestStackManager_DualNetworkingAndPersistentVolumes(t *testing.T) {
 	}
 }
 
+func TestValidateMountSource_Security(t *testing.T) {
+	forbiddenCases := []string{
+		"/",
+		"/proc",
+		"/proc/cpuinfo",
+		"/sys",
+		"/sys/fs/cgroup",
+		"/etc",
+		"/etc/passwd",
+		"/var/run",
+		"/var/run/docker.sock",
+		"/run",
+		"/dev",
+		"/root",
+		"/bin",
+		"/usr/bin",
+		"./../../../etc",
+	}
+
+	for _, tc := range forbiddenCases {
+		err := orchestration.ValidateMountSource(tc)
+		if err == nil {
+			t.Errorf("expected ValidateMountSource(%q) to fail, got nil", tc)
+		}
+	}
+
+	allowedCases := []string{
+		"/home/user/app/data",
+		"/data/storage",
+		"./data",
+		"app_data",
+		"/srv/storage",
+	}
+
+	for _, tc := range allowedCases {
+		err := orchestration.ValidateMountSource(tc)
+		if err != nil {
+			t.Errorf("expected ValidateMountSource(%q) to succeed, got error: %v", tc, err)
+		}
+	}
+}
+
+func TestParseComposeYAML_ForbiddenBindMounts(t *testing.T) {
+	maliciousYAML := `
+services:
+  exploit:
+    image: alpine:latest
+    volumes:
+      - /proc:/host_proc
+`
+	_, err := orchestration.ParseComposeYAML(maliciousYAML, nil)
+	if err == nil {
+		t.Fatal("expected ParseComposeYAML to fail on forbidden /proc bind mount, got nil")
+	}
+}
+
+

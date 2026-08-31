@@ -159,3 +159,28 @@ func TestDispatcher_FormatsAndDelivery(t *testing.T) {
 	assert.Equal(t, "pikpik Test Notification", testEvt.Title)
 	mu.Unlock()
 }
+
+func TestSanitizeMetadata_CredentialScrubbing(t *testing.T) {
+	input := map[string]string{
+		"db_password":   "supersecretpassword",
+		"api_token":     "pat_1234567890",
+		"auth_header":   "Bearer abc",
+		"database_uri":  "postgres://user:pass@localhost:5432/db",
+		"redis_dsn":     "redis://:secret@localhost:6379",
+		"service_name":  "my-app",
+		"environment":   "production",
+		"normal_field":  "safe_value",
+	}
+
+	sanitized := sanitizeMetadata(input)
+
+	assert.Equal(t, "********", sanitized["db_password"])
+	assert.Equal(t, "********", sanitized["api_token"])
+	assert.Equal(t, "********", sanitized["auth_header"])
+	assert.Equal(t, "********", sanitized["database_uri"])
+	assert.Equal(t, "********", sanitized["redis_dsn"])
+	assert.Equal(t, "my-app", sanitized["service_name"])
+	assert.Equal(t, "production", sanitized["environment"])
+	assert.Equal(t, "safe_value", sanitized["normal_field"])
+}
+

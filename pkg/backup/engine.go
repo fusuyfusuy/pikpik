@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync/atomic"
 
 	"github.com/docker/docker/api/types/container"
@@ -29,6 +28,33 @@ type SocketDockerExecRunner struct {
 // NewSocketDockerExecRunner creates a new Docker socket exec runner.
 func NewSocketDockerExecRunner(cli client.CommonAPIClient) *SocketDockerExecRunner {
 	return &SocketDockerExecRunner{cli: cli}
+}
+
+// boundedBuffer retains at most maxBytes for error diagnostics while discarding excess data to bound memory.
+type boundedBuffer struct {
+	maxBytes int
+	buf      []byte
+}
+
+func newBoundedBuffer(maxBytes int) *boundedBuffer {
+	return &boundedBuffer{maxBytes: maxBytes, buf: make([]byte, 0, min(maxBytes, 4096))}
+}
+
+func (b *boundedBuffer) Write(p []byte) (n int, err error) {
+	n = len(p)
+	if len(b.buf) < b.maxBytes {
+		remaining := b.maxBytes - len(b.buf)
+		toAppend := p
+		if len(toAppend) > remaining {
+			toAppend = toAppend[:remaining]
+		}
+		b.buf = append(b.buf, toAppend...)
+	}
+	return n, nil
+}
+
+func (b *boundedBuffer) String() string {
+	return string(b.buf)
 }
 
 // ExecStreamStdout executes a command inside a container and demuxes stdout to writer without buffering to disk.
@@ -56,9 +82,9 @@ func (r *SocketDockerExecRunner) ExecStreamStdout(ctx context.Context, container
 	}
 	defer resp.Close()
 
-	// Invariant 1 & 4: Stream demux directly via stdcopy into stdout writer and discard/log stderr
-	var stderrBuf strings.Builder
-	_, err = stdcopy.StdCopy(stdout, &stderrBuf, resp.Reader)
+	// Invariant 1 & 4: Stream demux directly via stdcopy into stdout writer and bound stderr diagnostics
+	stderrBuf := newBoundedBuffer(64 * 1024)
+	_, err = stdcopy.StdCopy(stdout, stderrBuf, resp.Reader)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return -1, fmt.Errorf("stdcopy stdout stream error: %w", err)
 	}
@@ -106,8 +132,9 @@ func (r *SocketDockerExecRunner) ExecStreamStdin(ctx context.Context, containerI
 		errCh <- cErr
 	}()
 
-	var stdoutBuf, stderrBuf strings.Builder
-	_, sErr := stdcopy.StdCopy(&stdoutBuf, &stderrBuf, resp.Reader)
+	stdoutBuf := newBoundedBuffer(64 * 1024)
+	stderrBuf := newBoundedBuffer(64 * 1024)
+	_, sErr := stdcopy.StdCopy(stdoutBuf, stderrBuf, resp.Reader)
 	if sErr != nil && !errors.Is(sErr, io.EOF) {
 		return -1, fmt.Errorf("stdcopy restore stream error: %w", sErr)
 	}

@@ -91,9 +91,14 @@ func ExtractToken(r *http.Request) string {
 		return cookie.Value
 	}
 
-	// 4. Query param fallback
+	// 4. Query param fallback for WebSocket and streaming endpoints (EventSource / WS cannot send custom headers)
 	if tok := r.URL.Query().Get("token"); tok != "" {
-		return tok
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/ws/") || strings.HasPrefix(path, "/api/v1/ws/") ||
+			strings.HasSuffix(path, "/stream") || strings.HasSuffix(path, "/logs") ||
+			strings.HasSuffix(path, "/pty") || strings.HasPrefix(path, "/agent/") {
+			return tok
+		}
 	}
 
 	return ""

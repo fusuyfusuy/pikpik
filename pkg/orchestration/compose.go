@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -18,7 +19,50 @@ import (
 
 var (
 	envVarRegex = regexp.MustCompile(`\$\{([a-zA-Z0-9_]+)(?::-([^}]*))?\}|\$([a-zA-Z0-9_]+)`)
+
+	// ForbiddenHostMountPaths contains forbidden host filesystem paths that must not be mounted as bind mounts.
+	ForbiddenHostMountPaths = []string{
+		"/proc",
+		"/sys",
+		"/etc",
+		"/var/run",
+		"/run",
+		"/dev",
+		"/boot",
+		"/root",
+		"/bin",
+		"/sbin",
+		"/usr",
+		"/lib",
+		"/lib64",
+	}
 )
+
+// ValidateMountSource validates that a bind mount source path does not escape into forbidden system directories.
+func ValidateMountSource(source string) error {
+	cleanSource := filepath.Clean(source)
+	if cleanSource == "/" || cleanSource == "." || cleanSource == "" {
+		return fmt.Errorf("security: bind mount source %q is forbidden", source)
+	}
+
+	// Reject path traversal escaping root / working dir
+	if strings.HasPrefix(cleanSource, "..") || strings.Contains(cleanSource, "/..") {
+		return fmt.Errorf("security: bind mount source %q contains path traversal", source)
+	}
+
+	for _, forbidden := range ForbiddenHostMountPaths {
+		if cleanSource == forbidden || strings.HasPrefix(cleanSource, forbidden+"/") {
+			return fmt.Errorf("security: bind mount source %q targets forbidden host path %q", source, forbidden)
+		}
+	}
+
+	// Also check for docker socket specifically
+	if strings.Contains(cleanSource, "docker.sock") {
+		return fmt.Errorf("security: bind mount source %q targets docker socket", source)
+	}
+
+	return nil
+}
 
 // ResolveDeploymentOrder performs topological sorting on Compose services based on DependsOn (Kahn's algorithm).
 func ResolveDeploymentOrder(services map[string]ComposeServiceDef) ([]string, error) {
@@ -444,6 +488,9 @@ func ParseComposeYAML(rawYAML string, envVars map[string]string) (*ComposeStackS
 					mType := "volume"
 					if strings.HasPrefix(parts[0], "/") || strings.HasPrefix(parts[0], ".") {
 						mType = "bind"
+						if err := ValidateMountSource(parts[0]); err != nil {
+							return nil, fmt.Errorf("service %q mount error: %w", name, err)
+						}
 					}
 					readOnly := false
 					if len(parts) == 3 && (parts[2] == "ro" || strings.Contains(parts[2], "ro")) {

@@ -6,11 +6,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
+
+var sensitiveKeyRegex = regexp.MustCompile(`(?i)(password|secret|token|api_key|apikey|private_key|auth|credential|conn_str|dsn|uri)`)
+
+func sanitizeMetadata(meta map[string]string) map[string]string {
+	if meta == nil {
+		return nil
+	}
+	clean := make(map[string]string, len(meta))
+	for k, v := range meta {
+		if sensitiveKeyRegex.MatchString(k) {
+			clean[k] = "********"
+		} else {
+			clean[k] = v
+		}
+	}
+	return clean
+}
 
 // Event represents a system or lifecycle event to be broadcast to notification channels.
 type Event struct {
@@ -135,6 +153,7 @@ func (d *DefaultDispatcher) TestChannel(ctx context.Context, ch *store.Notificat
 }
 
 func (d *DefaultDispatcher) sendToChannel(ctx context.Context, ch *store.NotificationChannel, evt Event) error {
+	evt.Metadata = sanitizeMetadata(evt.Metadata)
 	var payload []byte
 	var err error
 

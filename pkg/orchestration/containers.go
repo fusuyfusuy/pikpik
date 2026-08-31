@@ -104,6 +104,9 @@ func (m *DockerContainerManager) Create(ctx context.Context, spec ContainerSpec)
 	for _, m := range spec.Mounts {
 		mountType := mount.TypeVolume
 		if m.Type == "bind" {
+			if err := ValidateMountSource(m.Source); err != nil {
+				return "", fmt.Errorf("container %q invalid mount source: %w", spec.Name, err)
+			}
 			mountType = mount.TypeBind
 		} else if m.Type == "tmpfs" {
 			mountType = mount.TypeTmpfs
