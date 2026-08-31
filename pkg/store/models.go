@@ -288,4 +288,41 @@ type NotificationChannel struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TeamInvitation represents an invitation to join an organization.
+type TeamInvitation struct {
+	ID         string     `json:"id"`
+	OrgID      string     `json:"org_id"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"`
+	TokenHash  string     `json:"-"`
+	InvitedBy  string     `json:"invited_by"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// ProjectMembership represents a user's scoped access to a specific project.
+type ProjectMembership struct {
+	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id"`
+	UserID    string    `json:"user_id"`
+	Role      string    `json:"role"` // "admin", "developer", "viewer"
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Integration represents an external Git provider, container registry, or storage destination.
+type Integration struct {
+	ID                   string    `json:"id"`
+	OrgID                string    `json:"org_id"`
+	Name                 string    `json:"name"`
+	Type                 string    `json:"type"` // e.g. "git_github", "registry_dockerhub", "storage_s3"
+	CredentialsEncrypted string    `json:"-"`    // AES-256-GCM encrypted secret payload
+	ConfigJSON           string    `json:"config_json"`
+	Status               string    `json:"status"` // "active", "error", "disabled"
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+
 

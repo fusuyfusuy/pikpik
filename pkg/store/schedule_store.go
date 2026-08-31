@@ -148,7 +148,7 @@ func (s *sqlScheduleStore) ListByService(ctx context.Context, serviceID string) 
 	}
 	defer rows.Close()
 
-	var list []*BackupSchedule
+	list := make([]*BackupSchedule, 0)
 	for rows.Next() {
 		sch, err := s.scanSchedule(rows)
 		if err != nil {
@@ -167,7 +167,7 @@ func (s *sqlScheduleStore) ListActive(ctx context.Context) ([]*BackupSchedule, e
 	}
 	defer rows.Close()
 
-	var list []*BackupSchedule
+	list := make([]*BackupSchedule, 0)
 	for rows.Next() {
 		sch, err := s.scanSchedule(rows)
 		if err != nil {
@@ -186,7 +186,7 @@ func (s *sqlScheduleStore) ListDue(ctx context.Context, now time.Time) ([]*Backu
 	}
 	defer rows.Close()
 
-	var list []*BackupSchedule
+	list := make([]*BackupSchedule, 0)
 	for rows.Next() {
 		sch, err := s.scanSchedule(rows)
 		if err != nil {

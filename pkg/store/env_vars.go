@@ -83,7 +83,7 @@ func (s *sqlEnvVarStore) ListByResource(ctx context.Context, tier ScopeTier, res
 	}
 	defer rows.Close()
 
-	var list []*EnvVar
+	list := make([]*EnvVar, 0)
 	for rows.Next() {
 		var v EnvVar
 		var scopeTier string

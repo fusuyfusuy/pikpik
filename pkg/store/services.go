@@ -187,7 +187,7 @@ func (s *sqlServiceStore) queryServices(ctx context.Context, query string, args 
 	}
 	defer rows.Close()
 
-	var services []*Service
+	services := make([]*Service, 0)
 	for rows.Next() {
 		var svc Service
 		var domainsJSON string

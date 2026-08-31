@@ -41,6 +41,9 @@ type SQLiteStore struct {
 	schedules           ScheduleStore
 	machines            MachineStore
 	notifications       NotificationStore
+	invitations         InvitationStore
+	memberships         MembershipStore
+	integrations        IntegrationStore
 }
 
 // perConnectionPragmaParams are SQLite session-level settings that database/sql
@@ -137,6 +140,9 @@ func newStoreWithExecutor(exec dbExecutor, isTx bool) *SQLiteStore {
 	s.schedules = &sqlScheduleStore{db: exec}
 	s.machines = &sqlMachineStore{db: exec}
 	s.notifications = &sqlNotificationStore{db: exec}
+	s.invitations = &sqlInvitationStore{db: exec}
+	s.memberships = &sqlMembershipStore{db: exec}
+	s.integrations = &sqlIntegrationStore{db: exec}
 
 	return s
 }
@@ -160,6 +166,9 @@ func (s *SQLiteStore) GitHubInstallations() GitHubInstallationStore { return s.g
 func (s *SQLiteStore) Schedules() ScheduleStore                     { return s.schedules }
 func (s *SQLiteStore) Machines() MachineStore                       { return s.machines }
 func (s *SQLiteStore) Notifications() NotificationStore             { return s.notifications }
+func (s *SQLiteStore) Invitations() InvitationStore                 { return s.invitations }
+func (s *SQLiteStore) Memberships() MembershipStore                 { return s.memberships }
+func (s *SQLiteStore) Integrations() IntegrationStore               { return s.integrations }
 
 func (s *SQLiteStore) DB() *sql.DB {
 	return s.db

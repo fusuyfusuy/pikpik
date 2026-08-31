@@ -140,7 +140,7 @@ func (s *sqlNotificationStore) ListForEvent(ctx context.Context, orgID, projectI
 		return nil, err
 	}
 
-	var matched []*NotificationChannel
+	matched := make([]*NotificationChannel, 0)
 	for _, ch := range channels {
 		for _, e := range ch.Events {
 			if e == "*" || e == event || strings.HasPrefix(event, strings.TrimSuffix(e, "*")) {
@@ -251,7 +251,7 @@ func (s *sqlNotificationStore) scanChannel(row interface{ Scan(dest ...any) erro
 }
 
 func (s *sqlNotificationStore) scanChannels(rows *sql.Rows) ([]*NotificationChannel, error) {
-	var list []*NotificationChannel
+	list := make([]*NotificationChannel, 0)
 	for rows.Next() {
 		ch, err := s.scanChannel(rows)
 		if err != nil {

@@ -101,7 +101,7 @@ func (s *sqlAPITokenStore) ListByUser(ctx context.Context, userID string) ([]*AP
 	}
 	defer rows.Close()
 
-	var tokens []*APIToken
+	tokens := make([]*APIToken, 0)
 	for rows.Next() {
 		var token APIToken
 		var scopesJSON string

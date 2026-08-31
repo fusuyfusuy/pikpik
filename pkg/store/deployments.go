@@ -98,7 +98,7 @@ func (s *sqlDeploymentStore) ListByService(ctx context.Context, serviceID string
 	}
 	defer rows.Close()
 
-	var list []*Deployment
+	list := make([]*Deployment, 0)
 	for rows.Next() {
 		var d Deployment
 		var commitSHA, lastCommitSHA, lastCommitMsg, lastCommitAuthor, logsSummary sql.NullString

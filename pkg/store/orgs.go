@@ -73,7 +73,7 @@ func (s *sqlOrgStore) List(ctx context.Context) ([]*Organization, error) {
 	}
 	defer rows.Close()
 
-	var list []*Organization
+	list := make([]*Organization, 0)
 	for rows.Next() {
 		var org Organization
 		if err := rows.Scan(&org.ID, &org.Name, &org.Slug, &org.CreatedAt, &org.UpdatedAt); err != nil {

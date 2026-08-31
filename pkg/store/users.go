@@ -142,6 +142,60 @@ func (s *sqlUserStore) Count(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+func (s *sqlUserStore) List(ctx context.Context, limit, offset int) ([]*User, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+		SELECT id, email, password_hash, role, totp_secret, totp_enabled, session_version, created_at, updated_at
+		FROM users
+		ORDER BY created_at ASC
+		LIMIT ? OFFSET ?
+	`
+	rows, err := s.db.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: failed to list users: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]*User, 0)
+	for rows.Next() {
+		var user User
+		var totpEnabled int
+		var totpSecret sql.NullString
+
+		err := rows.Scan(
+			&user.ID, &user.Email, &user.PasswordHash, &user.Role,
+			&totpSecret, &totpEnabled, &user.SessionVersion,
+			&user.CreatedAt, &user.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store: failed to scan user: %w", err)
+		}
+		user.TOTPSecret = totpSecret.String
+		user.TOTPEnabled = totpEnabled == 1
+		result = append(result, &user)
+	}
+	return result, rows.Err()
+}
+
+func (s *sqlUserStore) UpdateRole(ctx context.Context, id string, role string) error {
+	now := time.Now().UTC()
+	query := `UPDATE users SET role = ?, updated_at = ? WHERE id = ?`
+	res, err := s.db.ExecContext(ctx, query, role, now, id)
+	if err != nil {
+		return fmt.Errorf("store: failed to update user role: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *sqlUserStore) Delete(ctx context.Context, id string) error {
 	query := `DELETE FROM users WHERE id = ?`
 	res, err := s.db.ExecContext(ctx, query, id)
@@ -157,3 +211,4 @@ func (s *sqlUserStore) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+

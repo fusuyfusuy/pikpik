@@ -44,7 +44,7 @@ func (s *sqlAuditStore) ListByResource(ctx context.Context, resType, resID strin
 	}
 	defer rows.Close()
 
-	var logs []*AuditLog
+	logs := make([]*AuditLog, 0)
 	for rows.Next() {
 		var l AuditLog
 		var userID sql.NullString

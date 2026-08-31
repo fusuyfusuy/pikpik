@@ -120,7 +120,7 @@ func (s *sqlBuildStore) ListByService(ctx context.Context, serviceID string, lim
 	}
 	defer rows.Close()
 
-	var list []*Build
+	list := make([]*Build, 0)
 	for rows.Next() {
 		var b Build
 		var depID, commitMsg, author, logsPath, imageTag, errMsg sql.NullString
@@ -297,7 +297,7 @@ func (s *sqlGitHubInstallationStore) ListByOrg(ctx context.Context, orgID string
 	}
 	defer rows.Close()
 
-	var list []*GitHubInstallation
+	list := make([]*GitHubInstallation, 0)
 	for rows.Next() {
 		var inst GitHubInstallation
 		err := rows.Scan(

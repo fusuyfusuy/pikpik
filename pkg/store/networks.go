@@ -93,7 +93,7 @@ func (s *sqlNetworkStore) ListByProject(ctx context.Context, projectID string) (
 	}
 	defer rows.Close()
 
-	var list []*ManagedNetwork
+	list := make([]*ManagedNetwork, 0)
 	for rows.Next() {
 		var n ManagedNetwork
 		var isExt int
@@ -115,7 +115,7 @@ func (s *sqlNetworkStore) ListAll(ctx context.Context) ([]*ManagedNetwork, error
 	}
 	defer rows.Close()
 
-	var list []*ManagedNetwork
+	list := make([]*ManagedNetwork, 0)
 	for rows.Next() {
 		var n ManagedNetwork
 		var isExt int

@@ -90,7 +90,7 @@ func (s *sqlMachineStore) List(ctx context.Context) ([]*ManagedMachine, error) {
 	}
 	defer rows.Close()
 
-	var machines []*ManagedMachine
+	machines := make([]*ManagedMachine, 0)
 	for rows.Next() {
 		m, err := scanMachineRow(rows)
 		if err != nil {

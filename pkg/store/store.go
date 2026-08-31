@@ -45,6 +45,9 @@ type Store interface {
 	Schedules() ScheduleStore
 	Machines() MachineStore
 	Notifications() NotificationStore
+	Invitations() InvitationStore
+	Memberships() MembershipStore
+	Integrations() IntegrationStore
 
 	// WithTx executes the supplied operation inside an atomic database transaction.
 	WithTx(ctx context.Context, fn func(tx Store) error) error
@@ -73,7 +76,9 @@ type UserStore interface {
 	Create(ctx context.Context, user *User) error
 	GetByID(ctx context.Context, id string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
+	List(ctx context.Context, limit, offset int) ([]*User, error)
 	UpdatePassword(ctx context.Context, id string, passwordHash string, bumpSession bool) error
+	UpdateRole(ctx context.Context, id string, role string) error
 	Count(ctx context.Context) (int64, error)
 	Delete(ctx context.Context, id string) error
 }
@@ -237,5 +242,36 @@ type NotificationStore interface {
 	Update(ctx context.Context, ch *NotificationChannel) error
 	Delete(ctx context.Context, id string) error
 }
+
+// InvitationStore handles team invitation tokens and lifecycle.
+type InvitationStore interface {
+	Create(ctx context.Context, inv *TeamInvitation) error
+	GetByID(ctx context.Context, id string) (*TeamInvitation, error)
+	GetByTokenHash(ctx context.Context, tokenHash string) (*TeamInvitation, error)
+	ListByOrg(ctx context.Context, orgID string) ([]*TeamInvitation, error)
+	MarkAccepted(ctx context.Context, id string, acceptedAt time.Time) error
+	Delete(ctx context.Context, id string) error
+}
+
+// MembershipStore handles project-scoped user roles and access control.
+type MembershipStore interface {
+	Set(ctx context.Context, m *ProjectMembership) error
+	Get(ctx context.Context, projectID, userID string) (*ProjectMembership, error)
+	ListByProject(ctx context.Context, projectID string) ([]*ProjectMembership, error)
+	ListByUser(ctx context.Context, userID string) ([]*ProjectMembership, error)
+	Delete(ctx context.Context, projectID, userID string) error
+}
+
+// IntegrationStore handles third-party Git, registry, and storage provider configurations.
+type IntegrationStore interface {
+	Create(ctx context.Context, it *Integration) error
+	GetByID(ctx context.Context, id string) (*Integration, error)
+	ListByOrg(ctx context.Context, orgID string) ([]*Integration, error)
+	ListByType(ctx context.Context, orgID, intType string) ([]*Integration, error)
+	Update(ctx context.Context, it *Integration) error
+	UpdateStatus(ctx context.Context, id string, status string) error
+	Delete(ctx context.Context, id string) error
+}
+
 
 

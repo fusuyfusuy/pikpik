@@ -146,7 +146,7 @@ func (s *sqlBackupStore) ListExecutions(ctx context.Context, serviceID string, l
 	}
 	defer rows.Close()
 
-	var list []*BackupExecution
+	list := make([]*BackupExecution, 0)
 	for rows.Next() {
 		var exec BackupExecution
 		var errMsg sql.NullString

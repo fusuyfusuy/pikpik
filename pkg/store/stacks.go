@@ -81,7 +81,7 @@ func (s *sqlStackStore) ListByProject(ctx context.Context, projectID string) ([]
 	}
 	defer rows.Close()
 
-	var list []*Stack
+	list := make([]*Stack, 0)
 	for rows.Next() {
 		var st Stack
 		err := rows.Scan(&st.ID, &st.ProjectID, &st.Name, &st.ComposeYAML, &st.Status, &st.CreatedAt, &st.UpdatedAt)
@@ -101,7 +101,7 @@ func (s *sqlStackStore) ListAll(ctx context.Context) ([]*Stack, error) {
 	}
 	defer rows.Close()
 
-	var list []*Stack
+	list := make([]*Stack, 0)
 	for rows.Next() {
 		var st Stack
 		err := rows.Scan(&st.ID, &st.ProjectID, &st.Name, &st.ComposeYAML, &st.Status, &st.CreatedAt, &st.UpdatedAt)

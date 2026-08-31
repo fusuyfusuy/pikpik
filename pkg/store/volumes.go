@@ -78,7 +78,7 @@ func (s *sqlVolumeStore) ListByService(ctx context.Context, serviceID string) ([
 	}
 	defer rows.Close()
 
-	var list []*Volume
+	list := make([]*Volume, 0)
 	for rows.Next() {
 		var v Volume
 		var hostPath, configEnc sql.NullString
@@ -104,7 +104,7 @@ func (s *sqlVolumeStore) Delete(ctx context.Context, id string) error {
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("store: failed to check deleted rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrNotFound
@@ -180,7 +180,7 @@ func (s *sqlVolumeStore) ListManagedByProject(ctx context.Context, projectID str
 	}
 	defer rows.Close()
 
-	var list []*ManagedVolume
+	list := make([]*ManagedVolume, 0)
 	for rows.Next() {
 		var v ManagedVolume
 		err := rows.Scan(&v.ID, &v.ProjectID, &v.Name, &v.Driver, &v.SizeBytes, &v.CreatedAt, &v.UpdatedAt)
@@ -200,7 +200,7 @@ func (s *sqlVolumeStore) ListAllManaged(ctx context.Context) ([]*ManagedVolume, 
 	}
 	defer rows.Close()
 
-	var list []*ManagedVolume
+	list := make([]*ManagedVolume, 0)
 	for rows.Next() {
 		var v ManagedVolume
 		err := rows.Scan(&v.ID, &v.ProjectID, &v.Name, &v.Driver, &v.SizeBytes, &v.CreatedAt, &v.UpdatedAt)

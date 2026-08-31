@@ -73,7 +73,7 @@ func (s *sqlStageStore) ListByProject(ctx context.Context, projectID string) ([]
 	}
 	defer rows.Close()
 
-	var stages []*Stage
+	stages := make([]*Stage, 0)
 	for rows.Next() {
 		var stage Stage
 		if err := rows.Scan(&stage.ID, &stage.ProjectID, &stage.Name, &stage.Slug, &stage.CreatedAt, &stage.UpdatedAt); err != nil {
