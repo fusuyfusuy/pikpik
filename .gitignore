@@ -31,3 +31,4 @@ web/.vite/
 .DS_Store
 Thumbs.db
 .agents/
+.commandcode/
