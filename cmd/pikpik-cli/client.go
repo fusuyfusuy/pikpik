@@ -228,6 +228,24 @@ func (c *APIClient) DeployApp(ctx context.Context, id, image string) error {
 	return c.doRequest(ctx, "POST", "/api/v1/apps/"+id+"/deploy", req, &res)
 }
 
+// GetAppTraffic retrieves active traffic split distribution for an app.
+func (c *APIClient) GetAppTraffic(ctx context.Context, appID string) (*api.TrafficSplitResponse, error) {
+	var res api.Response[api.TrafficSplitResponse]
+	if err := c.doRequest(ctx, "GET", "/api/v1/apps/"+appID+"/traffic", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// SetAppTraffic sets weighted traffic split distribution for an app.
+func (c *APIClient) SetAppTraffic(ctx context.Context, appID string, req api.SetTrafficSplitRequest) (*api.TrafficSplitResponse, error) {
+	var res api.Response[api.TrafficSplitResponse]
+	if err := c.doRequest(ctx, "POST", "/api/v1/apps/"+appID+"/traffic", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
 // ListDatabases lists managed databases.
 func (c *APIClient) ListDatabases(ctx context.Context) ([]api.Database, error) {
 	var res api.Response[[]api.Database]

@@ -155,9 +155,8 @@ func (d *DefaultDeployer) Deploy(ctx context.Context, templateID string, req Dep
 	if d.st != nil {
 		d.ensureProjectAndStage(ctx, projectID, stageID)
 
-		// Persist primary App Service
 		primaryType := "app"
-		if tpl.Category == CategoryDatabases {
+		if tpl.Category == CategoryDatabases || tpl.Category == CategoryDatabase || strings.EqualFold(tpl.Category, "database") || strings.EqualFold(tpl.Category, "databases") {
 			primaryType = "database"
 		}
 

@@ -72,8 +72,8 @@ func TestTemplateRoutes_List(t *testing.T) {
 	if !result.Success {
 		t.Errorf("expected success=true, got false")
 	}
-	if len(result.Data) < 20 {
-		t.Errorf("expected at least 20 templates, got %d", len(result.Data))
+	if len(result.Data) < 22 {
+		t.Errorf("expected at least 22 templates, got %d", len(result.Data))
 	}
 
 	// 3. Filter by category=Databases
@@ -83,8 +83,8 @@ func TestTemplateRoutes_List(t *testing.T) {
 	}
 	var catResult api.Response[[]templates.Template]
 	_ = json.NewDecoder(catResp.Body).Decode(&catResult)
-	if len(catResult.Data) != 6 {
-		t.Errorf("expected 6 database templates, got %d", len(catResult.Data))
+	if len(catResult.Data) != 8 {
+		t.Errorf("expected 8 database templates, got %d", len(catResult.Data))
 	}
 
 	// 4. Search by query ?search=pocketbase

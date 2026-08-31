@@ -124,6 +124,7 @@ type ServiceStore interface {
 	ListByProject(ctx context.Context, projectID string) ([]*Service, error)
 	ListAll(ctx context.Context) ([]*Service, error)
 	UpdateStatus(ctx context.Context, id string, status string) error
+	UpdateCommitMetadata(ctx context.Context, id string, sha, message, author string) error
 	Update(ctx context.Context, s *Service) error
 	Delete(ctx context.Context, id string) error
 }

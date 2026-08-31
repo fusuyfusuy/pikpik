@@ -9,18 +9,21 @@ import (
 func TestCatalog_CountAndIntegrity(t *testing.T) {
 	cat := DefaultCatalog()
 	all := cat.ListTemplates("")
-	if len(all) < 20 {
-		t.Fatalf("expected at least 20 templates in catalog, got %d", len(all))
+	if len(all) < 22 {
+		t.Fatalf("expected at least 22 templates in catalog, got %d", len(all))
 	}
 
 	expectedIDs := []string{
-		// Productivity & DevTools (11)
-		"pocketbase", "n8n", "vaultwarden", "meilisearch", "directus",
-		"supabase-studio", "minio", "grafana", "prometheus", "metabase", "rabbitmq",
-		// Analytics & CMS (4)
-		"plausible", "umami", "ghost", "wordpress",
-		// Databases (6)
-		"postgres-16", "mysql-8", "redis-7", "mongodb-7", "clickhouse", "mariadb",
+		// Productivity & DevTools (5)
+		"n8n", "vaultwarden", "rabbitmq", "uptime-kuma", "supabase-studio",
+		// Databases (8)
+		"pocketbase", "meilisearch", "postgres-16", "mysql-8", "redis-7", "mongodb-7", "clickhouse", "mariadb",
+		// Storage (1)
+		"minio",
+		// Analytics (5)
+		"plausible", "umami", "grafana", "prometheus", "metabase",
+		// CMS (3)
+		"directus", "ghost", "wordpress",
 	}
 
 	for _, id := range expectedIDs {
@@ -41,6 +44,9 @@ func TestCatalog_CountAndIntegrity(t *testing.T) {
 		if tpl.Description == "" {
 			t.Errorf("template '%s' missing Description", id)
 		}
+		if tpl.DefaultPort <= 0 {
+			t.Errorf("template '%s' invalid DefaultPort: %d", id, tpl.DefaultPort)
+		}
 		if len(tpl.Services) == 0 {
 			t.Errorf("template '%s' has no Services defined", id)
 		}
@@ -52,47 +58,76 @@ func TestCatalog_CountAndIntegrity(t *testing.T) {
 				t.Errorf("template '%s' has service with empty Image", id)
 			}
 		}
+		for _, v := range tpl.Volumes {
+			if v.Name == "" || v.MountPath == "" {
+				t.Errorf("template '%s' has invalid volume: %+v", id, v)
+			}
+		}
+		for _, ev := range tpl.EnvVars {
+			if ev.Key == "" || ev.Description == "" {
+				t.Errorf("template '%s' has invalid env var: %+v", id, ev)
+			}
+		}
 	}
 }
 
 func TestCatalog_CategoryFiltering(t *testing.T) {
 	cat := DefaultCatalog()
 
-	// 1. Productivity & DevTools
-	devTools := cat.ListTemplates("Productivity & DevTools")
-	if len(devTools) != 11 {
-		t.Errorf("expected 11 Productivity & DevTools templates, got %d", len(devTools))
-	}
-	devToolsAlias := cat.ListTemplates("devtools")
-	if len(devToolsAlias) != 11 {
-		t.Errorf("expected alias 'devtools' to return 11 templates, got %d", len(devToolsAlias))
+	// 1. Productivity
+	prod := cat.ListTemplates("Productivity")
+	if len(prod) != 4 {
+		t.Errorf("expected 4 Productivity templates, got %d", len(prod))
 	}
 
-	// 2. Analytics & CMS
-	analytics := cat.ListTemplates("Analytics & CMS")
-	if len(analytics) != 4 {
-		t.Errorf("expected 4 Analytics & CMS templates, got %d", len(analytics))
+	// 2. Storage
+	storage := cat.ListTemplates("Storage")
+	if len(storage) != 1 {
+		t.Errorf("expected 1 Storage template, got %d", len(storage))
 	}
-	analyticsAlias := cat.ListTemplates("cms")
-	if len(analyticsAlias) != 4 {
-		t.Errorf("expected alias 'cms' to return 4 templates, got %d", len(analyticsAlias))
+	if len(storage) > 0 && storage[0].ID != "minio" {
+		t.Errorf("expected minio in storage, got %s", storage[0].ID)
 	}
 
-	// 3. Databases
+	// 3. Analytics
+	analytics := cat.ListTemplates("Analytics")
+	if len(analytics) != 5 {
+		t.Errorf("expected 5 Analytics templates, got %d", len(analytics))
+	}
+
+	// 4. CMS
+	cms := cat.ListTemplates("CMS")
+	if len(cms) != 3 {
+		t.Errorf("expected 3 CMS templates, got %d", len(cms))
+	}
+
+	// 5. Databases
 	databases := cat.ListTemplates("Databases")
-	if len(databases) != 6 {
-		t.Errorf("expected 6 Databases templates, got %d", len(databases))
+	if len(databases) != 8 {
+		t.Errorf("expected 8 Databases templates, got %d", len(databases))
 	}
 	databasesAlias := cat.ListTemplates("database")
-	if len(databasesAlias) != 6 {
-		t.Errorf("expected alias 'database' to return 6 templates, got %d", len(databasesAlias))
+	if len(databasesAlias) != 8 {
+		t.Errorf("expected alias 'database' to return 8 templates, got %d", len(databasesAlias))
 	}
 
-	// 4. All
+	// 6. Compound category: Productivity & DevTools
+	devTools := cat.ListTemplates("Productivity & DevTools")
+	if len(devTools) != 5 {
+		t.Errorf("expected 5 Productivity & DevTools templates, got %d", len(devTools))
+	}
+
+	// 7. Compound category: Analytics & CMS
+	analyticsCMS := cat.ListTemplates("Analytics & CMS")
+	if len(analyticsCMS) != 8 {
+		t.Errorf("expected 8 Analytics & CMS templates, got %d", len(analyticsCMS))
+	}
+
+	// 8. All
 	allEmpty := cat.ListTemplates("")
 	allWildcard := cat.ListTemplates("all")
-	if len(allEmpty) != len(allWildcard) || len(allEmpty) < 21 {
-		t.Errorf("expected all templates (len >= 21), got empty=%d, all=%d", len(allEmpty), len(allWildcard))
+	if len(allEmpty) != len(allWildcard) || len(allEmpty) < 22 {
+		t.Errorf("expected all templates (len >= 22), got empty=%d, all=%d", len(allEmpty), len(allWildcard))
 	}
 }
 

@@ -24,11 +24,12 @@ import {
 
 const CATEGORIES = [
   'All',
-  'DevTools',
+  'Databases',
+  'Storage',
   'Analytics',
   'CMS',
-  'Databases',
   'Productivity',
+  'DevTools',
 ] as const;
 
 // Helper to generate secure random strings
@@ -154,9 +155,9 @@ export function MarketplaceView() {
     if (!templates) return [];
     return templates.filter((t) => {
       if (selectedCategory !== 'All') {
-        const catLower = selectedCategory.toLowerCase();
-        const tplCatLower = t.category.toLowerCase();
-        if (!tplCatLower.includes(catLower)) {
+        const catLower = selectedCategory.toLowerCase().replace(/s$/, '');
+        const tplCatLower = t.category.toLowerCase().replace(/s$/, '');
+        if (!tplCatLower.includes(catLower) && !catLower.includes(tplCatLower)) {
           return false;
         }
       }

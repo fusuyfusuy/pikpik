@@ -55,8 +55,8 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 
 	query := `
 	INSERT INTO services (
-		id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		svc.ID, svc.ProjectID, svc.StageID, svc.Name, svc.Slug, svc.Type,
@@ -64,6 +64,7 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 		svc.RuntimeMode, svc.ComposeYAML,
 		svc.DeployTokenHash, svc.Status, svc.GitRepoURL, svc.GitBranch,
 		svc.BuildStrategy, svc.DockerfilePath, svc.PublishDirectory,
+		svc.LastCommitSHA, svc.LastCommitMessage, svc.LastCommitAuthor,
 		svc.CreatedAt, svc.UpdatedAt,
 	)
 	if err != nil {
@@ -77,7 +78,7 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 
 func (s *sqlServiceStore) GetByID(ctx context.Context, id string) (*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
 	FROM services WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, id)
@@ -86,7 +87,7 @@ func (s *sqlServiceStore) GetByID(ctx context.Context, id string) (*Service, err
 
 func (s *sqlServiceStore) GetBySlug(ctx context.Context, projectID, stageID, slug string) (*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
 	FROM services WHERE project_id = ? AND stage_id = ? AND slug = ?`
 
 	row := s.db.QueryRowContext(ctx, query, projectID, stageID, slug)
@@ -106,6 +107,9 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 	var buildStrategy sql.NullString
 	var dockerfilePath sql.NullString
 	var publishDirectory sql.NullString
+	var lastCommitSHA sql.NullString
+	var lastCommitMessage sql.NullString
+	var lastCommitAuthor sql.NullString
 
 	err := row.Scan(
 		&svc.ID, &svc.ProjectID, &svc.StageID, &svc.Name, &svc.Slug, &svc.Type,
@@ -113,6 +117,7 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 		&runtimeMode, &composeYAML,
 		&deployTokenHash, &svc.Status,
 		&gitRepoURL, &gitBranch, &buildStrategy, &dockerfilePath, &publishDirectory,
+		&lastCommitSHA, &lastCommitMessage, &lastCommitAuthor,
 		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err != nil {
@@ -137,6 +142,9 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 	svc.BuildStrategy = buildStrategy.String
 	svc.DockerfilePath = dockerfilePath.String
 	svc.PublishDirectory = publishDirectory.String
+	svc.LastCommitSHA = lastCommitSHA.String
+	svc.LastCommitMessage = lastCommitMessage.String
+	svc.LastCommitAuthor = lastCommitAuthor.String
 
 	if err := json.Unmarshal([]byte(domainsJSON), &svc.DomainNames); err != nil {
 		svc.DomainNames = []string{}
@@ -150,7 +158,7 @@ func (s *sqlServiceStore) scanService(row *sql.Row) (*Service, error) {
 
 func (s *sqlServiceStore) ListByStage(ctx context.Context, stageID string) ([]*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
 	FROM services WHERE stage_id = ? ORDER BY name ASC`
 
 	return s.queryServices(ctx, query, stageID)
@@ -158,7 +166,7 @@ func (s *sqlServiceStore) ListByStage(ctx context.Context, stageID string) ([]*S
 
 func (s *sqlServiceStore) ListByProject(ctx context.Context, projectID string) ([]*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
 	FROM services WHERE project_id = ? ORDER BY name ASC`
 
 	return s.queryServices(ctx, query, projectID)
@@ -166,7 +174,7 @@ func (s *sqlServiceStore) ListByProject(ctx context.Context, projectID string) (
 
 func (s *sqlServiceStore) ListAll(ctx context.Context) ([]*Service, error) {
 	query := `
-	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, created_at, updated_at
+	SELECT id, project_id, stage_id, name, slug, type, image, replicas, container_port, domain_names, tags, runtime_mode, compose_yaml, deploy_token_hash, status, git_repo_url, git_branch, build_strategy, dockerfile_path, publish_directory, last_commit_sha, last_commit_message, last_commit_author, created_at, updated_at
 	FROM services ORDER BY name ASC`
 
 	return s.queryServices(ctx, query)
@@ -193,6 +201,9 @@ func (s *sqlServiceStore) queryServices(ctx context.Context, query string, args 
 		var buildStrategy sql.NullString
 		var dockerfilePath sql.NullString
 		var publishDirectory sql.NullString
+		var lastCommitSHA sql.NullString
+		var lastCommitMessage sql.NullString
+		var lastCommitAuthor sql.NullString
 
 		err := rows.Scan(
 			&svc.ID, &svc.ProjectID, &svc.StageID, &svc.Name, &svc.Slug, &svc.Type,
@@ -200,6 +211,7 @@ func (s *sqlServiceStore) queryServices(ctx context.Context, query string, args 
 			&runtimeMode, &composeYAML,
 			&deployTokenHash, &svc.Status,
 			&gitRepoURL, &gitBranch, &buildStrategy, &dockerfilePath, &publishDirectory,
+			&lastCommitSHA, &lastCommitMessage, &lastCommitAuthor,
 			&svc.CreatedAt, &svc.UpdatedAt,
 		)
 		if err != nil {
@@ -221,6 +233,9 @@ func (s *sqlServiceStore) queryServices(ctx context.Context, query string, args 
 		svc.BuildStrategy = buildStrategy.String
 		svc.DockerfilePath = dockerfilePath.String
 		svc.PublishDirectory = publishDirectory.String
+		svc.LastCommitSHA = lastCommitSHA.String
+		svc.LastCommitMessage = lastCommitMessage.String
+		svc.LastCommitAuthor = lastCommitAuthor.String
 
 		if err := json.Unmarshal([]byte(domainsJSON), &svc.DomainNames); err != nil {
 			svc.DomainNames = []string{}
@@ -240,6 +255,23 @@ func (s *sqlServiceStore) UpdateStatus(ctx context.Context, id string, status st
 	res, err := s.db.ExecContext(ctx, query, status, now, id)
 	if err != nil {
 		return fmt.Errorf("store: failed to update service status: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqlServiceStore) UpdateCommitMetadata(ctx context.Context, id string, sha, message, author string) error {
+	now := time.Now().UTC()
+	query := `UPDATE services SET last_commit_sha = ?, last_commit_message = ?, last_commit_author = ?, updated_at = ? WHERE id = ?`
+	res, err := s.db.ExecContext(ctx, query, sha, message, author, now, id)
+	if err != nil {
+		return fmt.Errorf("store: failed to update service commit metadata: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
@@ -275,6 +307,7 @@ func (s *sqlServiceStore) Update(ctx context.Context, svc *Service) error {
 		project_id = ?, stage_id = ?, name = ?, slug = ?, type = ?, image = ?, replicas = ?,
 		container_port = ?, domain_names = ?, tags = ?, runtime_mode = ?, compose_yaml = ?, deploy_token_hash = ?, status = ?,
 		git_repo_url = ?, git_branch = ?, build_strategy = ?, dockerfile_path = ?, publish_directory = ?,
+		last_commit_sha = ?, last_commit_message = ?, last_commit_author = ?,
 		updated_at = ?
 	WHERE id = ?`
 
@@ -282,6 +315,7 @@ func (s *sqlServiceStore) Update(ctx context.Context, svc *Service) error {
 		svc.ProjectID, svc.StageID, svc.Name, svc.Slug, svc.Type, svc.Image, svc.Replicas,
 		svc.ContainerPort, string(domainsJSON), string(tagsJSON), svc.RuntimeMode, svc.ComposeYAML, svc.DeployTokenHash, svc.Status,
 		svc.GitRepoURL, svc.GitBranch, svc.BuildStrategy, svc.DockerfilePath, svc.PublishDirectory,
+		svc.LastCommitSHA, svc.LastCommitMessage, svc.LastCommitAuthor,
 		svc.UpdatedAt, svc.ID,
 	)
 	if err != nil {

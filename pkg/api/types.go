@@ -431,6 +431,24 @@ type CaddyDiagnosticsDTO struct {
 	Config       json.RawMessage `json:"config"`
 }
 
+// Traffic Split Models
+type UpstreamWeight struct {
+	Upstream string `json:"upstream"`
+	Weight   int    `json:"weight"`
+}
+
+type SetTrafficSplitRequest struct {
+	Splits    []UpstreamWeight `json:"splits,omitempty"`
+	Upstreams []UpstreamWeight `json:"upstreams,omitempty"`
+	Reset     bool             `json:"reset,omitempty"`
+}
+
+type TrafficSplitResponse struct {
+	AppID  string           `json:"app_id"`
+	Domain string           `json:"domain,omitempty"`
+	Splits []UpstreamWeight `json:"splits"`
+}
+
 // Registry Models
 type RegistryStatusResponse struct {
 	IsRunning     bool      `json:"is_running"`

@@ -380,3 +380,239 @@ func TestBuildEndpoints_ListGetRebuildStream(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEndpoints_GitHubWebhook_BranchGating(t *testing.T) {
+	st, err := store.Open("file:" + store.NewID("db") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	_ = st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
+	_ = st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
+	_ = st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
+	if err := st.Services().Create(ctx, &store.Service{
+		ID:        "app_prod_svc",
+		ProjectID: "prj_default",
+		StageID:   "stg_default",
+		Name:      "my-gated-app",
+		Slug:      "my-gated-app",
+		GitBranch: "production",
+	}); err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	secret := "github-gating-test-secret"
+	_ = os.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	defer os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+
+	ctrl := api.NewDefaultController(api.ControllerDependencies{
+		Store: st,
+	})
+	gw := api.NewAPIGatewayWithOptions(api.APIGatewayOptions{
+		Controller: ctrl,
+		Store:      st,
+	})
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	sendGitHubPush := func(payload string) *http.Response {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(payload))
+		sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/github", strings.NewReader(payload))
+		req.Header.Set("X-Hub-Signature-256", sig)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("push request failed: %v", err)
+		}
+		return resp
+	}
+
+	// 1. Branch Mismatch: push to "main" when service requires "production" -> Ignored
+	mismatchPayload := `{
+		"ref": "refs/heads/main",
+		"after": "111111111111",
+		"head_commit": {
+			"id": "111111111111",
+			"message": "feat: mismatch branch commit",
+			"author": {"name": "Junior Dev", "email": "junior@pikpik.dev"}
+		},
+		"repository": {
+			"name": "my-gated-app",
+			"full_name": "fusuycorp/my-gated-app",
+			"clone_url": "https://github.com/fusuycorp/my-gated-app.git"
+		}
+	}`
+	resp1 := sendGitHubPush(mismatchPayload)
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for branch mismatch, got %d", resp1.StatusCode)
+	}
+	var res1 map[string]string
+	_ = json.NewDecoder(resp1.Body).Decode(&res1)
+	if res1["status"] != "ignored" || res1["reason"] != "branch mismatch" {
+		t.Errorf("expected status ignored / reason branch mismatch, got: %+v", res1)
+	}
+
+	// Verify no builds were created for the service
+	builds1, _ := st.Builds().ListByService(ctx, "app_prod_svc", 10)
+	if len(builds1) != 0 {
+		t.Errorf("expected 0 builds after mismatch, got %d", len(builds1))
+	}
+
+	// 2. Branch Match: push to "production" -> Accepted and builds created with commit metadata
+	matchPayload := `{
+		"ref": "refs/heads/production",
+		"after": "222222222222",
+		"head_commit": {
+			"id": "222222222222",
+			"message": "release: v1.0.0 to prod",
+			"author": {"name": "Release Lead", "email": "lead@pikpik.dev"}
+		},
+		"repository": {
+			"name": "my-gated-app",
+			"full_name": "fusuycorp/my-gated-app",
+			"clone_url": "https://github.com/fusuycorp/my-gated-app.git"
+		}
+	}`
+	resp2 := sendGitHubPush(matchPayload)
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for branch match, got %d", resp2.StatusCode)
+	}
+	var res2 api.Response[store.Build]
+	_ = json.NewDecoder(resp2.Body).Decode(&res2)
+	if res2.Data.CommitSHA != "222222222222" {
+		t.Errorf("expected commit SHA 222222222222, got %s", res2.Data.CommitSHA)
+	}
+	if res2.Data.CommitMessage != "release: v1.0.0 to prod" {
+		t.Errorf("expected commit message 'release: v1.0.0 to prod', got %s", res2.Data.CommitMessage)
+	}
+	if res2.Data.Author != "Release Lead" {
+		t.Errorf("expected author 'Release Lead', got %s", res2.Data.Author)
+	}
+
+	// Verify service record has updated commit metadata
+	svcAfter, err := st.Services().GetByID(ctx, "app_prod_svc")
+	if err != nil {
+		t.Fatalf("failed to fetch service after push: %v", err)
+	}
+	if svcAfter.LastCommitSHA != "222222222222" {
+		t.Errorf("expected service LastCommitSHA '222222222222', got %q", svcAfter.LastCommitSHA)
+	}
+	if svcAfter.LastCommitMessage != "release: v1.0.0 to prod" {
+		t.Errorf("expected service LastCommitMessage 'release: v1.0.0 to prod', got %q", svcAfter.LastCommitMessage)
+	}
+	if svcAfter.LastCommitAuthor != "Release Lead" {
+		t.Errorf("expected service LastCommitAuthor 'Release Lead', got %q", svcAfter.LastCommitAuthor)
+	}
+}
+
+func TestBuildEndpoints_GenericGitWebhook_BranchGating(t *testing.T) {
+	st, err := store.Open("file:" + store.NewID("db") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	_ = st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
+	_ = st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
+	_ = st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
+	if err := st.Services().Create(ctx, &store.Service{
+		ID:              "app_generic_gated",
+		ProjectID:       "prj_default",
+		StageID:         "stg_default",
+		Name:            "generic-gated",
+		Slug:            "generic-gated",
+		GitBranch:       "main",
+		DeployTokenHash: auth.HashToken("pik_ndg_generic_token"),
+	}); err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	ctrl := api.NewDefaultController(api.ControllerDependencies{
+		Store: st,
+	})
+	gw := api.NewAPIGatewayWithOptions(api.APIGatewayOptions{
+		Controller: ctrl,
+		Store:      st,
+	})
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	// 1. Branch Mismatch: push to "feat/payments" -> Ignored (200 OK)
+	mismatchPayload := `{
+		"ref": "refs/heads/feat/payments",
+		"commit_sha": "555555555555",
+		"commit_message": "feat: payments stripe integration",
+		"author": "Payments Dev",
+		"clone_url": "https://git.internal/app.git"
+	}`
+	req1, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/git/app_generic_gated?token=pik_ndg_generic_token", strings.NewReader(mismatchPayload))
+	req1.Header.Set("Content-Type", "application/json")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for generic branch mismatch, got %d", resp1.StatusCode)
+	}
+	var res1 map[string]string
+	_ = json.NewDecoder(resp1.Body).Decode(&res1)
+	if res1["status"] != "ignored" || res1["reason"] != "branch mismatch" {
+		t.Errorf("expected ignored status, got %+v", res1)
+	}
+
+	// 2. Branch Match: push to "refs/heads/main" -> Accepted (202 Accepted)
+	matchPayload := `{
+		"ref": "refs/heads/main",
+		"commit_sha": "666666666666",
+		"commit_message": "chore: merge payments to main",
+		"author": "Principal Eng",
+		"clone_url": "https://git.internal/app.git"
+	}`
+	req2, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/git/app_generic_gated?token=pik_ndg_generic_token", strings.NewReader(matchPayload))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted for generic branch match, got %d", resp2.StatusCode)
+	}
+	var res2 api.Response[store.Build]
+	_ = json.NewDecoder(resp2.Body).Decode(&res2)
+	if res2.Data.CommitSHA != "666666666666" {
+		t.Errorf("expected commit SHA 666666666666, got %s", res2.Data.CommitSHA)
+	}
+	if res2.Data.CommitMessage != "chore: merge payments to main" {
+		t.Errorf("expected commit message, got %s", res2.Data.CommitMessage)
+	}
+	if res2.Data.Author != "Principal Eng" {
+		t.Errorf("expected author, got %s", res2.Data.Author)
+	}
+
+	// Verify service metadata updated
+	svcAfter, _ := st.Services().GetByID(ctx, "app_generic_gated")
+	if svcAfter.LastCommitSHA != "666666666666" {
+		t.Errorf("expected service LastCommitSHA '666666666666', got %q", svcAfter.LastCommitSHA)
+	}
+	if svcAfter.LastCommitMessage != "chore: merge payments to main" {
+		t.Errorf("expected service LastCommitMessage 'chore: merge payments to main', got %q", svcAfter.LastCommitMessage)
+	}
+	if svcAfter.LastCommitAuthor != "Principal Eng" {
+		t.Errorf("expected service LastCommitAuthor 'Principal Eng', got %q", svcAfter.LastCommitAuthor)
+	}
+}
+

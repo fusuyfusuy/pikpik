@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"runtime"
@@ -133,6 +134,8 @@ type Controller interface {
 	UploadCertificate(ctx context.Context, req *CertificateUploadRequest) error
 	ReconcileIngress(ctx context.Context) error
 	GetCaddyConfig(ctx context.Context) (*CaddyDiagnosticsDTO, error)
+	GetAppTraffic(ctx context.Context, id string) (*TrafficSplitResponse, error)
+	SetAppTraffic(ctx context.Context, id string, req *SetTrafficSplitRequest) (*TrafficSplitResponse, error)
 
 	// Registry
 	GetRegistryStatus(ctx context.Context) (*RegistryStatusResponse, error)
@@ -202,9 +205,10 @@ type DefaultController struct {
 	domains      map[string]*DomainBinding
 	builds       map[string]*store.Build
 	schedules    map[string]*store.BackupSchedule
-	networks     map[string]*NetworkDTO
-	volumes      map[string]*VolumeDTO
-	machines     map[string]*MachineDTO
+	networks      map[string]*NetworkDTO
+	volumes       map[string]*VolumeDTO
+	machines      map[string]*MachineDTO
+	trafficSplits map[string]*TrafficSplitResponse
 }
 
 // NewDefaultController constructs a new DefaultController.
@@ -238,6 +242,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		networks:       make(map[string]*NetworkDTO),
 		volumes:        make(map[string]*VolumeDTO),
 		machines:       make(map[string]*MachineDTO),
+		trafficSplits:  make(map[string]*TrafficSplitResponse),
 	}
 }
 
@@ -2870,6 +2875,186 @@ func (c *DefaultController) ReconcileIngress(ctx context.Context) error {
 	return nil
 }
 
+func (c *DefaultController) GetAppTraffic(ctx context.Context, id string) (*TrafficSplitResponse, error) {
+	app, err := c.GetApp(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.RLock()
+	if cached, ok := c.trafficSplits[app.ID]; ok {
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
+
+	// Determine domain
+	domain := ""
+	if len(app.Domains) > 0 && app.Domains[0] != "" {
+		domain = app.Domains[0]
+	}
+	if domain == "" {
+		c.mu.RLock()
+		for _, d := range c.domains {
+			if d.AppID == app.ID {
+				domain = d.Domain
+				break
+			}
+		}
+		c.mu.RUnlock()
+	}
+	if domain == "" {
+		domain = app.Name + ".pikpik.local"
+	}
+
+	// If ingress manager has dynamic split loaded, retrieve it
+	if c.ingress != nil {
+		if splitCfg, err := c.ingress.GetTrafficSplit(ctx, domain); err == nil && splitCfg != nil && len(splitCfg.Splits) > 0 {
+			var splits []UpstreamWeight
+			for _, s := range splitCfg.Splits {
+				splits = append(splits, UpstreamWeight{
+					Upstream: s.Upstream,
+					Weight:   s.Weight,
+				})
+			}
+			res := &TrafficSplitResponse{
+				AppID:  app.ID,
+				Domain: domain,
+				Splits: splits,
+			}
+			return res, nil
+		}
+	}
+
+	port := app.ContainerPort
+	if port <= 0 {
+		port = 80
+	}
+	defaultUpstream := fmt.Sprintf("%s:%d", app.Name, port)
+	return &TrafficSplitResponse{
+		AppID:  app.ID,
+		Domain: domain,
+		Splits: []UpstreamWeight{
+			{Upstream: defaultUpstream, Weight: 100},
+		},
+	}, nil
+}
+
+func (c *DefaultController) SetAppTraffic(ctx context.Context, id string, req *SetTrafficSplitRequest) (*TrafficSplitResponse, error) {
+	if req == nil {
+		return nil, errors.New("request payload cannot be empty")
+	}
+
+	app, err := c.GetApp(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine domain
+	domain := ""
+	if len(app.Domains) > 0 && app.Domains[0] != "" {
+		domain = app.Domains[0]
+	}
+	if domain == "" {
+		c.mu.RLock()
+		for _, d := range c.domains {
+			if d.AppID == app.ID {
+				domain = d.Domain
+				break
+			}
+		}
+		c.mu.RUnlock()
+	}
+	if domain == "" {
+		domain = app.Name + ".pikpik.local"
+	}
+
+	port := app.ContainerPort
+	if port <= 0 {
+		port = 80
+	}
+	defaultUpstream := fmt.Sprintf("%s:%d", app.Name, port)
+
+	// Check if this is a reset request
+	if req.Reset || (len(req.Splits) == 0 && len(req.Upstreams) == 0) {
+		res := &TrafficSplitResponse{
+			AppID:  app.ID,
+			Domain: domain,
+			Splits: []UpstreamWeight{
+				{Upstream: defaultUpstream, Weight: 100},
+			},
+		}
+
+		c.mu.Lock()
+		c.trafficSplits[app.ID] = res
+		c.mu.Unlock()
+
+		if c.ingress != nil {
+			_ = c.ingress.RemoveTrafficSplit(ctx, domain)
+		}
+
+		c.recordAudit(ctx, "app:traffic:reset", "app", app.ID, fmt.Sprintf(`{"domain":%q,"upstream":%q}`, domain, defaultUpstream))
+		return res, nil
+	}
+
+	rawSplits := req.Splits
+	if len(rawSplits) == 0 {
+		rawSplits = req.Upstreams
+	}
+
+	var splits []UpstreamWeight
+	totalWeight := 0
+	for _, s := range rawSplits {
+		u := strings.TrimSpace(s.Upstream)
+		if u == "" {
+			return nil, errors.New("upstream dial target cannot be empty")
+		}
+		if s.Weight < 0 {
+			return nil, fmt.Errorf("upstream weight cannot be negative: %d", s.Weight)
+		}
+		splits = append(splits, UpstreamWeight{
+			Upstream: u,
+			Weight:   s.Weight,
+		})
+		totalWeight += s.Weight
+	}
+
+	if totalWeight <= 0 {
+		return nil, errors.New("sum of upstream weights must be greater than 0")
+	}
+
+	if c.ingress != nil {
+		var ingressSplits []ingress.UpstreamWeight
+		for _, s := range splits {
+			ingressSplits = append(ingressSplits, ingress.UpstreamWeight{
+				Upstream: s.Upstream,
+				Weight:   s.Weight,
+			})
+		}
+		splitCfg := ingress.TrafficSplitConfig{
+			Domain: domain,
+			AppID:  app.ID,
+			Splits: ingressSplits,
+		}
+		if err := c.ingress.SetTrafficSplit(ctx, domain, splitCfg); err != nil {
+			return nil, err
+		}
+	}
+
+	res := &TrafficSplitResponse{
+		AppID:  app.ID,
+		Domain: domain,
+		Splits: splits,
+	}
+
+	c.mu.Lock()
+	c.trafficSplits[app.ID] = res
+	c.mu.Unlock()
+
+	c.recordAudit(ctx, "app:traffic:update", "app", app.ID, fmt.Sprintf(`{"domain":%q,"splits":%d}`, domain, len(splits)))
+	return res, nil
+}
+
 func redactSensitiveJSON(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
@@ -3174,33 +3359,52 @@ func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret stri
 		return nil, err
 	}
 
+	repoParts := strings.Split(event.Repository, "/")
+	bareRepo := repoParts[len(repoParts)-1]
 	appID := event.Repository
+	var svc *store.Service
 	if c.st != nil {
 		if db := c.st.DB(); db != nil {
-			row := db.QueryRowContext(ctx, `SELECT id FROM services WHERE slug = ? OR name = ? LIMIT 1`, strings.ToLower(event.Repository), event.Repository)
+			row := db.QueryRowContext(ctx, `SELECT id FROM services WHERE slug = ? OR name = ? OR slug = ? OR name = ? LIMIT 1`, strings.ToLower(event.Repository), event.Repository, strings.ToLower(bareRepo), bareRepo)
 			var foundID string
 			if scanErr := row.Scan(&foundID); scanErr == nil && foundID != "" {
 				appID = foundID
-			} else {
-				// Ensure default hierarchy and create service record if missing for foreign key integrity
-				_ = c.st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
-				_ = c.st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
-				_ = c.st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
-				_ = c.st.Services().Create(ctx, &store.Service{
-					ID:        appID,
-					ProjectID: "prj_default",
-					StageID:   "stg_default",
-					Name:      event.Repository,
-					Slug:      strings.ToLower(event.Repository),
-					Type:      "app",
-					Image:     "pikpik/app:latest",
-					Status:    "running",
-				})
 			}
+		}
+		var err error
+		svc, err = c.st.Services().GetByID(ctx, appID)
+		if (err != nil || svc == nil) && appID != "" {
+			// Ensure default hierarchy and create service record if missing for foreign key integrity
+			_ = c.st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
+			_ = c.st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
+			_ = c.st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
+			svc = &store.Service{
+				ID:        appID,
+				ProjectID: "prj_default",
+				StageID:   "stg_default",
+				Name:      event.Repository,
+				Slug:      strings.ToLower(event.Repository),
+				Type:      "app",
+				Image:     "pikpik/app:latest",
+				Status:    "running",
+			}
+			_ = c.st.Services().Create(ctx, svc)
 		}
 	}
 	if appID == "" {
 		appID = "app_default"
+	}
+
+	// Branch gating: If service has a configured GitBranch, verify incoming branch matches.
+	if svc != nil && strings.TrimSpace(svc.GitBranch) != "" {
+		configuredBranch := strings.TrimPrefix(strings.TrimSpace(svc.GitBranch), "refs/heads/")
+		configuredBranch = strings.TrimPrefix(configuredBranch, "refs/tags/")
+		incomingBranch := strings.TrimPrefix(strings.TrimSpace(event.Branch), "refs/heads/")
+		incomingBranch = strings.TrimPrefix(incomingBranch, "refs/tags/")
+		if incomingBranch != configuredBranch {
+			log.Printf("[webhook] GitHub push branch %q does not match configured service branch %q for app %s, ignoring", event.Branch, svc.GitBranch, appID)
+			return nil, nil
+		}
 	}
 
 	newID := store.NewID("bld")
@@ -3240,10 +3444,13 @@ func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret stri
 	c.builds[newID] = bld
 	c.mu.Unlock()
 
-	if c.st != nil && c.buildMgr == nil {
-		if err := c.st.Builds().Create(ctx, bld); err != nil {
-			delete(c.builds, newID)
-			return nil, fmt.Errorf("failed to persist build: %w", err)
+	if c.st != nil {
+		_ = c.st.Services().UpdateCommitMetadata(ctx, appID, event.CommitSHA, event.CommitMessage, event.Author)
+		if c.buildMgr == nil {
+			if err := c.st.Builds().Create(ctx, bld); err != nil {
+				delete(c.builds, newID)
+				return nil, fmt.Errorf("failed to persist build: %w", err)
+			}
 		}
 	}
 
@@ -3255,8 +3462,10 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 		return nil, errors.New("app_id is required")
 	}
 
+	var svc *store.Service
 	if c.st != nil {
-		svc, err := c.st.Services().GetByID(ctx, appID)
+		var err error
+		svc, err = c.st.Services().GetByID(ctx, appID)
 		if err != nil || svc == nil || svc.DeployTokenHash == "" {
 			return nil, errors.New("unauthorized git webhook token")
 		}
@@ -3270,6 +3479,18 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 	event, err := git.ParseGenericGitPush(r)
 	if err != nil {
 		return nil, err
+	}
+
+	// Branch gating: If service has a configured GitBranch, verify incoming branch matches.
+	if svc != nil && strings.TrimSpace(svc.GitBranch) != "" {
+		configuredBranch := strings.TrimPrefix(strings.TrimSpace(svc.GitBranch), "refs/heads/")
+		configuredBranch = strings.TrimPrefix(configuredBranch, "refs/tags/")
+		incomingBranch := strings.TrimPrefix(strings.TrimSpace(event.Branch), "refs/heads/")
+		incomingBranch = strings.TrimPrefix(incomingBranch, "refs/tags/")
+		if incomingBranch != configuredBranch {
+			log.Printf("[webhook] Generic git push branch %q does not match configured service branch %q for app %s, ignoring", event.Branch, svc.GitBranch, appID)
+			return nil, nil
+		}
 	}
 
 	newID := store.NewID("bld")
@@ -3308,10 +3529,13 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 	c.builds[newID] = bld
 	c.mu.Unlock()
 
-	if c.st != nil && c.buildMgr == nil {
-		if err := c.st.Builds().Create(ctx, bld); err != nil {
-			delete(c.builds, newID)
-			return nil, fmt.Errorf("failed to persist build: %w", err)
+	if c.st != nil {
+		_ = c.st.Services().UpdateCommitMetadata(ctx, appID, event.CommitSHA, event.CommitMessage, event.Author)
+		if c.buildMgr == nil {
+			if err := c.st.Builds().Create(ctx, bld); err != nil {
+				delete(c.builds, newID)
+				return nil, fmt.Errorf("failed to persist build: %w", err)
+			}
 		}
 	}
 

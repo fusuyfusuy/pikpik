@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fusuycorp/pikpik/pkg/api"
+	"github.com/fusuycorp/pikpik/pkg/templates"
 )
 
 // 1. Test CLI Atomic Config Persistence and Permissions
@@ -324,6 +325,35 @@ func TestAPIClient_Endpoints(t *testing.T) {
 	if err := client.DeleteBackupSchedule(context.Background(), sch.ID); err != nil {
 		t.Fatalf("client delete backup schedule failed: %v", err)
 	}
+
+	// 14. Template Methods
+	tpls, err := client.ListTemplates(context.Background(), "", "")
+	if err != nil || len(tpls) < 22 {
+		t.Fatalf("client list templates failed: %v (found %d)", err, len(tpls))
+	}
+
+	minioTpl, err := client.GetTemplate(context.Background(), "minio")
+	if err != nil || minioTpl.ID != "minio" {
+		t.Fatalf("client get minio template failed: %v", err)
+	}
+	if minioTpl.Category != "Storage" {
+		t.Errorf("expected category Storage, got %s", minioTpl.Category)
+	}
+
+	kumaTpl, err := client.GetTemplate(context.Background(), "uptime-kuma")
+	if err != nil || kumaTpl.ID != "uptime-kuma" {
+		t.Fatalf("client get uptime-kuma template failed: %v", err)
+	}
+	if kumaTpl.DefaultPort != 3001 {
+		t.Errorf("expected port 3001, got %d", kumaTpl.DefaultPort)
+	}
+
+	deployedPb, err := client.DeployTemplate(context.Background(), "pocketbase", templates.DeployTemplateRequest{
+		Name: "cli-test-pb",
+	})
+	if err != nil || deployedPb.TemplateID != "pocketbase" {
+		t.Fatalf("client deploy template failed: %v", err)
+	}
 }
 
 func TestFormatBytesInt(t *testing.T) {
@@ -383,4 +413,99 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// 5. Test CLI App Traffic and Canary Management
+func TestAPIClient_AppTraffic(t *testing.T) {
+	ctrl := api.NewDefaultController(api.ControllerDependencies{})
+	gw := api.NewAPIGateway(ctrl, nil, nil)
+	server := httptest.NewServer(gw)
+	defer server.Close()
+
+	client := NewAPIClient(Context{
+		ServerURL:      server.URL,
+		Token:          "pik_live_testclienttoken",
+		TimeoutSeconds: 5,
+	})
+
+	ctx := context.Background()
+	app, err := client.CreateApp(ctx, api.CreateAppRequest{
+		Name:     "traffic-cli-app",
+		Image:    "web:v1",
+		Replicas: 1,
+	})
+	if err != nil {
+		t.Fatalf("failed to create test app: %v", err)
+	}
+
+	// 1. Get default traffic
+	traffic, err := client.GetAppTraffic(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("failed to get default app traffic: %v", err)
+	}
+	if len(traffic.Splits) != 1 || traffic.Splits[0].Weight != 100 {
+		t.Errorf("expected default 100%% split, got %+v", traffic.Splits)
+	}
+
+	// 2. Set 90/10 Canary Split
+	updated, err := client.SetAppTraffic(ctx, app.ID, api.SetTrafficSplitRequest{
+		Splits: []api.UpstreamWeight{
+			{Upstream: "web-v1:8080", Weight: 90},
+			{Upstream: "web-v2:8080", Weight: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to set 90/10 traffic split: %v", err)
+	}
+	if len(updated.Splits) != 2 || updated.Splits[0].Weight != 90 || updated.Splits[1].Weight != 10 {
+		t.Errorf("expected 90/10 split, got %+v", updated.Splits)
+	}
+
+	// 3. Reset traffic to 100% stable
+	reset, err := client.SetAppTraffic(ctx, app.ID, api.SetTrafficSplitRequest{
+		Reset: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to reset app traffic: %v", err)
+	}
+	if len(reset.Splits) != 1 || reset.Splits[0].Weight != 100 {
+		t.Errorf("expected reset to 100%% split, got %+v", reset.Splits)
+	}
+}
+
+// 6. Test parseUpstreamWeight helper
+func TestParseUpstreamWeight(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantTarget  string
+		wantWeight  int
+		expectError bool
+	}{
+		{"blue:3000:90", "blue:3000", 90, false},
+		{"canary:10", "canary", 10, false},
+		{"blue:3000=90", "blue:3000", 90, false},
+		{"canary=10", "canary", 10, false},
+		{"legacy:0", "legacy", 0, false},
+		{"app:100", "app", 100, false},
+		{"app:-5", "", 0, true},
+		{"", "", 0, true},
+		{"=50", "", 0, true},
+		{"invalid", "", 0, true},
+	}
+
+	for _, tc := range tests {
+		target, weight, err := parseUpstreamWeight(tc.input)
+		if tc.expectError {
+			if err == nil {
+				t.Errorf("parseUpstreamWeight(%q) expected error, got nil", tc.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("parseUpstreamWeight(%q) unexpected error: %v", tc.input, err)
+			}
+			if target != tc.wantTarget || weight != tc.wantWeight {
+				t.Errorf("parseUpstreamWeight(%q) = (%q, %d), want (%q, %d)", tc.input, target, weight, tc.wantTarget, tc.wantWeight)
+			}
+		}
+	}
 }

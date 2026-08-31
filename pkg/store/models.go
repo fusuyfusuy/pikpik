@@ -101,6 +101,9 @@ type Service struct {
 	BuildStrategy    string    `json:"build_strategy,omitempty"`
 	DockerfilePath   string    `json:"dockerfile_path,omitempty"`
 	PublishDirectory string    `json:"publish_directory,omitempty"`
+	LastCommitSHA     string    `json:"last_commit_sha,omitempty"`
+	LastCommitMessage string    `json:"last_commit_message,omitempty"`
+	LastCommitAuthor  string    `json:"last_commit_author,omitempty"`
 	Tags             []string  `json:"tags"`
 	RuntimeMode      string    `json:"runtime_mode"` // "swarm" or "standalone"
 	ComposeYAML      string    `json:"compose_yaml,omitempty"`
@@ -137,15 +140,18 @@ type Volume struct {
 
 // Deployment represents a rollout execution for a service.
 type Deployment struct {
-	ID          string     `json:"id"`
-	ServiceID   string     `json:"service_id"`
-	ImageTag    string     `json:"image_tag"`
-	CommitSHA   string     `json:"commit_sha,omitempty"`
-	Status      string     `json:"status"` // "queued", "preparing", "starting", "healthy", "failed", "rolled_back"
-	LogsSummary string     `json:"logs_summary,omitempty"`
-	InitiatedBy string     `json:"initiated_by"` // user_id or 'api_token:<prefix>' or 'webhook'
-	StartedAt   time.Time  `json:"started_at"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	ID                string     `json:"id"`
+	ServiceID         string     `json:"service_id"`
+	ImageTag          string     `json:"image_tag"`
+	CommitSHA         string     `json:"commit_sha,omitempty"`
+	LastCommitSHA     string     `json:"last_commit_sha,omitempty"`
+	LastCommitMessage string     `json:"last_commit_message,omitempty"`
+	LastCommitAuthor  string     `json:"last_commit_author,omitempty"`
+	Status            string     `json:"status"` // "queued", "preparing", "starting", "healthy", "failed", "rolled_back"
+	LogsSummary       string     `json:"logs_summary,omitempty"`
+	InitiatedBy       string     `json:"initiated_by"` // user_id or 'api_token:<prefix>' or 'webhook'
+	StartedAt         time.Time  `json:"started_at"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty"`
 }
 
 // BackupConfig represents continuous or scheduled backup settings for a database service.

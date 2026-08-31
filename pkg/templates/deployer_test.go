@@ -135,8 +135,8 @@ func TestDeployer_DeployPocketBase_WithStore(t *testing.T) {
 	if err != nil || len(vols) != 1 {
 		t.Fatalf("expected 1 volume in store, got %d: %v", len(vols), err)
 	}
-	if vols[0].MountPath != "/pb/pb_data" {
-		t.Errorf("expected mount path '/pb/pb_data', got '%s'", vols[0].MountPath)
+	if vols[0].MountPath != "/pb_data" {
+		t.Errorf("expected mount path '/pb_data', got '%s'", vols[0].MountPath)
 	}
 	if vols[0].HostPath != expectedVolPath {
 		t.Errorf("expected host path '%s', got '%s'", expectedVolPath, vols[0].HostPath)
@@ -445,6 +445,355 @@ func TestDeployer_DeployWithVaultEncryption(t *testing.T) {
 	}
 	if !foundKey {
 		t.Errorf("expected POCKETBASE_ENCRYPTION_KEY in store env vars")
+	}
+}
+
+func TestDeployer_DeployMinIO_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "minio_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-minio-storage",
+	}
+
+	resp, err := deployer.Deploy(ctx, "minio", req)
+	if err != nil {
+		t.Fatalf("deploy minio failed: %v", err)
+	}
+
+	if resp.TemplateID != "minio" {
+		t.Errorf("expected template 'minio', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryStorage {
+		t.Errorf("expected category '%s', got '%s'", CategoryStorage, resp.Category)
+	}
+	if resp.Status != "running" {
+		t.Errorf("expected status 'running', got '%s'", resp.Status)
+	}
+	if len(resp.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(resp.Volumes))
+	}
+	if resp.ResolvedVariables["MINIO_ROOT_USER"] != "minioadmin" {
+		t.Errorf("expected MINIO_ROOT_USER 'minioadmin', got '%s'", resp.ResolvedVariables["MINIO_ROOT_USER"])
+	}
+	if resp.ResolvedVariables["MINIO_ROOT_PASSWORD"] != "[REDACTED]" {
+		t.Errorf("expected MINIO_ROOT_PASSWORD to be redacted, got '%s'", resp.ResolvedVariables["MINIO_ROOT_PASSWORD"])
+	}
+
+	// Verify store
+	svc, err := st.Services().GetByID(ctx, resp.AppID)
+	if err != nil || svc == nil {
+		t.Fatalf("service not found in store: %v", err)
+	}
+	if svc.ContainerPort != 9000 {
+		t.Errorf("expected default container port 9000, got %d", svc.ContainerPort)
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume in store, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/data" {
+		t.Errorf("expected volume mount path '/data', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_DeployMeilisearch_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "meili_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-meilisearch-db",
+	}
+
+	resp, err := deployer.Deploy(ctx, "meilisearch", req)
+	if err != nil {
+		t.Fatalf("deploy meilisearch failed: %v", err)
+	}
+
+	if resp.TemplateID != "meilisearch" {
+		t.Errorf("expected template 'meilisearch', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryDatabase {
+		t.Errorf("expected category '%s', got '%s'", CategoryDatabase, resp.Category)
+	}
+	if resp.ResolvedVariables["MEILI_ENV"] != "production" {
+		t.Errorf("expected MEILI_ENV 'production', got '%s'", resp.ResolvedVariables["MEILI_ENV"])
+	}
+	if resp.ResolvedVariables["MEILI_MASTER_KEY"] != "[REDACTED]" {
+		t.Errorf("expected redacted master key, got '%s'", resp.ResolvedVariables["MEILI_MASTER_KEY"])
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume in store, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/meili_data" {
+		t.Errorf("expected mount path '/meili_data', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_DeployVaultwarden_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "vaultwarden_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-vaultwarden",
+	}
+
+	resp, err := deployer.Deploy(ctx, "vaultwarden", req)
+	if err != nil {
+		t.Fatalf("deploy vaultwarden failed: %v", err)
+	}
+
+	if resp.TemplateID != "vaultwarden" {
+		t.Errorf("expected template 'vaultwarden', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryProductivity {
+		t.Errorf("expected category '%s', got '%s'", CategoryProductivity, resp.Category)
+	}
+	if resp.ResolvedVariables["SIGNUPS_ALLOWED"] != "true" {
+		t.Errorf("expected SIGNUPS_ALLOWED 'true', got '%s'", resp.ResolvedVariables["SIGNUPS_ALLOWED"])
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/data" {
+		t.Errorf("expected mount path '/data', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_DeployGhost_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "ghost_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-ghost-blog",
+	}
+
+	resp, err := deployer.Deploy(ctx, "ghost", req)
+	if err != nil {
+		t.Fatalf("deploy ghost failed: %v", err)
+	}
+
+	if resp.TemplateID != "ghost" {
+		t.Errorf("expected template 'ghost', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryCMS {
+		t.Errorf("expected category '%s', got '%s'", CategoryCMS, resp.Category)
+	}
+	if resp.ResolvedVariables["url"] != "http://localhost:2368" {
+		t.Errorf("expected url 'http://localhost:2368', got '%s'", resp.ResolvedVariables["url"])
+	}
+	if resp.ResolvedVariables["NODE_ENV"] != "production" {
+		t.Errorf("expected NODE_ENV 'production', got '%s'", resp.ResolvedVariables["NODE_ENV"])
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume in store, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/var/lib/ghost/content" {
+		t.Errorf("expected mount path '/var/lib/ghost/content', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_DeployUptimeKuma_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "kuma_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-uptime-kuma",
+	}
+
+	resp, err := deployer.Deploy(ctx, "uptime-kuma", req)
+	if err != nil {
+		t.Fatalf("deploy uptime-kuma failed: %v", err)
+	}
+
+	if resp.TemplateID != "uptime-kuma" {
+		t.Errorf("expected template 'uptime-kuma', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryProductivity {
+		t.Errorf("expected category '%s', got '%s'", CategoryProductivity, resp.Category)
+	}
+	if resp.ResolvedVariables["UPTIME_KUMA_PORT"] != "3001" {
+		t.Errorf("expected port '3001', got '%s'", resp.ResolvedVariables["UPTIME_KUMA_PORT"])
+	}
+
+	svc, err := st.Services().GetByID(ctx, resp.AppID)
+	if err != nil || svc == nil {
+		t.Fatalf("expected service in store: %v", err)
+	}
+	if svc.ContainerPort != 3001 {
+		t.Errorf("expected port 3001, got %d", svc.ContainerPort)
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume in store, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/app/data" {
+		t.Errorf("expected mount path '/app/data', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_DeployPlausible_WithStore(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "plausible_test.db")
+
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+
+	cat := DefaultCatalog()
+	deployer := NewDeployer(cat, st, nil)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "my-plausible-analytics",
+	}
+
+	resp, err := deployer.Deploy(ctx, "plausible", req)
+	if err != nil {
+		t.Fatalf("deploy plausible failed: %v", err)
+	}
+
+	if resp.TemplateID != "plausible" {
+		t.Errorf("expected template 'plausible', got '%s'", resp.TemplateID)
+	}
+	if resp.Category != CategoryAnalytics {
+		t.Errorf("expected category '%s', got '%s'", CategoryAnalytics, resp.Category)
+	}
+	if resp.ResolvedVariables["BASE_URL"] != "http://localhost:8000" {
+		t.Errorf("expected BASE_URL 'http://localhost:8000', got '%s'", resp.ResolvedVariables["BASE_URL"])
+	}
+	if resp.ResolvedVariables["SECRET_KEY_BASE"] != "[REDACTED]" {
+		t.Errorf("expected redacted SECRET_KEY_BASE, got '%s'", resp.ResolvedVariables["SECRET_KEY_BASE"])
+	}
+
+	vols, err := st.Volumes().ListByService(ctx, resp.AppID)
+	if err != nil || len(vols) != 1 {
+		t.Fatalf("expected 1 volume in store, got %d", len(vols))
+	}
+	if vols[0].MountPath != "/var/lib/plausible" {
+		t.Errorf("expected mount path '/var/lib/plausible', got '%s'", vols[0].MountPath)
+	}
+}
+
+func TestDeployer_AllCuratedRecipesInstantiate(t *testing.T) {
+	ctx := context.Background()
+	cat := DefaultCatalog()
+	all := cat.ListTemplates("")
+
+	for _, tpl := range all {
+		t.Run(tpl.ID, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			dbPath := filepath.Join(tmpDir, "test.db")
+			st, err := store.Open(dbPath)
+			if err != nil {
+				t.Fatalf("failed to open sqlite store: %v", err)
+			}
+			defer st.Close()
+
+			deployer := NewDeployer(cat, st, nil)
+			deployer.SetVolumeRoot(tmpDir)
+
+			req := DeployTemplateRequest{
+				Name:                "test-" + tpl.ID,
+				AutoGenerateMissing: true,
+			}
+
+			resp, err := deployer.Deploy(ctx, tpl.ID, req)
+			if err != nil {
+				t.Fatalf("template %s failed to instantiate: %v", tpl.ID, err)
+			}
+
+			if resp.AppID == "" {
+				t.Errorf("template %s returned empty AppID", tpl.ID)
+			}
+			if resp.TemplateID != tpl.ID {
+				t.Errorf("template %s mismatch: got %s", tpl.ID, resp.TemplateID)
+			}
+			if resp.Category != tpl.Category {
+				t.Errorf("template %s category mismatch: expected %s, got %s", tpl.ID, tpl.Category, resp.Category)
+			}
+			if resp.Status != "running" {
+				t.Errorf("template %s status: expected running, got %s", tpl.ID, resp.Status)
+			}
+			if len(resp.Volumes) != len(tpl.Volumes) {
+				t.Errorf("template %s volumes count mismatch: expected %d, got %d", tpl.ID, len(tpl.Volumes), len(resp.Volumes))
+			}
+
+			// Verify store service record
+			svc, err := st.Services().GetByID(ctx, resp.AppID)
+			if err != nil || svc == nil {
+				t.Fatalf("template %s service not saved in store: %v", tpl.ID, err)
+			}
+			if svc.ContainerPort != tpl.DefaultPort {
+				t.Errorf("template %s port mismatch: expected %d, got %d", tpl.ID, tpl.DefaultPort, svc.ContainerPort)
+			}
+		})
 	}
 }
 

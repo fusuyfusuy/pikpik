@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,7 +46,7 @@ func main() {
 		runLogin(args)
 	case "projects":
 		runProjects(args)
-	case "apps":
+	case "app", "apps":
 		runApps(args)
 	case "tags":
 		runTags(args)
@@ -97,7 +98,7 @@ Commands:
   init          Initialize a new project with .pikpik.yml
   login         Authenticate against a pikpik control plane instance
   projects      Manage project workspaces and grouping
-  apps          List and inspect deployed applications
+  apps, app     Manage deployed applications and weighted traffic splits
   tags          List aggregated tag taxonomy and counts
   nodes         Inspect cluster nodes, allocation, and availability
   machine       Manage remote agent hosts, telemetry, and swarm enrollment
@@ -368,8 +369,19 @@ func runProjects(args []string) {
 	}
 }
 
-// 2c. pikpik apps
+// 2c. pikpik app / apps
 func runApps(args []string) {
+	if len(args) > 0 {
+		sub := args[0]
+		switch sub {
+		case "traffic":
+			runAppTraffic(args[1:])
+			return
+		case "list", "ls":
+			args = args[1:]
+		}
+	}
+
 	fs := flag.NewFlagSet("apps", flag.ExitOnError)
 	tag := fs.StringP("tag", "t", "", "Filter by tag")
 	_ = fs.Parse(args)
@@ -404,6 +416,143 @@ func runApps(args []string) {
 			projName = a.ProjectID
 		}
 		fmt.Printf("%-20s %-16s %-18s %-10s %-20s %s\n", a.ID, a.Name, projName, a.Status, tagStr, a.Image)
+	}
+}
+
+// runAppTraffic manages weighted traffic shifting and canary deployments for an app.
+func runAppTraffic(args []string) {
+	fs := flag.NewFlagSet("app traffic", flag.ExitOnError)
+	upstreams := fs.StringArrayP("upstream", "u", nil, "Upstream target and weight (e.g. <target:weight> or <target=weight>)")
+	reset := fs.Bool("reset", false, "Reset traffic distribution to 100% stable upstream")
+	_ = fs.Parse(args)
+
+	pos := fs.Args()
+	if len(pos) < 1 {
+		fmt.Println("Usage: pikpik app traffic <app_id> [--upstream <target:weight>...] [--reset]")
+		os.Exit(1)
+	}
+	appID := pos[0]
+
+	client, _, _ := getClient()
+	ctx := context.Background()
+
+	if *reset {
+		resp, err := client.SetAppTraffic(ctx, appID, api.SetTrafficSplitRequest{
+			Reset: true,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to reset traffic: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Traffic split reset to 100%% stable upstream for app %q:\n\n", appID)
+		printTrafficDistributionTable(resp)
+		return
+	}
+
+	if upstreams != nil && len(*upstreams) > 0 {
+		var splits []api.UpstreamWeight
+		for _, u := range *upstreams {
+			parts := strings.Split(u, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				target, weight, err := parseUpstreamWeight(part)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Invalid upstream specification %q: %v\n", part, err)
+					os.Exit(1)
+				}
+				splits = append(splits, api.UpstreamWeight{
+					Upstream: target,
+					Weight:   weight,
+				})
+			}
+		}
+
+		resp, err := client.SetAppTraffic(ctx, appID, api.SetTrafficSplitRequest{
+			Splits: splits,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to update traffic split: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Traffic split updated successfully for app %q:\n\n", appID)
+		printTrafficDistributionTable(resp)
+		return
+	}
+
+	// Read-only GET active traffic distribution
+	resp, err := client.GetAppTraffic(ctx, appID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to retrieve traffic split: %v\n", err)
+		os.Exit(1)
+	}
+	printTrafficDistributionTable(resp)
+}
+
+func parseUpstreamWeight(s string) (string, int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0, fmt.Errorf("empty upstream specification")
+	}
+
+	if idx := strings.LastIndex(s, "="); idx != -1 {
+		target := strings.TrimSpace(s[:idx])
+		weightStr := strings.TrimSpace(s[idx+1:])
+		w, err := strconv.Atoi(weightStr)
+		if err != nil {
+			return "", 0, fmt.Errorf("invalid weight %q: %w", weightStr, err)
+		}
+		if target == "" {
+			return "", 0, fmt.Errorf("target cannot be empty")
+		}
+		if w < 0 {
+			return "", 0, fmt.Errorf("weight cannot be negative: %d", w)
+		}
+		return target, w, nil
+	}
+
+	if idx := strings.LastIndex(s, ":"); idx != -1 {
+		target := strings.TrimSpace(s[:idx])
+		weightStr := strings.TrimSpace(s[idx+1:])
+		w, err := strconv.Atoi(weightStr)
+		if err == nil && target != "" {
+			if w < 0 {
+				return "", 0, fmt.Errorf("weight cannot be negative: %d", w)
+			}
+			return target, w, nil
+		}
+	}
+
+	return "", 0, fmt.Errorf("invalid upstream format %q: expected <target:weight> or <target=weight>", s)
+}
+
+func printTrafficDistributionTable(resp *api.TrafficSplitResponse) {
+	if resp == nil {
+		return
+	}
+	totalWeight := 0
+	for _, s := range resp.Splits {
+		totalWeight += s.Weight
+	}
+
+	fmt.Printf("App ID:  %s\n", resp.AppID)
+	if resp.Domain != "" {
+		fmt.Printf("Domain:  %s\n", resp.Domain)
+	}
+	fmt.Println()
+
+	fmt.Printf("%-32s %-12s %s\n", "UPSTREAM", "WEIGHT", "PERCENTAGE")
+	fmt.Println(strings.Repeat("-", 56))
+
+	for _, s := range resp.Splits {
+		pctStr := "0.0%"
+		if totalWeight > 0 {
+			pct := float64(s.Weight) / float64(totalWeight) * 100.0
+			pctStr = fmt.Sprintf("%.1f%%", pct)
+		}
+		fmt.Printf("%-32s %-12d %s\n", s.Upstream, s.Weight, pctStr)
 	}
 }
 
@@ -1768,7 +1917,7 @@ func runTemplate(args []string) {
 	switch sub {
 	case "list", "ls":
 		fs := flag.NewFlagSet("template list", flag.ExitOnError)
-		category := fs.StringP("category", "c", "", "Category filter (e.g. Databases, DevTools, CMS)")
+		category := fs.StringP("category", "c", "", "Category filter (e.g. Databases, Storage, Analytics, Productivity, CMS)")
 		search := fs.StringP("search", "s", "", "Search query")
 		_ = fs.Parse(args[1:])
 
@@ -1804,10 +1953,37 @@ func runTemplate(args []string) {
 		fmt.Printf("Name:        %s (v%s)\n", tpl.Name, tpl.Version)
 		fmt.Printf("Category:    %s\n", tpl.Category)
 		fmt.Printf("Description: %s\n", tpl.Description)
+		if tpl.DocumentationURL != "" {
+			fmt.Printf("Docs:        %s\n", tpl.DocumentationURL)
+		}
+		if tpl.DefaultPort > 0 {
+			fmt.Printf("DefaultPort: %d\n", tpl.DefaultPort)
+		}
+		if len(tpl.Tags) > 0 {
+			fmt.Printf("Tags:        %s\n", strings.Join(tpl.Tags, ", "))
+		}
+		if len(tpl.Volumes) > 0 {
+			fmt.Println("\nVolumes:")
+			for _, v := range tpl.Volumes {
+				roStr := ""
+				if v.ReadOnly {
+					roStr = " (read-only)"
+				}
+				fmt.Printf("  - %s -> %s%s\n", v.Name, v.MountPath, roStr)
+			}
+		}
 		if len(tpl.Services) > 0 {
 			fmt.Println("\nServices:")
 			for _, s := range tpl.Services {
-				fmt.Printf("  - %s (Image: %s, Ports: %v)\n", s.Name, s.Image, s.Ports)
+				portStrs := make([]string, 0, len(s.Ports))
+				for _, p := range s.Ports {
+					portStrs = append(portStrs, fmt.Sprintf("%d:%d/%s", p.HostPort, p.ContainerPort, p.Protocol))
+				}
+				portsDesc := ""
+				if len(portStrs) > 0 {
+					portsDesc = fmt.Sprintf(", Ports: %s", strings.Join(portStrs, ", "))
+				}
+				fmt.Printf("  - %s (Image: %s%s)\n", s.Name, s.Image, portsDesc)
 			}
 		}
 		if len(tpl.EnvVars) > 0 {
@@ -1817,7 +1993,18 @@ func runTemplate(args []string) {
 				if ev.Required {
 					reqStr = "required"
 				}
-				fmt.Printf("  - %s: %s (Default: %q, %s)\n", ev.Key, ev.Description, ev.Default, reqStr)
+				var details []string
+				details = append(details, reqStr)
+				if ev.Default != "" {
+					details = append(details, fmt.Sprintf("default: %q", ev.Default))
+				}
+				if ev.IsSecret {
+					details = append(details, "secret")
+				}
+				if ev.AutoGenerate != "" {
+					details = append(details, fmt.Sprintf("auto: %s", ev.AutoGenerate))
+				}
+				fmt.Printf("  - %-32s %s (%s)\n", ev.Key, ev.Description, strings.Join(details, ", "))
 			}
 		}
 

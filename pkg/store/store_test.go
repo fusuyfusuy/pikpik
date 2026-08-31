@@ -598,3 +598,92 @@ func TestStore_DuplicateKeyMapping(t *testing.T) {
 	}
 }
 
+func TestStore_CommitMetadata_DeploymentsAndServices(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	org := &store.Organization{Name: "Org Commit", Slug: "org-commit"}
+	_ = st.Organizations().Create(ctx, org)
+	proj := &store.Project{OrgID: org.ID, Name: "Proj Commit", Slug: "proj-commit"}
+	_ = st.Projects().Create(ctx, proj)
+	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
+	_ = st.Stages().Create(ctx, stage)
+
+	svc := &store.Service{
+		ProjectID:         proj.ID,
+		StageID:           stage.ID,
+		Name:              "Commit Service",
+		Slug:              "commit-svc",
+		Type:              "app",
+		Image:             "pikpik/commit:v1",
+		GitBranch:         "main",
+		LastCommitSHA:     "1234567890abcdef1234567890abcdef12345678",
+		LastCommitMessage: "feat: initial commit",
+		LastCommitAuthor:  "Commit Author",
+	}
+	if err := st.Services().Create(ctx, svc); err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
+	// 1. Verify service commit metadata
+	fetchedSvc, err := st.Services().GetByID(ctx, svc.ID)
+	if err != nil {
+		t.Fatalf("failed to get service: %v", err)
+	}
+	if fetchedSvc.LastCommitSHA != "1234567890abcdef1234567890abcdef12345678" ||
+		fetchedSvc.LastCommitMessage != "feat: initial commit" ||
+		fetchedSvc.LastCommitAuthor != "Commit Author" {
+		t.Errorf("service commit metadata mismatch: %+v", fetchedSvc)
+	}
+
+	// 2. UpdateCommitMetadata on Service
+	if err := st.Services().UpdateCommitMetadata(ctx, svc.ID, "abcdef1234567890abcdef1234567890abcdef12", "fix: hotfix", "Author 2"); err != nil {
+		t.Fatalf("failed to update service commit metadata: %v", err)
+	}
+	updatedSvc, err := st.Services().GetByID(ctx, svc.ID)
+	if err != nil {
+		t.Fatalf("failed to get service: %v", err)
+	}
+	if updatedSvc.LastCommitSHA != "abcdef1234567890abcdef1234567890abcdef12" ||
+		updatedSvc.LastCommitMessage != "fix: hotfix" ||
+		updatedSvc.LastCommitAuthor != "Author 2" {
+		t.Errorf("updated service commit metadata mismatch: %+v", updatedSvc)
+	}
+
+	// 3. Create Deployment record with commit metadata
+	dep := &store.Deployment{
+		ServiceID:         svc.ID,
+		ImageTag:          "pikpik/commit:v2",
+		CommitSHA:         "abcdef1234567890abcdef1234567890abcdef12",
+		LastCommitSHA:     "abcdef1234567890abcdef1234567890abcdef12",
+		LastCommitMessage: "fix: hotfix",
+		LastCommitAuthor:  "Author 2",
+		Status:            "healthy",
+		InitiatedBy:       "webhook",
+	}
+	if err := st.Deployments().Create(ctx, dep); err != nil {
+		t.Fatalf("failed to create deployment: %v", err)
+	}
+
+	fetchedDep, err := st.Deployments().GetByID(ctx, dep.ID)
+	if err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if fetchedDep.LastCommitSHA != "abcdef1234567890abcdef1234567890abcdef12" ||
+		fetchedDep.LastCommitMessage != "fix: hotfix" ||
+		fetchedDep.LastCommitAuthor != "Author 2" ||
+		fetchedDep.CommitSHA != "abcdef1234567890abcdef1234567890abcdef12" {
+		t.Errorf("deployment commit metadata mismatch: %+v", fetchedDep)
+	}
+
+	// 4. List deployments by service
+	depList, err := st.Deployments().ListByService(ctx, svc.ID, 10)
+	if err != nil || len(depList) != 1 {
+		t.Fatalf("failed to list deployments: %v (len: %d)", err, len(depList))
+	}
+	if depList[0].LastCommitSHA != "abcdef1234567890abcdef1234567890abcdef12" {
+		t.Errorf("list deployment LastCommitSHA mismatch: %s", depList[0].LastCommitSHA)
+	}
+}
+
+

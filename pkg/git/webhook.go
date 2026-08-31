@@ -230,7 +230,10 @@ func ParseGenericGitPush(r *http.Request) (*PushEvent, error) {
 
 		event.Branch = gen.Branch
 		if event.Branch == "" && gen.Ref != "" {
-			event.Branch = strings.TrimPrefix(gen.Ref, "refs/heads/")
+			event.Branch = gen.Ref
+		}
+		if event.Branch != "" {
+			event.Branch = strings.TrimPrefix(event.Branch, "refs/heads/")
 			event.Branch = strings.TrimPrefix(event.Branch, "refs/tags/")
 		}
 		event.Ref = gen.Ref
@@ -295,6 +298,16 @@ func ParseGenericGitPush(r *http.Request) (*PushEvent, error) {
 	// Fallback or override from URL query parameters / form values
 	if event.Branch == "" {
 		event.Branch = r.URL.Query().Get("branch")
+		if event.Branch == "" {
+			event.Branch = r.URL.Query().Get("ref")
+		}
+	}
+	if event.Branch != "" {
+		event.Branch = strings.TrimPrefix(event.Branch, "refs/heads/")
+		event.Branch = strings.TrimPrefix(event.Branch, "refs/tags/")
+	}
+	if event.Ref == "" {
+		event.Ref = r.URL.Query().Get("ref")
 	}
 	if event.CommitSHA == "" {
 		event.CommitSHA = r.URL.Query().Get("commit_sha")

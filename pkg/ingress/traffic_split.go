@@ -6,11 +6,19 @@ import (
 	"strings"
 )
 
-// TrafficSplitConfig defines declarative parameters for 1:1 upstream domain routing.
+// UpstreamWeight defines a single upstream dial destination and its traffic weight.
+type UpstreamWeight struct {
+	Upstream string `json:"upstream"`
+	Weight   int    `json:"weight"`
+}
+
+// TrafficSplitConfig defines declarative parameters for weighted upstream domain routing.
 type TrafficSplitConfig struct {
-	Domain         string   `json:"domain"`
-	StableUpstream string   `json:"stable_upstream"`
-	Paths          []string `json:"paths,omitempty"`
+	Domain         string           `json:"domain"`
+	AppID          string           `json:"app_id,omitempty"`
+	StableUpstream string           `json:"stable_upstream,omitempty"`
+	Splits         []UpstreamWeight `json:"splits,omitempty"`
+	Paths          []string         `json:"paths,omitempty"`
 }
 
 // GenerateTrafficSplitRouteID produces a deterministic route ID for traffic routing.
@@ -22,7 +30,7 @@ func GenerateTrafficSplitRouteID(domain string) string {
 	return fmt.Sprintf("route_split_%s", slug)
 }
 
-// BuildTrafficSplitRoute compiles a TrafficSplitConfig into a canonical CaddyRoute with direct 1:1 upstream routing.
+// BuildTrafficSplitRoute compiles a TrafficSplitConfig into a canonical CaddyRoute with weighted upstream routing.
 func BuildTrafficSplitRoute(cfg TrafficSplitConfig) CaddyRoute {
 	routeID := GenerateTrafficSplitRouteID(cfg.Domain)
 
@@ -47,6 +55,35 @@ func BuildTrafficSplitRoute(cfg TrafficSplitConfig) CaddyRoute {
 	headerSet["Referrer-Policy"] = []string{"strict-origin-when-cross-origin"}
 	headerSet["Strict-Transport-Security"] = []string{"max-age=31536000; includeSubDomains; preload"}
 
+	var upstreams []CaddyUpstream
+	weightsMap := make(map[string]int)
+
+	if len(cfg.Splits) > 0 {
+		for _, s := range cfg.Splits {
+			upstreams = append(upstreams, CaddyUpstream{
+				Dial:   s.Upstream,
+				Weight: s.Weight,
+			})
+			weightsMap[s.Upstream] = s.Weight
+		}
+	} else if cfg.StableUpstream != "" {
+		upstreams = append(upstreams, CaddyUpstream{
+			Dial: cfg.StableUpstream,
+		})
+	}
+
+	var selectionPolicy *CaddySelectionPolicy
+	if len(upstreams) > 1 {
+		selectionPolicy = &CaddySelectionPolicy{
+			Policy:  "weighted_round_robin",
+			Weights: weightsMap,
+		}
+	} else {
+		selectionPolicy = &CaddySelectionPolicy{
+			Policy: "round_robin",
+		}
+	}
+
 	innerHandlers := []CaddyRouteHandler{
 		{
 			Handler: "headers",
@@ -55,10 +92,8 @@ func BuildTrafficSplitRoute(cfg TrafficSplitConfig) CaddyRoute {
 			},
 		},
 		{
-			Handler: "reverse_proxy",
-			Upstreams: []CaddyUpstream{
-				{Dial: cfg.StableUpstream},
-			},
+			Handler:   "reverse_proxy",
+			Upstreams: upstreams,
 			Transport: &CaddyTransport{
 				Protocol: "http",
 				KeepAlive: &CaddyKeepAlive{
@@ -69,11 +104,9 @@ func BuildTrafficSplitRoute(cfg TrafficSplitConfig) CaddyRoute {
 				WriteTimeout: "0s",
 			},
 			LoadBalancing: &CaddyLoadBalancing{
-				SelectionPolicy: &CaddySelectionPolicy{
-					Policy: "round_robin",
-				},
-				Retries:     3,
-				TryDuration: "5s",
+				SelectionPolicy: selectionPolicy,
+				Retries:         3,
+				TryDuration:     "5s",
 			},
 		},
 	}
@@ -95,7 +128,7 @@ func BuildTrafficSplitRoute(cfg TrafficSplitConfig) CaddyRoute {
 	}
 }
 
-// SetTrafficSplit updates Caddy reverse proxy direct 1:1 upstream routing via PUT /id/{route_id} (<15ms).
+// SetTrafficSplit updates Caddy reverse proxy direct or weighted upstream routing via PUT /id/{route_id} (<15ms).
 func (c *HTTPCaddyClient) SetTrafficSplit(ctx context.Context, domain string, cfg TrafficSplitConfig) error {
 	if domain != "" && cfg.Domain == "" {
 		cfg.Domain = domain
@@ -104,9 +137,34 @@ func (c *HTTPCaddyClient) SetTrafficSplit(ctx context.Context, domain string, cf
 	if cfg.Domain == "" {
 		return fmt.Errorf("%w: domain cannot be empty", ErrInvalidRoutePayload)
 	}
-	cfg.StableUpstream = strings.TrimSpace(cfg.StableUpstream)
-	if cfg.StableUpstream == "" {
-		return fmt.Errorf("%w: stable upstream cannot be empty", ErrInvalidRoutePayload)
+
+	if len(cfg.Splits) == 0 {
+		cfg.StableUpstream = strings.TrimSpace(cfg.StableUpstream)
+		if cfg.StableUpstream == "" {
+			return fmt.Errorf("%w: at least one upstream target must be specified", ErrInvalidRoutePayload)
+		}
+		cfg.Splits = []UpstreamWeight{
+			{Upstream: cfg.StableUpstream, Weight: 100},
+		}
+	} else {
+		totalWeight := 0
+		for i, s := range cfg.Splits {
+			u := strings.TrimSpace(s.Upstream)
+			if u == "" {
+				return fmt.Errorf("%w: upstream target dial cannot be empty", ErrInvalidRoutePayload)
+			}
+			if s.Weight < 0 {
+				return fmt.Errorf("%w: upstream weight cannot be negative (got %d for %s)", ErrInvalidRoutePayload, s.Weight, u)
+			}
+			cfg.Splits[i].Upstream = u
+			totalWeight += s.Weight
+		}
+		if totalWeight <= 0 {
+			return fmt.Errorf("%w: sum of upstream weights must be greater than 0", ErrInvalidRoutePayload)
+		}
+		if cfg.StableUpstream == "" && len(cfg.Splits) > 0 {
+			cfg.StableUpstream = cfg.Splits[0].Upstream
+		}
 	}
 
 	route := BuildTrafficSplitRoute(cfg)
@@ -147,7 +205,23 @@ func (c *HTTPCaddyClient) GetTrafficSplit(ctx context.Context, domain string) (*
 	if len(caddyRoute.Handle) > 0 && len(caddyRoute.Handle[0].Routes) > 0 {
 		for _, h := range caddyRoute.Handle[0].Routes[0].Handle {
 			if h.Handler == "reverse_proxy" && len(h.Upstreams) > 0 {
-				cfg.StableUpstream = h.Upstreams[0].Dial
+				var splits []UpstreamWeight
+				for _, u := range h.Upstreams {
+					w := u.Weight
+					if w == 0 && h.LoadBalancing != nil && h.LoadBalancing.SelectionPolicy != nil {
+						if pw, ok := h.LoadBalancing.SelectionPolicy.Weights[u.Dial]; ok {
+							w = pw
+						}
+					}
+					splits = append(splits, UpstreamWeight{
+						Upstream: u.Dial,
+						Weight:   w,
+					})
+				}
+				cfg.Splits = splits
+				if len(splits) > 0 {
+					cfg.StableUpstream = splits[0].Upstream
+				}
 			}
 		}
 	}

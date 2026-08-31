@@ -236,3 +236,167 @@ func TestTrafficSplit_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestTrafficSplit_WeightedDistributions verifies 0%, 50/50%, 90/10%, 100%, and multi-target distributions.
+func TestTrafficSplit_WeightedDistributions(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            ingress.TrafficSplitConfig
+		expectedPolicy string
+		expectedCount  int
+		expectedWeights map[string]int
+	}{
+		{
+			name: "100% Single Stable",
+			cfg: ingress.TrafficSplitConfig{
+				Domain: "single.example.com",
+				Splits: []ingress.UpstreamWeight{
+					{Upstream: "app-prod:8080", Weight: 100},
+				},
+			},
+			expectedPolicy: "round_robin",
+			expectedCount:  1,
+			expectedWeights: map[string]int{},
+		},
+		{
+			name: "50/50% Blue/Green Split",
+			cfg: ingress.TrafficSplitConfig{
+				Domain: "bluegreen.example.com",
+				Splits: []ingress.UpstreamWeight{
+					{Upstream: "app-blue:8080", Weight: 50},
+					{Upstream: "app-green:8080", Weight: 50},
+				},
+			},
+			expectedPolicy: "weighted_round_robin",
+			expectedCount:  2,
+			expectedWeights: map[string]int{
+				"app-blue:8080":  50,
+				"app-green:8080": 50,
+			},
+		},
+		{
+			name: "90/10% Canary Split",
+			cfg: ingress.TrafficSplitConfig{
+				Domain: "canary.example.com",
+				Splits: []ingress.UpstreamWeight{
+					{Upstream: "app-stable:8080", Weight: 90},
+					{Upstream: "app-canary:8080", Weight: 10},
+				},
+			},
+			expectedPolicy: "weighted_round_robin",
+			expectedCount:  2,
+			expectedWeights: map[string]int{
+				"app-stable:8080": 90,
+				"app-canary:8080": 10,
+			},
+		},
+		{
+			name: "0/100% Cutover Split",
+			cfg: ingress.TrafficSplitConfig{
+				Domain: "cutover.example.com",
+				Splits: []ingress.UpstreamWeight{
+					{Upstream: "app-legacy:8080", Weight: 0},
+					{Upstream: "app-v2:8080", Weight: 100},
+				},
+			},
+			expectedPolicy: "weighted_round_robin",
+			expectedCount:  2,
+			expectedWeights: map[string]int{
+				"app-legacy:8080": 0,
+				"app-v2:8080":     100,
+			},
+		},
+		{
+			name: "70/20/10% Multi-Canary Split",
+			cfg: ingress.TrafficSplitConfig{
+				Domain: "multicanary.example.com",
+				Splits: []ingress.UpstreamWeight{
+					{Upstream: "app-v1:8080", Weight: 70},
+					{Upstream: "app-v2:8080", Weight: 20},
+					{Upstream: "app-v3-exp:8080", Weight: 10},
+				},
+			},
+			expectedPolicy: "weighted_round_robin",
+			expectedCount:  3,
+			expectedWeights: map[string]int{
+				"app-v1:8080":     70,
+				"app-v2:8080":     20,
+				"app-v3-exp:8080": 10,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			route := ingress.BuildTrafficSplitRoute(tt.cfg)
+			if len(route.Handle) == 0 || len(route.Handle[0].Routes) == 0 {
+				t.Fatalf("expected subroute handler")
+			}
+			var rp *ingress.CaddyRouteHandler
+			for _, h := range route.Handle[0].Routes[0].Handle {
+				if h.Handler == "reverse_proxy" {
+					rp = &h
+					break
+				}
+			}
+			if rp == nil {
+				t.Fatalf("missing reverse_proxy handler")
+			}
+			if len(rp.Upstreams) != tt.expectedCount {
+				t.Errorf("expected %d upstreams, got %d", tt.expectedCount, len(rp.Upstreams))
+			}
+			if rp.LoadBalancing == nil || rp.LoadBalancing.SelectionPolicy == nil {
+				t.Fatalf("missing load balancing selection policy")
+			}
+			if rp.LoadBalancing.SelectionPolicy.Policy != tt.expectedPolicy {
+				t.Errorf("expected policy %s, got %s", tt.expectedPolicy, rp.LoadBalancing.SelectionPolicy.Policy)
+			}
+			for upstream, expectedWeight := range tt.expectedWeights {
+				actualWeight := rp.LoadBalancing.SelectionPolicy.Weights[upstream]
+				if actualWeight != expectedWeight {
+					t.Errorf("expected weight for %s to be %d, got %d", upstream, expectedWeight, actualWeight)
+				}
+			}
+		})
+	}
+}
+
+// TestTrafficSplit_AdvancedValidationErrors checks negative weights and sum of weights <= 0.
+func TestTrafficSplit_AdvancedValidationErrors(t *testing.T) {
+	client := ingress.NewCaddyClient("http://127.0.0.1:2019", time.Second)
+	ctx := context.Background()
+
+	// Negative weight
+	err := client.SetTrafficSplit(ctx, "app.test", ingress.TrafficSplitConfig{
+		Domain: "app.test",
+		Splits: []ingress.UpstreamWeight{
+			{Upstream: "app:80", Weight: -5},
+		},
+	})
+	if !errors.Is(err, ingress.ErrInvalidRoutePayload) {
+		t.Errorf("expected ErrInvalidRoutePayload for negative weight, got %v", err)
+	}
+
+	// All weights zero
+	err = client.SetTrafficSplit(ctx, "app.test", ingress.TrafficSplitConfig{
+		Domain: "app.test",
+		Splits: []ingress.UpstreamWeight{
+			{Upstream: "app1:80", Weight: 0},
+			{Upstream: "app2:80", Weight: 0},
+		},
+	})
+	if !errors.Is(err, ingress.ErrInvalidRoutePayload) {
+		t.Errorf("expected ErrInvalidRoutePayload for sum of weights == 0, got %v", err)
+	}
+
+	// Empty upstream name
+	err = client.SetTrafficSplit(ctx, "app.test", ingress.TrafficSplitConfig{
+		Domain: "app.test",
+		Splits: []ingress.UpstreamWeight{
+			{Upstream: "   ", Weight: 100},
+		},
+	})
+	if !errors.Is(err, ingress.ErrInvalidRoutePayload) {
+		t.Errorf("expected ErrInvalidRoutePayload for empty upstream name, got %v", err)
+	}
+}

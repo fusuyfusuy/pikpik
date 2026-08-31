@@ -16,9 +16,15 @@ var (
 )
 
 const (
+	CategoryDatabase             = "Database"
+	CategoryDatabases            = "Databases"
+	CategoryStorage              = "Storage"
+	CategoryAnalytics            = "Analytics"
+	CategoryProductivity         = "Productivity"
+	CategoryCMS                  = "CMS"
+	CategoryDevTools             = "DevTools"
 	CategoryProductivityDevTools = "Productivity & DevTools"
 	CategoryAnalyticsCMS         = "Analytics & CMS"
-	CategoryDatabases            = "Databases"
 )
 
 // Catalog manages the embedded in-memory repository of curated marketplace templates.
@@ -114,12 +120,22 @@ func normalizeCategory(cat string) string {
 		return ""
 	}
 	switch c {
-	case "productivity", "devtools", "dev", "tool", "tools", "productivity & devtools":
+	case "db", "database", "databases":
+		return CategoryDatabase
+	case "storage", "s3", "blob":
+		return CategoryStorage
+	case "analytics", "metrics", "bi":
+		return CategoryAnalytics
+	case "cms", "content", "blog":
+		return CategoryCMS
+	case "productivity":
+		return CategoryProductivity
+	case "devtools", "dev", "tool", "tools":
+		return CategoryDevTools
+	case "productivity & devtools", "productivity and devtools":
 		return CategoryProductivityDevTools
-	case "analytics", "cms", "content", "blog", "analytics & cms":
+	case "analytics & cms", "analytics and cms":
 		return CategoryAnalyticsCMS
-	case "database", "databases", "db", "storage":
-		return CategoryDatabases
 	default:
 		return cat
 	}
@@ -129,7 +145,25 @@ func matchesCategory(tplCategory, targetCategory string) bool {
 	if strings.EqualFold(tplCategory, targetCategory) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(tplCategory), strings.ToLower(targetCategory))
+	tplLower := strings.ToLower(tplCategory)
+	targetLower := strings.ToLower(targetCategory)
+
+	if strings.TrimSuffix(tplLower, "s") == strings.TrimSuffix(targetLower, "s") {
+		return true
+	}
+	if targetLower == "productivity & devtools" && (tplLower == "productivity" || tplLower == "devtools" || tplLower == "productivity & devtools") {
+		return true
+	}
+	if targetLower == "analytics & cms" && (tplLower == "analytics" || tplLower == "cms" || tplLower == "analytics & cms") {
+		return true
+	}
+	if (targetLower == "database" || targetLower == "databases") && (tplLower == "database" || tplLower == "databases") {
+		return true
+	}
+	if strings.Contains(tplLower, targetLower) || strings.Contains(targetLower, tplLower) {
+		return true
+	}
+	return false
 }
 
 func matchesSearch(tpl Template, q string) bool {
@@ -161,22 +195,22 @@ func newCuratedCatalog() *Catalog {
 
 	rawList := []Template{
 		// ==========================================
-		// 1. Productivity & DevTools (11 templates)
+		// 1. Productivity & DevTools / Databases / Storage / CMS
 		// ==========================================
 		{
 			ID:               "pocketbase",
 			Name:             "PocketBase",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryDatabase,
 			Description:      "Open Source backend in 1 file with embedded SQLite, realtime subscriptions, and built-in admin UI.",
 			Icon:             "pocketbase",
 			Version:          "0.22",
 			DocumentationURL: "https://pocketbase.io/docs",
-			Tags:             []string{"backend", "baas", "sqlite", "realtime", "auth"},
+			Tags:             []string{"backend", "baas", "sqlite", "realtime", "auth", "database"},
 			DefaultPort:      8090,
 			CreatedAt:        now,
 			UpdatedAt:        now,
 			Volumes: []TemplateVolume{
-				{Name: "pb_data", MountPath: "/pb/pb_data"},
+				{Name: "pb_data", MountPath: "/pb_data"},
 			},
 			EnvVars: []TemplateEnvVar{
 				{
@@ -195,7 +229,7 @@ func newCuratedCatalog() *Catalog {
 						{ContainerPort: 8090, HostPort: 8090, Protocol: "tcp"},
 					},
 					Mounts: []TemplateVolume{
-						{Name: "pb_data", MountPath: "/pb/pb_data"},
+						{Name: "pb_data", MountPath: "/pb_data"},
 					},
 					Restart: "unless-stopped",
 				},
@@ -204,12 +238,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "n8n",
 			Name:             "n8n",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryProductivity,
 			Description:      "Fair-code workflow automation platform with multi-service integrations and visual pipeline builder.",
 			Icon:             "n8n",
 			Version:          "1.45",
 			DocumentationURL: "https://docs.n8n.io",
-			Tags:             []string{"automation", "workflow", "integration", "nocode"},
+			Tags:             []string{"automation", "workflow", "integration", "nocode", "productivity"},
 			DefaultPort:      5678,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -262,12 +296,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "vaultwarden",
 			Name:             "Vaultwarden",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryProductivity,
 			Description:      "Lightweight Bitwarden compatible password manager server written in Rust with minimal memory footprint.",
 			Icon:             "vaultwarden",
 			Version:          "1.30",
 			DocumentationURL: "https://github.com/dani-garcia/vaultwarden/wiki",
-			Tags:             []string{"security", "password-manager", "rust", "bitwarden"},
+			Tags:             []string{"security", "password-manager", "rust", "bitwarden", "productivity"},
 			DefaultPort:      80,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -312,12 +346,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "meilisearch",
 			Name:             "Meilisearch",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryDatabase,
 			Description:      "Lightning-fast, ultra-relevant search engine for every developer with instant typo-tolerance.",
 			Icon:             "meilisearch",
 			Version:          "1.6",
 			DocumentationURL: "https://www.meilisearch.com/docs",
-			Tags:             []string{"search", "rust", "indexer", "typo-tolerance"},
+			Tags:             []string{"search", "rust", "indexer", "typo-tolerance", "database"},
 			DefaultPort:      7700,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -363,7 +397,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "directus",
 			Name:             "Directus",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryCMS,
 			Description:      "Instant real-time REST and GraphQL API layer and visual data studio for SQL databases.",
 			Icon:             "directus",
 			Version:          "10.10",
@@ -439,7 +473,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "supabase-studio",
 			Name:             "Supabase Studio",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryDevTools,
 			Description:      "Official visual dashboard and schema management console for Postgres and Supabase stacks.",
 			Icon:             "supabase",
 			Version:          "2.0",
@@ -483,7 +517,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "minio",
 			Name:             "MinIO",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryStorage,
 			Description:      "High-performance S3 compatible object storage suite with integrated web console.",
 			Icon:             "minio",
 			Version:          "RELEASE.2024",
@@ -536,12 +570,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "grafana",
 			Name:             "Grafana",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryAnalytics,
 			Description:      "Operational dashboards, metrics visualization, alerting, and telemetry explorer platform.",
 			Icon:             "grafana",
 			Version:          "10.4",
 			DocumentationURL: "https://grafana.com/docs/grafana/latest/",
-			Tags:             []string{"observability", "metrics", "dashboard", "alerting"},
+			Tags:             []string{"observability", "metrics", "dashboard", "alerting", "analytics"},
 			DefaultPort:      3000,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -588,12 +622,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "prometheus",
 			Name:             "Prometheus",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryAnalytics,
 			Description:      "Leading open-source monitoring and time-series alerting toolkit with PromQL engine.",
 			Icon:             "prometheus",
 			Version:          "2.51",
 			DocumentationURL: "https://prometheus.io/docs/introduction/overview/",
-			Tags:             []string{"monitoring", "metrics", "timeseries", "alerting"},
+			Tags:             []string{"monitoring", "metrics", "timeseries", "alerting", "analytics"},
 			DefaultPort:      9090,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -630,7 +664,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "metabase",
 			Name:             "Metabase",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryAnalytics,
 			Description:      "Self-service Business Intelligence, analytics, dashboards, and visual charts for teams.",
 			Icon:             "metabase",
 			Version:          "0.49",
@@ -674,12 +708,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "rabbitmq",
 			Name:             "RabbitMQ",
-			Category:         CategoryProductivityDevTools,
+			Category:         CategoryProductivity,
 			Description:      "Robust distributed message broker supporting AMQP protocol and built-in management UI.",
 			Icon:             "rabbitmq",
 			Version:          "3.13",
 			DocumentationURL: "https://www.rabbitmq.com/docs",
-			Tags:             []string{"queue", "amqp", "broker", "events", "messaging"},
+			Tags:             []string{"queue", "amqp", "broker", "events", "messaging", "productivity"},
 			DefaultPort:      5672,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -718,6 +752,43 @@ func newCuratedCatalog() *Catalog {
 				},
 			},
 		},
+		{
+			ID:               "uptime-kuma",
+			Name:             "Uptime Kuma",
+			Category:         CategoryProductivity,
+			Description:      "Self-hosted monitoring dashboard and status page with rich notification channels and ping metrics.",
+			Icon:             "uptime-kuma",
+			Version:          "1.23",
+			DocumentationURL: "https://uptime.kuma.pet/",
+			Tags:             []string{"monitoring", "uptime", "status-page", "alerts", "ping", "productivity"},
+			DefaultPort:      3001,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			Volumes: []TemplateVolume{
+				{Name: "uptime_kuma_data", MountPath: "/app/data"},
+			},
+			EnvVars: []TemplateEnvVar{
+				{
+					Key:         "UPTIME_KUMA_PORT",
+					Label:       "Port",
+					Description: "Internal HTTP server port",
+					Default:     "3001",
+				},
+			},
+			Services: []TemplateService{
+				{
+					Name:  "uptime-kuma",
+					Image: "louislam/uptime-kuma:1.23.16",
+					Ports: []orchestration.PortMappingSpec{
+						{ContainerPort: 3001, HostPort: 3001, Protocol: "tcp"},
+					},
+					Mounts: []TemplateVolume{
+						{Name: "uptime_kuma_data", MountPath: "/app/data"},
+					},
+					Restart: "unless-stopped",
+				},
+			},
+		},
 
 		// ==========================================
 		// 2. Analytics & CMS (4 templates)
@@ -725,10 +796,10 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "plausible",
 			Name:             "Plausible Analytics",
-			Category:         CategoryAnalyticsCMS,
+			Category:         CategoryAnalytics,
 			Description:      "Simple, lightweight, open-source and privacy-friendly Google Analytics alternative.",
 			Icon:             "plausible",
-			Version:          "2.0",
+			Version:          "2.1",
 			DocumentationURL: "https://plausible.io/docs",
 			Tags:             []string{"analytics", "privacy", "gdpr", "traffic"},
 			DefaultPort:      8000,
@@ -790,7 +861,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "umami",
 			Name:             "Umami Analytics",
-			Category:         CategoryAnalyticsCMS,
+			Category:         CategoryAnalytics,
 			Description:      "Privacy-focused open-source website analytics with sleek, modern UI dashboards.",
 			Icon:             "umami",
 			Version:          "2.11",
@@ -830,7 +901,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "ghost",
 			Name:             "Ghost",
-			Category:         CategoryAnalyticsCMS,
+			Category:         CategoryCMS,
 			Description:      "Modern publishing platform and headless CMS built for independent creators and publishers.",
 			Icon:             "ghost",
 			Version:          "5.82",
@@ -886,7 +957,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "wordpress",
 			Name:             "WordPress",
-			Category:         CategoryAnalyticsCMS,
+			Category:         CategoryCMS,
 			Description:      "World-leading open-source content management system and website publishing software.",
 			Icon:             "wordpress",
 			Version:          "6.5",
@@ -950,7 +1021,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "postgres-16",
 			Name:             "PostgreSQL 16",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "World's most advanced relational database with powerful JSON support, indexing, and ACID guarantees.",
 			Icon:             "postgres",
 			Version:          "16-alpine",
@@ -1009,7 +1080,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "mysql-8",
 			Name:             "MySQL 8",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "Industry-standard open-source relational database management system with JSON support and replication.",
 			Icon:             "mysql",
 			Version:          "8.0",
@@ -1067,12 +1138,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "redis-7",
 			Name:             "Redis 7",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "High-speed in-memory data structure store used as a database, cache, message broker, and streaming engine.",
 			Icon:             "redis",
 			Version:          "7-alpine",
 			DocumentationURL: "https://redis.io/docs/",
-			Tags:             []string{"cache", "nosql", "in-memory", "key-value", "redis"},
+			Tags:             []string{"cache", "nosql", "in-memory", "key-value", "redis", "database"},
 			DefaultPort:      6379,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -1113,7 +1184,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "mongodb-7",
 			Name:             "MongoDB 7",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "Leading document-oriented NoSQL database designed for developer agility and flexible JSON-like schemas.",
 			Icon:             "mongodb",
 			Version:          "7.0",
@@ -1165,12 +1236,12 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "clickhouse",
 			Name:             "ClickHouse",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "Blazing-fast open-source column-oriented database management system for real-time analytical queries.",
 			Icon:             "clickhouse",
 			Version:          "24.3",
 			DocumentationURL: "https://clickhouse.com/docs",
-			Tags:             []string{"olap", "columnar", "analytics", "bigdata", "timeseries"},
+			Tags:             []string{"olap", "columnar", "analytics", "bigdata", "timeseries", "database"},
 			DefaultPort:      8123,
 			CreatedAt:        now,
 			UpdatedAt:        now,
@@ -1223,7 +1294,7 @@ func newCuratedCatalog() *Catalog {
 		{
 			ID:               "mariadb",
 			Name:             "MariaDB",
-			Category:         CategoryDatabases,
+			Category:         CategoryDatabase,
 			Description:      "High-performance community-developed fork of MySQL with modern replication and advanced engines.",
 			Icon:             "mariadb",
 			Version:          "11.3",

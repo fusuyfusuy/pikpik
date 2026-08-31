@@ -12,6 +12,7 @@ type DeployNudgePayload struct {
 	Tag       string `json:"tag,omitempty"`         // optional image tag
 	CommitSha string `json:"commitSha,omitempty"`   // git commit SHA (40 hex chars)
 	Branch    string `json:"branch,omitempty"`      // git branch name
+	Ref       string `json:"ref,omitempty"`         // git ref (e.g. refs/heads/main)
 	Message   string `json:"message,omitempty"`     // commit message
 	Author    string `json:"author,omitempty"`      // author name/email
 }
@@ -21,6 +22,7 @@ type NudgeTokenInfo struct {
 	ID                string    `json:"id"`
 	ProjectID         string    `json:"projectId"`
 	ServiceID         string    `json:"serviceId"`
+	Branch            string    `json:"branch,omitempty"`
 	TokenHash         string    `json:"-"`
 	AllowedRegistries []string  `json:"allowedRegistries"`
 	RateLimitPerMin   int       `json:"rateLimitPerMin"`

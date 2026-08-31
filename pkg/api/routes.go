@@ -470,6 +470,53 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, env, GetRequestID(r.Context()))
 	}))
 
+	mux.Handle("GET /api/v1/apps/{id}/traffic", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		res, err := ctrl.GetAppTraffic(r.Context(), id)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
+	}))
+
+	mux.Handle("POST /api/v1/apps/{id}/traffic", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
+		id := getPathParam(r, "id")
+		var req SetTrafficSplitRequest
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, "Failed to read request body", nil, GetRequestID(r.Context()))
+			return
+		}
+		if len(bodyBytes) > 0 {
+			if err := json.Unmarshal(bodyBytes, &req); err != nil || (len(req.Splits) == 0 && len(req.Upstreams) == 0 && !req.Reset) {
+				var splits []UpstreamWeight
+				if err2 := json.Unmarshal(bodyBytes, &splits); err2 == nil && len(splits) > 0 {
+					req.Splits = splits
+				}
+			}
+		}
+
+		res, err := ctrl.SetAppTraffic(r.Context(), id, &req)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				WriteError(w, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil, GetRequestID(r.Context()))
+				return
+			}
+			if strings.Contains(err.Error(), "cannot be empty") || strings.Contains(err.Error(), "cannot be negative") || strings.Contains(err.Error(), "greater than 0") {
+				WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+				return
+			}
+			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))
+			return
+		}
+		WriteJSON(w, http.StatusOK, res, GetRequestID(r.Context()))
+	}))
+
 
 	// Nudge Webhook endpoint
 	if nudgeHandler != nil {
@@ -1277,6 +1324,12 @@ func RegisterRoutes(
 			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
 			return
 		}
+		if bld == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ignored","reason":"branch mismatch"}`))
+			return
+		}
 		WriteJSON(w, http.StatusAccepted, bld, reqID)
 	})
 
@@ -1299,6 +1352,12 @@ func RegisterRoutes(
 				return
 			}
 			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
+			return
+		}
+		if bld == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ignored","reason":"branch mismatch"}`))
 			return
 		}
 		WriteJSON(w, http.StatusAccepted, bld, reqID)

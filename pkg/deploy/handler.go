@@ -109,6 +109,18 @@ func (h *DefaultDeployWebhookHandler) GenerateToken(ctx context.Context, service
 	return rawToken, info, nil
 }
 
+// GenerateTokenWithBranch creates a new webhook token scoped to a target branch.
+func (h *DefaultDeployWebhookHandler) GenerateTokenWithBranch(ctx context.Context, serviceID, projectID, branch string) (string, *NudgeTokenInfo, error) {
+	rawToken, info, err := h.GenerateToken(ctx, serviceID, projectID)
+	if err != nil {
+		return "", nil, err
+	}
+	h.mu.Lock()
+	info.Branch = branch
+	h.mu.Unlock()
+	return rawToken, info, nil
+}
+
 // RevokeToken invalidates an existing nudge webhook token.
 func (h *DefaultDeployWebhookHandler) RevokeToken(ctx context.Context, tokenID string) error {
 	h.mu.Lock()
@@ -283,6 +295,27 @@ func (h *DefaultDeployWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 		}
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"VALIDATION_FAILED","message":%q}`, err.Error())))
 		return
+	}
+
+	// 6b. Branch normalization & gating
+	if payload.Branch == "" && payload.Ref != "" {
+		payload.Branch = payload.Ref
+	}
+	if strings.HasPrefix(payload.Branch, "refs/heads/") {
+		payload.Branch = strings.TrimPrefix(payload.Branch, "refs/heads/")
+	} else if strings.HasPrefix(payload.Branch, "refs/tags/") {
+		payload.Branch = strings.TrimPrefix(payload.Branch, "refs/tags/")
+	}
+
+	if matchedInfo.Branch != "" && payload.Branch != "" {
+		expectedBranch := strings.TrimPrefix(matchedInfo.Branch, "refs/heads/")
+		expectedBranch = strings.TrimPrefix(expectedBranch, "refs/tags/")
+		if payload.Branch != expectedBranch {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ignored","reason":"branch mismatch"}`))
+			return
+		}
 	}
 
 	// 7. Dispatch deployment
