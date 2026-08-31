@@ -27,6 +27,9 @@ func (s *sqlStageStore) Create(ctx context.Context, stage *Stage) error {
 	query := `INSERT INTO stages (id, project_id, name, slug, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, stage.ID, stage.ProjectID, stage.Name, stage.Slug, stage.CreatedAt, stage.UpdatedAt)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create stage: %w", err)
 	}
 	return nil

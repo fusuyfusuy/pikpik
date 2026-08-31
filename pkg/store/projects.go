@@ -39,6 +39,9 @@ func (s *sqlProjectStore) Create(ctx context.Context, p *Project) error {
 
 	_, err = s.db.ExecContext(ctx, query, p.ID, p.OrgID, p.Name, p.Slug, p.Description, string(tagsJSON), p.CreatedAt, p.UpdatedAt)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create project: %w", err)
 	}
 	return nil

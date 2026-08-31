@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,9 +23,6 @@ var (
 	ErrCloneFailed = errors.New("git: clone failed")
 
 	// allowedGitURLSchemes is the set of transports CloneRepository is permitted to invoke.
-	// Deliberately excludes git's alternate transport helpers (ext::, fd::) and file:// / bare
-	// local paths, which can be abused for arbitrary command execution or local file disclosure
-	// when opts.RepoURL originates from an untrusted source (e.g. a webhook payload).
 	allowedGitURLSchemes = map[string]bool{
 		"https": true,
 		"http":  true,
@@ -33,23 +31,111 @@ var (
 
 	// scpLikeSSHPattern matches the scp-like SSH shorthand git supports, e.g. git@github.com:org/repo.git.
 	scpLikeSSHPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:.+$`)
+
+	commitSHARegex = regexp.MustCompile(`^[0-9a-fA-F]{4,64}$`)
 )
 
+func validateCommitSHA(sha string) error {
+	if sha == "" {
+		return nil
+	}
+	if strings.HasPrefix(sha, "-") || !commitSHARegex.MatchString(sha) {
+		return fmt.Errorf("git: invalid commit SHA %q", sha)
+	}
+	return nil
+}
+
+func isPrivateOrLoopbackIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 127 || ip4[0] == 10 || ip4[0] == 0 {
+			return true
+		}
+		if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+			return true
+		}
+		if ip4[0] == 192 && ip4[1] == 168 {
+			return true
+		}
+		if ip4[0] == 169 && ip4[1] == 254 {
+			return true
+		}
+		if ip4[0] == 100 && (ip4[1]&0xC0) == 64 {
+			return true
+		}
+	}
+	return false
+}
+
+func validateHostSSRF(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("git: empty host in repo_url")
+	}
+	h := strings.ToLower(host)
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") {
+		return fmt.Errorf("git: repo_url host %q is a blocked internal host", host)
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateOrLoopbackIP(ip) {
+			return fmt.Errorf("git: repo_url host %q is a private, loopback, or link-local IP", host)
+		}
+		return nil
+	}
+
+	// For remote domains, resolve and ensure none resolve to internal/private IPs
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err == nil && len(ips) > 0 {
+		for _, ip := range ips {
+			if isPrivateOrLoopbackIP(ip) {
+				return fmt.Errorf("git: repo_url host %q resolves to private/loopback IP %s", host, ip.String())
+			}
+		}
+	}
+	return nil
+}
+
 // validateRepoURL ensures rawURL uses an explicitly allowed git transport before it is ever
-// passed to exec.CommandContext. See allowedGitURLSchemes for the rationale.
-func validateRepoURL(rawURL string) error {
+// passed to exec.CommandContext, and guards against SSRF to private/internal networks.
+func validateRepoURL(rawURL string, allowLocal bool) error {
 	if strings.Contains(rawURL, "://") {
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
 			return fmt.Errorf("git: invalid repo_url: %w", err)
 		}
-		if !allowedGitURLSchemes[strings.ToLower(parsed.Scheme)] {
+		scheme := strings.ToLower(parsed.Scheme)
+		if !allowedGitURLSchemes[scheme] {
 			return fmt.Errorf("git: repo_url scheme %q is not allowed (allowed: https, http, ssh, or scp-like git@host:path)", parsed.Scheme)
+		}
+		if !allowLocal && os.Getenv("PIKPIK_ALLOW_LOCAL_GIT") != "1" {
+			if err := validateHostSSRF(parsed.Hostname()); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 
 	if scpLikeSSHPattern.MatchString(rawURL) {
+		if !allowLocal && os.Getenv("PIKPIK_ALLOW_LOCAL_GIT") != "1" {
+			parts := strings.SplitN(rawURL, ":", 2)
+			if len(parts) > 0 {
+				userHost := parts[0]
+				if atIdx := strings.Index(userHost, "@"); atIdx != -1 {
+					host := userHost[atIdx+1:]
+					if err := validateHostSSRF(host); err != nil {
+						return err
+					}
+				}
+			}
+		}
 		return nil
 	}
 
@@ -62,8 +148,13 @@ func CloneRepository(ctx context.Context, opts CloneOptions) (*Workspace, error)
 	if strings.TrimSpace(opts.RepoURL) == "" {
 		return nil, ErrEmptyRepoURL
 	}
-	if err := validateRepoURL(opts.RepoURL); err != nil {
+	if err := validateRepoURL(opts.RepoURL, opts.AllowLocal); err != nil {
 		return nil, err
+	}
+	if opts.CommitSHA != "" {
+		if err := validateCommitSHA(opts.CommitSHA); err != nil {
+			return nil, err
+		}
 	}
 
 	workDir := opts.WorkDir
@@ -152,17 +243,17 @@ func CloneRepository(ctx context.Context, opts CloneOptions) (*Workspace, error)
 
 	// Checkout specific commit SHA if requested and different from branch HEAD
 	if opts.CommitSHA != "" {
-		checkoutCmd := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", opts.CommitSHA)
+		checkoutCmd := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "--", opts.CommitSHA)
 		checkoutCmd.Env = cmdEnv
 		var checkoutErr bytes.Buffer
 		checkoutCmd.Stderr = &checkoutErr
 
 		if err := checkoutCmd.Run(); err != nil {
 			// If shallow clone didn't contain the commit, fetch the specific SHA
-			fetchCmd := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", fmt.Sprintf("--depth=%d", depth), "origin", opts.CommitSHA)
+			fetchCmd := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", fmt.Sprintf("--depth=%d", depth), "origin", "--", opts.CommitSHA)
 			fetchCmd.Env = cmdEnv
 			if fetchErr := fetchCmd.Run(); fetchErr == nil {
-				_ = exec.CommandContext(ctx, "git", "-C", workDir, "checkout", opts.CommitSHA).Run()
+				_ = exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "--", opts.CommitSHA).Run()
 			}
 		}
 	}
@@ -179,5 +270,10 @@ func maskSensitive(input, secret string) string {
 	if secret == "" {
 		return input
 	}
-	return strings.ReplaceAll(input, secret, "[REDACTED]")
+	res := strings.ReplaceAll(input, secret, "[REDACTED]")
+	escaped := url.QueryEscape(secret)
+	if escaped != secret {
+		res = strings.ReplaceAll(res, escaped, "[REDACTED]")
+	}
+	return res
 }

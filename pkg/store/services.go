@@ -67,6 +67,9 @@ func (s *sqlServiceStore) Create(ctx context.Context, svc *Service) error {
 		svc.CreatedAt, svc.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create service: %w", err)
 	}
 	return nil

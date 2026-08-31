@@ -287,16 +287,6 @@ func TestBackupScheduleRoutes_CRUD(t *testing.T) {
 		Store:      st,
 	})
 
-	_ = st.Services().Create(ctx, &store.Service{
-		ID:        "postgres-db-1",
-		ProjectID: "prj_default",
-		StageID:   "stg_default_prod",
-		Name:      "postgres-db-1",
-		Slug:      "postgres-db-1",
-		Type:      "database",
-		Image:     "postgres:16",
-	})
-
 	server := httptest.NewServer(gw)
 	defer server.Close()
 
@@ -321,7 +311,8 @@ func TestBackupScheduleRoutes_CRUD(t *testing.T) {
 		t.Fatalf("POST /api/v1/backups/schedules failed: %v", err)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201 Created, got %d: %s", resp.StatusCode, string(b))
 	}
 
 	var createdRes api.Response[store.BackupSchedule]

@@ -27,6 +27,9 @@ func (s *sqlOrgStore) Create(ctx context.Context, org *Organization) error {
 	query := `INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, org.ID, org.Name, org.Slug, org.CreatedAt, org.UpdatedAt)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create org: %w", err)
 	}
 	return nil

@@ -97,13 +97,14 @@ func TestCloneRepository_Local(t *testing.T) {
 
 	ctx := context.Background()
 	opts := git.CloneOptions{
-		RepoURL:   server.URL + "/" + filepath.Base(bareDir),
-		Branch:    "main",
-		CommitSHA: expectedSHA,
-		Depth:     1,
-		WorkDir:   destDir,
-		AppID:     "app_test_123",
-		BuildID:   "bld_test_456",
+		RepoURL:    server.URL + "/" + filepath.Base(bareDir),
+		Branch:     "main",
+		CommitSHA:  expectedSHA,
+		Depth:      1,
+		WorkDir:    destDir,
+		AppID:      "app_test_123",
+		BuildID:    "bld_test_456",
+		AllowLocal: true,
 	}
 
 	ws, err := git.CloneRepository(ctx, opts)
@@ -223,4 +224,72 @@ func TestCloneRepository_AllowsSafeSchemes(t *testing.T) {
 
 func containsToken(errMsg, token string) bool {
 	return len(token) > 0 && filepath.Base(errMsg) == token
+}
+
+// TestCloneRepository_SSRFProtection verifies that private, loopback, link-local IPs and localhost
+// are blocked from git clone unless AllowLocal is explicitly enabled.
+func TestCloneRepository_SSRFProtection(t *testing.T) {
+	ssrfURLs := []string{
+		"http://127.0.0.1:8080/repo.git",
+		"https://127.0.0.1/evil.git",
+		"http://localhost/repo.git",
+		"https://sub.localhost/repo.git",
+		"http://app.local/repo.git",
+		"http://service.internal/repo.git",
+		"http://10.0.0.1/internal.git",
+		"http://172.16.0.1/internal.git",
+		"http://192.168.1.1/internal.git",
+		"http://169.254.169.254/latest/meta-data/",
+		"git@127.0.0.1:internal/repo.git",
+	}
+
+	for _, rawURL := range ssrfURLs {
+		t.Run(rawURL, func(t *testing.T) {
+			ctx := context.Background()
+			opts := git.CloneOptions{
+				RepoURL:    rawURL,
+				WorkDir:    filepath.Join(t.TempDir(), "ssrf-clone"),
+				AllowLocal: false,
+			}
+
+			_, err := git.CloneRepository(ctx, opts)
+			if err == nil {
+				t.Fatalf("expected SSRF URL %q to be rejected, but clone succeeded", rawURL)
+			}
+			if errors.Is(err, git.ErrCloneFailed) {
+				t.Errorf("SSRF URL %q reached git exec instead of being blocked: %v", rawURL, err)
+			}
+		})
+	}
+}
+
+// TestCloneRepository_CommitSHAValidation verifies invalid commit SHAs and flag injection attempts are rejected.
+func TestCloneRepository_CommitSHAValidation(t *testing.T) {
+	invalidSHAs := []string{
+		"--upload-pack=touch /tmp/pwn",
+		"-f",
+		"not-a-valid-sha!",
+		"123", // too short (< 4 chars)
+		"1a2b3c4d5e6f; rm -rf /",
+	}
+
+	for _, sha := range invalidSHAs {
+		t.Run(sha, func(t *testing.T) {
+			ctx := context.Background()
+			opts := git.CloneOptions{
+				RepoURL:    "https://example.invalid/org/repo.git",
+				CommitSHA:  sha,
+				WorkDir:    filepath.Join(t.TempDir(), "sha-clone"),
+				AllowLocal: true,
+			}
+
+			_, err := git.CloneRepository(ctx, opts)
+			if err == nil {
+				t.Fatalf("expected invalid SHA %q to be rejected", sha)
+			}
+			if errors.Is(err, git.ErrCloneFailed) {
+				t.Errorf("invalid SHA %q reached git exec instead of being rejected: %v", sha, err)
+			}
+		})
+	}
 }

@@ -11,12 +11,13 @@ type rateRecord struct {
 	timestamps []time.Time
 }
 
-// RateLimiter implements an in-memory sliding-window rate limiter.
+// RateLimiter implements an in-memory sliding-window rate limiter with background TTL cleanup.
 type RateLimiter struct {
-	limit   int
-	window  time.Duration
-	records map[string]*rateRecord
-	mu      sync.Mutex
+	limit    int
+	window   time.Duration
+	records  map[string]*rateRecord
+	mu       sync.Mutex
+	stopChan chan struct{}
 }
 
 // NewRateLimiter creates a new RateLimiter with the given limit and window.
@@ -28,10 +29,12 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 		window = time.Minute
 	}
 	rl := &RateLimiter{
-		limit:   limit,
-		window:  window,
-		records: make(map[string]*rateRecord),
+		limit:    limit,
+		window:   window,
+		records:  make(map[string]*rateRecord),
+		stopChan: make(chan struct{}),
 	}
+	go rl.cleanupLoop()
 	return rl
 }
 
@@ -50,17 +53,16 @@ func (rl *RateLimiter) Allow(key string) (allowed bool, remaining int, retryAfte
 	}
 
 	// Prune timestamps older than cutoff
-	validIdx := 0
+	validIdx := -1
 	for i, ts := range rec.timestamps {
 		if ts.After(cutoff) {
 			validIdx = i
 			break
 		}
-		if i == len(rec.timestamps)-1 {
-			validIdx = len(rec.timestamps)
-		}
 	}
-	if validIdx > 0 {
+	if validIdx == -1 {
+		rec.timestamps = rec.timestamps[:0]
+	} else if validIdx > 0 {
 		rec.timestamps = rec.timestamps[validIdx:]
 	}
 
@@ -81,6 +83,61 @@ func (rl *RateLimiter) Allow(key string) (allowed bool, remaining int, retryAfte
 	return true, rem, 0
 }
 
+// Cleanup removes rate records that have no timestamps within the given TTL window.
+func (rl *RateLimiter) Cleanup(ttl time.Duration) int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	if ttl <= 0 {
+		ttl = rl.window
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-ttl)
+	evicted := 0
+
+	for k, rec := range rl.records {
+		validIdx := -1
+		for i, ts := range rec.timestamps {
+			if ts.After(cutoff) {
+				validIdx = i
+				break
+			}
+		}
+		if validIdx == -1 {
+			delete(rl.records, k)
+			evicted++
+		} else if validIdx > 0 {
+			rec.timestamps = rec.timestamps[validIdx:]
+		}
+	}
+	return evicted
+}
+
+// Stop stops the background eviction loop.
+func (rl *RateLimiter) Stop() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.stopChan != nil {
+		close(rl.stopChan)
+		rl.stopChan = nil
+	}
+}
+
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(rl.window)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			rl.Cleanup(rl.window)
+		case <-rl.stopChan:
+			return
+		}
+	}
+}
+
 // TieredRateLimiter coordinates rate limiting across endpoint scopes.
 type TieredRateLimiter struct {
 	loginLimiter *RateLimiter // 5 / min
@@ -96,6 +153,22 @@ func NewTieredRateLimiter() *TieredRateLimiter {
 		nudgeLimiter: NewRateLimiter(60, time.Minute),
 		restLimiter:  NewRateLimiter(600, time.Minute),
 		wsLimiter:    NewRateLimiter(30, time.Minute),
+	}
+}
+
+// Stop terminates background cleanup loops for all sub-limiters.
+func (t *TieredRateLimiter) Stop() {
+	if t.loginLimiter != nil {
+		t.loginLimiter.Stop()
+	}
+	if t.nudgeLimiter != nil {
+		t.nudgeLimiter.Stop()
+	}
+	if t.restLimiter != nil {
+		t.restLimiter.Stop()
+	}
+	if t.wsLimiter != nil {
+		t.wsLimiter.Stop()
 	}
 }
 

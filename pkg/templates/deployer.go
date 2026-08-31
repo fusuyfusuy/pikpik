@@ -14,6 +14,7 @@ import (
 	"time"
 
 	dockerTypes "github.com/docker/docker/api/types"
+	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
@@ -38,20 +39,31 @@ type DefaultDeployer struct {
 	catalog    *Catalog
 	st         store.Store
 	orch       orchestration.Orchestrator
+	vault      crypto.Vault
 	volumeRoot string
 }
 
 // NewDeployer constructs a new DefaultDeployer instance.
-func NewDeployer(catalog *Catalog, st store.Store, orch orchestration.Orchestrator) *DefaultDeployer {
+func NewDeployer(catalog *Catalog, st store.Store, orch orchestration.Orchestrator, vault ...crypto.Vault) *DefaultDeployer {
 	if catalog == nil {
 		catalog = DefaultCatalog()
+	}
+	var v crypto.Vault
+	if len(vault) > 0 {
+		v = vault[0]
 	}
 	return &DefaultDeployer{
 		catalog:    catalog,
 		st:         st,
 		orch:       orch,
+		vault:      v,
 		volumeRoot: DefaultVolumeRootPath,
 	}
+}
+
+// SetVault sets or updates the crypto vault used for encrypting secret variables.
+func (d *DefaultDeployer) SetVault(vault crypto.Vault) {
+	d.vault = vault
 }
 
 // SetVolumeRoot overrides the default volume base path (useful for testing).
@@ -173,12 +185,18 @@ func (d *DefaultDeployer) Deploy(ctx context.Context, templateID string, req Dep
 		// Persist Environment Variables
 		for k, v := range resolvedVars {
 			isSecret := isSecretVar(tpl, k)
+			val := v
+			if isSecret && d.vault != nil && !strings.HasPrefix(val, "v1:") {
+				if enc, err := d.vault.EncryptString(ctx, val); err == nil {
+					val = enc
+				}
+			}
 			_ = d.st.EnvVars().Set(ctx, &store.EnvVar{
 				ID:             store.NewID("env"),
 				ScopeTier:      store.TierService,
 				ResourceID:     appID,
 				Key:            k,
-				ValueEncrypted: v,
+				ValueEncrypted: val,
 				IsSecret:       isSecret,
 				CreatedAt:      time.Now().UTC(),
 				UpdatedAt:      time.Now().UTC(),
@@ -535,6 +553,7 @@ func (d *DefaultDeployer) rollback(ctx context.Context, appID string, networkNam
 
 	// 3. Purge persisted store metadata for the app
 	if d.st != nil && appID != "" {
+		_ = d.st.EnvVars().DeleteByResource(context.Background(), store.TierService, appID)
 		_ = d.st.Services().Delete(context.Background(), appID)
 		for _, vr := range volumeRecords {
 			_ = d.st.Volumes().Delete(context.Background(), vr.ID)

@@ -33,8 +33,8 @@ func NewSocketDockerExecRunner(cli client.CommonAPIClient) *SocketDockerExecRunn
 
 // ExecStreamStdout executes a command inside a container and demuxes stdout to writer without buffering to disk.
 func (r *SocketDockerExecRunner) ExecStreamStdout(ctx context.Context, containerID string, cmd []string, env []string, stdout io.Writer) (int, error) {
-	if r.cli == nil {
-		return 0, nil
+	if r == nil || r.cli == nil {
+		return -1, errors.New("docker exec runner is nil or client not configured")
 	}
 
 	execCreate, err := r.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
@@ -73,8 +73,8 @@ func (r *SocketDockerExecRunner) ExecStreamStdout(ctx context.Context, container
 
 // ExecStreamStdin executes a restore command inside a container, streaming stdin directly into the process.
 func (r *SocketDockerExecRunner) ExecStreamStdin(ctx context.Context, containerID string, cmd []string, env []string, stdin io.Reader) (int, error) {
-	if r.cli == nil {
-		return 0, nil
+	if r == nil || r.cli == nil {
+		return -1, errors.New("docker exec runner is nil or client not configured")
 	}
 
 	execCreate, err := r.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
@@ -155,16 +155,34 @@ func (cw *countingWriter) BytesWritten() int64 {
 
 // StreamBackup runs a native dump inside the container and streams compressed output to S3 without saving to disk.
 func (e *DefaultBackupEngine) StreamBackup(ctx context.Context, cfg BackupJobConfig) (*BackupResult, error) {
+	if e == nil {
+		return nil, errors.New("backup engine is nil")
+	}
+	if e.execRunner == nil {
+		return nil, errors.New("docker exec runner is nil")
+	}
 	return ExecuteMultiDBBackup(ctx, e.execRunner, e.s3Client, cfg)
 }
 
 // StreamRestore downloads an S3 backup stream, decompresses it in memory, and pipes directly to container stdin.
 func (e *DefaultBackupEngine) StreamRestore(ctx context.Context, cfg RestoreJobConfig) error {
+	if e == nil {
+		return errors.New("backup engine is nil")
+	}
+	if e.execRunner == nil {
+		return errors.New("docker exec runner is nil")
+	}
 	return ExecuteMultiDBRestore(ctx, e.execRunner, e.s3Client, cfg)
 }
 
 // VerifyBackupEphemeral boots a scratch container and validates restore stream integrity.
 func (e *DefaultBackupEngine) VerifyBackupEphemeral(ctx context.Context, cfg RestoreJobConfig) (bool, error) {
+	if e == nil {
+		return false, errors.New("backup engine is nil")
+	}
+	if e.execRunner == nil {
+		return false, errors.New("docker exec runner is nil")
+	}
 	// # ponytail: ephemeral verify scratch container <- defer full swarm boot -> worker task queue
 	if cfg.S3Key == "" {
 		return false, errors.New("s3Key is required for verification")

@@ -9,6 +9,7 @@ import { Modal } from '../components/ui/Modal';
 import { Tabs } from '../components/ui/Tabs';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatBytes, formatDate } from '../lib/utils';
 import { usePTY } from '../hooks/usePTY';
 import {
@@ -50,14 +51,26 @@ export function NodesView() {
   const isPTYConnected = ptyStatus === 'connected';
 
   // Remote Machines Query
-  const { data: machines = [], isLoading: isLoadingMachines } = useQuery({
+  const {
+    data: machines = [],
+    isLoading: isLoadingMachines,
+    isError: isMachinesError,
+    error: machinesError,
+    refetch: refetchMachines,
+  } = useQuery({
     queryKey: ['machines'],
     queryFn: api.machines.list,
     refetchInterval: 5000,
   });
 
   // Swarm Nodes Query
-  const { data: nodes = [], isLoading: isLoadingNodes } = useQuery({
+  const {
+    data: nodes = [],
+    isLoading: isLoadingNodes,
+    isError: isNodesError,
+    error: nodesError,
+    refetch: refetchNodes,
+  } = useQuery({
     queryKey: ['nodes'],
     queryFn: api.nodes.list,
     refetchInterval: 5000,
@@ -274,7 +287,17 @@ export function NodesView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoadingMachines ? (
+                {isMachinesError ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="p-4">
+                      <QueryErrorAlert
+                        title="Failed to discover machines"
+                        error={machinesError}
+                        onRetry={refetchMachines}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ) : isLoadingMachines ? (
                   <TableRow>
                     <TableCell colSpan={9} className="text-center py-8 text-zinc-500">
                       Discovering managed machines...
@@ -475,7 +498,17 @@ export function NodesView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoadingNodes ? (
+                {isNodesError ? (
+                  <TableRow>
+                    <TableCell colSpan={9} className="p-4">
+                      <QueryErrorAlert
+                        title="Failed to load swarm cluster nodes"
+                        error={nodesError}
+                        onRetry={refetchNodes}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ) : isLoadingNodes ? (
                   <TableRow>
                     <TableCell colSpan={9} className="text-center py-8 text-zinc-500">
                       Loading swarm cluster nodes...

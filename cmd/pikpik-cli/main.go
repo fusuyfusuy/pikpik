@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/api"
+	"github.com/fusuycorp/pikpik/pkg/templates"
 	"github.com/gorilla/websocket"
 	flag "github.com/spf13/pflag"
 	"golang.org/x/term"
@@ -58,6 +59,14 @@ func main() {
 		runLogs(args)
 	case "stats":
 		runStats(args)
+	case "domain", "domains", "ingress":
+		runDomain(args)
+	case "registry":
+		runRegistry(args)
+	case "template", "templates", "marketplace":
+		runTemplate(args)
+	case "schedule", "schedules":
+		runSchedule(args)
 	case "stack", "stacks":
 		runStack(args)
 	case "network", "networks":
@@ -93,12 +102,16 @@ Commands:
   nodes         Inspect cluster nodes, allocation, and availability
   machine       Manage remote agent hosts, telemetry, and swarm enrollment
   deploy        Trigger rolling deployment for active project or image
+  domain        Manage custom ingress domains, ACME TLS, and Caddy routing
+  registry      Manage private OCI container registry and robot credentials
+  template      Discover and deploy 1-click marketplace template stacks
+  schedule      Manage automated cron database backup schedules
   stack         Manage multi-container Compose v2 application stacks
   network       Manage bridge, project-mesh, and overlay virtual networks
   volume        Manage persistent data storage volumes
   logs          Stream aggregated real-time container logs
   stats         Display real-time CPU, RAM, Network and IO metrics
-  db            Manage databases, snapshots, and S3 restores
+  db            Manage databases, snapshots, schedules, and S3 restores
   prune         Garbage collect unused images, containers, and volumes
   exec          Open an interactive PTY shell inside a container
   context       Manage CLI contexts and active cluster connections
@@ -215,7 +228,11 @@ func runLogin(args []string) {
 		os.Exit(1)
 	}
 
-	cfg, _ := cm.Load()
+	cfg, err := cm.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Config load failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	finalToken := *token
 	if finalToken == "" {
@@ -609,10 +626,16 @@ func runLogs(args []string) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		if !*follow {
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		}
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				return
+			}
+			if !*follow {
+				_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 			}
 			var frame api.WSMessage
 			if err := json.Unmarshal(msg, &frame); err == nil {
@@ -624,14 +647,19 @@ func runLogs(args []string) {
 							fmt.Println(line)
 						}
 					} else if m, ok := frame.Data.(map[string]any); ok {
-						fmt.Printf("%v\n", m["line"])
+						if line, ok := m["line"].(string); ok {
+							if *timestamps && !frame.Time.IsZero() {
+								fmt.Printf("[%s] %s\n", frame.Time.Format(time.RFC3339), line)
+							} else {
+								fmt.Println(line)
+							}
+						} else {
+							fmt.Printf("%v\n", m["line"])
+						}
 					}
 				}
 			} else {
 				fmt.Println(string(msg))
-			}
-			if !*follow {
-				break
 			}
 		}
 	}()
@@ -663,8 +691,8 @@ func runStats(args []string) {
 	}
 	_ = conn.WriteJSON(sub)
 
-	fmt.Printf("%-20s %-12s %-15s %-15s\n", "TARGET", "CPU %", "MEMORY", "STATUS")
-	fmt.Println(strings.Repeat("-", 65))
+	fmt.Printf("%-24s %-12s %-22s %-12s\n", "TARGET", "CPU %", "MEMORY", "STATUS")
+	fmt.Println(strings.Repeat("-", 74))
 
 	for i := 0; i < 5; i++ {
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -674,7 +702,42 @@ func runStats(args []string) {
 		}
 		var frame api.WSMessage
 		if err := json.Unmarshal(msg, &frame); err == nil {
-			fmt.Printf("%-20s %-12v %-15v Active\n", frame.TargetID, frame.Event, frame.Data)
+			target := frame.TargetID
+			if target == "" || target == "*" {
+				target = frame.Event
+			}
+			if target == "" {
+				target = "system"
+			}
+			cpuStr := "0.00%"
+			memStr := "0 B"
+			statusStr := "Active"
+
+			if m, ok := frame.Data.(map[string]any); ok {
+				if cpu, ok := m["cpu_percent"].(float64); ok {
+					cpuStr = fmt.Sprintf("%.2f%%", cpu)
+				} else if cpu, ok := m["cpu"].(float64); ok {
+					cpuStr = fmt.Sprintf("%.2f%%", cpu)
+				}
+
+				if memUsed, ok := m["memory_used_bytes"].(float64); ok {
+					if memLimit, ok := m["memory_limit_bytes"].(float64); ok && memLimit > 0 {
+						memStr = fmt.Sprintf("%s / %s", formatBytesInt(int64(memUsed)), formatBytesInt(int64(memLimit)))
+					} else {
+						memStr = formatBytesInt(int64(memUsed))
+					}
+				} else if memUsed, ok := m["mem_used_bytes"].(float64); ok {
+					memStr = formatBytesInt(int64(memUsed))
+				} else if memPct, ok := m["memory_percent"].(float64); ok {
+					memStr = fmt.Sprintf("%.2f%%", memPct)
+				}
+
+				if st, ok := m["status"].(string); ok && st != "" {
+					statusStr = st
+				}
+			}
+
+			fmt.Printf("%-24s %-12s %-22s %-12s\n", target, cpuStr, memStr, statusStr)
 		}
 	}
 }
@@ -682,7 +745,7 @@ func runStats(args []string) {
 // 7. pikpik db
 func runDB(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: pikpik db [backup|backups|restore] <database_name>")
+		fmt.Println("Usage: pikpik db [backup|backups|restore|schedule] <database_name>")
 		os.Exit(1)
 	}
 
@@ -731,6 +794,9 @@ func runDB(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("Database snapshot %s restored successfully.\n", *snap)
+
+	case "schedule", "schedules":
+		runSchedule(args[1:])
 	}
 }
 
@@ -857,7 +923,11 @@ func runContext(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		cfg, _ := cm.Load()
+		cfg, err := cm.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Config load failed: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Printf("%-3s %-16s %s\n", "CUR", "NAME", "SERVER URL")
 		for name, ctx := range cfg.Contexts {
 			cur := " "
@@ -880,13 +950,20 @@ func runContext(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		cfg, _ := cm.Load()
+		cfg, err := cm.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Config load failed: %v\n", err)
+			os.Exit(1)
+		}
 		if _, exists := cfg.Contexts[name]; !exists {
 			fmt.Fprintf(os.Stderr, "Context %q does not exist.\n", name)
 			os.Exit(1)
 		}
 		cfg.CurrentContext = name
-		_ = cm.Save(cfg)
+		if err := cm.Save(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Config save failed: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Printf("Switched to context %q.\n", name)
 	}
 }
@@ -1461,5 +1538,430 @@ func runMachine(args []string) {
 		os.Exit(1)
 	}
 }
+
+// 12. pikpik domain / ingress
+func runDomain(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	sub := args[0]
+	client, _, _ := getClient()
+
+	switch sub {
+	case "list", "ls":
+		domains, err := client.ListDomains(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing domains failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(domains) == 0 {
+			fmt.Println("No custom domain bindings found.")
+			return
+		}
+		fmt.Printf("%-28s %-20s %-10s %s\n", "DOMAIN", "APP ID", "AUTO TLS", "CREATED AT")
+		fmt.Println(strings.Repeat("-", 75))
+		for _, d := range domains {
+			tlsStatus := "Disabled"
+			if d.AutoTLS {
+				tlsStatus = "Enabled"
+			}
+			fmt.Printf("%-28s %-20s %-10s %s\n", d.Domain, d.AppID, tlsStatus, d.CreatedAt.Format(time.RFC3339))
+		}
+
+	case "bind", "add":
+		fs := flag.NewFlagSet("domain bind", flag.ExitOnError)
+		noTLS := fs.Bool("no-tls", false, "Disable automatic ACME TLS issuance")
+		_ = fs.Parse(args[1:])
+
+		pos := fs.Args()
+		if len(pos) < 2 {
+			fmt.Println("Usage: pikpik domain bind <app_id> <domain> [--no-tls]")
+			os.Exit(1)
+		}
+		appID := pos[0]
+		domainName := pos[1]
+
+		binding, err := client.BindDomain(context.Background(), api.BindDomainRequest{
+			AppID:   appID,
+			Domain:  domainName,
+			AutoTLS: !*noTLS,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Domain binding failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Domain %q successfully bound to app %q (ID: %s, TLS: %t)\n", binding.Domain, binding.AppID, binding.ID, binding.AutoTLS)
+
+	case "rm", "delete", "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik domain rm <domain_id_or_binding_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.DeleteDomain(context.Background(), id); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting domain failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Domain binding %q removed.\n", id)
+
+	case "cert", "upload-cert":
+		if len(args) < 4 {
+			fmt.Println("Usage: pikpik domain cert <domain> <cert_file_path> <key_file_path>")
+			os.Exit(1)
+		}
+		domainName := args[1]
+		certPath := args[2]
+		keyPath := args[3]
+
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed reading cert file: %v\n", err)
+			os.Exit(1)
+		}
+		keyPEM, err := os.ReadFile(keyPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed reading key file: %v\n", err)
+			os.Exit(1)
+		}
+
+		err = client.UploadCertificate(context.Background(), api.CertificateUploadRequest{
+			Domain:  domainName,
+			CertPEM: string(certPEM),
+			KeyPEM:  string(keyPEM),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Uploading certificate failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Certificate uploaded successfully for %s.\n", domainName)
+
+	case "reconcile", "sync":
+		if err := client.ReconcileIngress(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Ingress reconciliation failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Ingress routes and TLS state successfully reconciled with Caddy.")
+
+	case "caddy", "diagnostics":
+		cfg, err := client.GetCaddyConfig(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Retrieving Caddy diagnostics failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Caddy Status: %s (Latency: %dms, Active Routes: %d)\n", cfg.Status, cfg.LatencyMs, cfg.ActiveRoutes)
+		if len(cfg.Config) > 0 {
+			fmt.Println(string(cfg.Config))
+		}
+
+	default:
+		fmt.Printf("Unknown domain subcommand: %s\nUsage: pikpik domain [list|bind|rm|cert|reconcile|caddy]\n", sub)
+		os.Exit(1)
+	}
+}
+
+// 13. pikpik registry
+func runRegistry(args []string) {
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+
+	sub := args[0]
+	client, _, _ := getClient()
+
+	switch sub {
+	case "status":
+		st, err := client.GetRegistryStatus(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Retrieving registry status failed: %v\n", err)
+			os.Exit(1)
+		}
+		statusStr := "Stopped"
+		if st.IsRunning {
+			statusStr = "Online (OCI v2.8)"
+		}
+		fmt.Printf("Registry Status:  %s\n", statusStr)
+		fmt.Printf("Storage Footprint: %s\n", formatBytesInt(st.StorageBytes))
+		fmt.Printf("Repositories:     %d\n", st.Repositories)
+		if st.ContainerID != "" {
+			fmt.Printf("Container ID:     %s\n", st.ContainerID)
+		}
+
+	case "catalog", "ls", "list":
+		cat, err := client.ListRepositories(context.Background())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing registry catalog failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(cat.Repositories) == 0 {
+			fmt.Println("No container images in local registry.")
+			return
+		}
+		fmt.Printf("%-32s %s\n", "REPOSITORY", "TAGS")
+		fmt.Println(strings.Repeat("-", 60))
+		for _, repo := range cat.Repositories {
+			tags := cat.Tags[repo]
+			if len(tags) == 0 {
+				tags = []string{"latest"}
+			}
+			fmt.Printf("%-32s %s\n", repo, strings.Join(tags, ", "))
+		}
+
+	case "creds", "credentials":
+		fs := flag.NewFlagSet("registry creds", flag.ExitOnError)
+		project := fs.StringP("project", "p", "", "Project ID filter")
+		_ = fs.Parse(args[1:])
+
+		creds, err := client.GetRegistryCredentials(context.Background(), *project)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Retrieving registry credentials failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(creds) == 0 {
+			fmt.Println("Default robot account active.")
+			return
+		}
+		fmt.Printf("%-24s %-20s %s\n", "ROBOT USERNAME", "PROJECT", "CREATED AT")
+		fmt.Println(strings.Repeat("-", 65))
+		for _, c := range creds {
+			proj := c.ProjectID
+			if proj == "" {
+				proj = "cluster-global"
+			}
+			fmt.Printf("%-24s %-20s %s\n", c.Username, proj, c.CreatedAt.Format(time.RFC3339))
+		}
+
+	case "rotate":
+		id := ""
+		if len(args) > 1 {
+			id = args[1]
+		}
+		rotated, err := client.RotateRegistryCredentials(context.Background(), id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Rotating registry credentials failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Robot credentials rotated for %s (New Secret Token: %s)\n", rotated.Username, rotated.SecretToken)
+
+	case "gc", "garbage-collect":
+		if err := client.GarbageCollectRegistry(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Registry garbage collection failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Registry garbage collection completed. Unreferenced blobs pruned.")
+
+	default:
+		fmt.Printf("Unknown registry subcommand: %s\nUsage: pikpik registry [status|catalog|creds|rotate|gc]\n", sub)
+		os.Exit(1)
+	}
+}
+
+// 14. pikpik template
+func runTemplate(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	sub := args[0]
+	client, _, _ := getClient()
+
+	switch sub {
+	case "list", "ls":
+		fs := flag.NewFlagSet("template list", flag.ExitOnError)
+		category := fs.StringP("category", "c", "", "Category filter (e.g. Databases, DevTools, CMS)")
+		search := fs.StringP("search", "s", "", "Search query")
+		_ = fs.Parse(args[1:])
+
+		tpls, err := client.ListTemplates(context.Background(), *category, *search)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing templates failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(tpls) == 0 {
+			fmt.Println("No templates found.")
+			return
+		}
+		fmt.Printf("%-18s %-24s %-16s %-10s %s\n", "ID", "NAME", "CATEGORY", "SERVICES", "TAGS")
+		fmt.Println(strings.Repeat("-", 80))
+		for _, t := range tpls {
+			svcCount := fmt.Sprintf("%d", len(t.Services))
+			tags := strings.Join(t.Tags, ", ")
+			fmt.Printf("%-18s %-24s %-16s %-10s %s\n", t.ID, t.Name, t.Category, svcCount, tags)
+		}
+
+	case "info", "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik template info <template_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		tpl, err := client.GetTemplate(context.Background(), id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Retrieving template failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("ID:          %s\n", tpl.ID)
+		fmt.Printf("Name:        %s (v%s)\n", tpl.Name, tpl.Version)
+		fmt.Printf("Category:    %s\n", tpl.Category)
+		fmt.Printf("Description: %s\n", tpl.Description)
+		if len(tpl.Services) > 0 {
+			fmt.Println("\nServices:")
+			for _, s := range tpl.Services {
+				fmt.Printf("  - %s (Image: %s, Ports: %v)\n", s.Name, s.Image, s.Ports)
+			}
+		}
+		if len(tpl.EnvVars) > 0 {
+			fmt.Println("\nEnvironment Variables Schema:")
+			for _, ev := range tpl.EnvVars {
+				reqStr := "optional"
+				if ev.Required {
+					reqStr = "required"
+				}
+				fmt.Printf("  - %s: %s (Default: %q, %s)\n", ev.Key, ev.Description, ev.Default, reqStr)
+			}
+		}
+
+	case "deploy":
+		fs := flag.NewFlagSet("template deploy", flag.ExitOnError)
+		name := fs.StringP("name", "n", "", "Target application/stack name (required)")
+		project := fs.StringP("project", "p", "", "Project ID")
+		domain := fs.StringP("domain", "d", "", "Custom domain binding")
+		envFlags := fs.StringArrayP("env", "e", nil, "Set environment variables (KEY=VALUE)")
+		_ = fs.Parse(args[1:])
+
+		pos := fs.Args()
+		if len(pos) == 0 || *name == "" {
+			fmt.Println("Usage: pikpik template deploy <template_id> --name <app_name> [-p|--project <prj>] [-d|--domain <domain>] [-e KEY=VAL]")
+			os.Exit(1)
+		}
+		templateID := pos[0]
+
+		varMap := make(map[string]string)
+		for _, e := range *envFlags {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				varMap[parts[0]] = parts[1]
+			}
+		}
+
+		res, err := client.DeployTemplate(context.Background(), templateID, templates.DeployTemplateRequest{
+			Name:                *name,
+			ProjectID:           *project,
+			Domain:              *domain,
+			Variables:           varMap,
+			AutoGenerateMissing: true,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Template deployment failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Template %q deployed successfully! Stack/App: %s (Services: %d)\n", templateID, res.Name, len(res.Services))
+
+	default:
+		fmt.Printf("Unknown template subcommand: %s\nUsage: pikpik template [list|info|deploy]\n", sub)
+		os.Exit(1)
+	}
+}
+
+// 15. pikpik schedule
+func runSchedule(args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	sub := args[0]
+	client, _, _ := getClient()
+
+	switch sub {
+	case "list", "ls":
+		fs := flag.NewFlagSet("schedule list", flag.ExitOnError)
+		service := fs.StringP("service", "s", "", "Service ID filter")
+		_ = fs.Parse(args[1:])
+
+		schedules, err := client.ListBackupSchedules(context.Background(), *service)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Listing backup schedules failed: %v\n", err)
+			os.Exit(1)
+		}
+		if len(schedules) == 0 {
+			fmt.Println("No automated backup schedules found.")
+			return
+		}
+		fmt.Printf("%-24s %-20s %-12s %-16s %-10s %s\n", "SCHEDULE ID", "SERVICE", "ENGINE", "CRON EXPR", "RETENTION", "STATUS")
+		fmt.Println(strings.Repeat("-", 90))
+		for _, s := range schedules {
+			statusStr := "Disabled"
+			if s.IsEnabled {
+				statusStr = "Active"
+			}
+			ret := fmt.Sprintf("%dd", s.RetentionDaily)
+			if ret == "0d" {
+				ret = fmt.Sprintf("%dd", s.RetentionWeekly*7)
+			}
+			fmt.Printf("%-24s %-20s %-12s %-16s %-10s %s\n", s.ID, s.ServiceID, s.Engine, s.CronExpr, ret, statusStr)
+		}
+
+	case "create", "add":
+		fs := flag.NewFlagSet("schedule create", flag.ExitOnError)
+		service := fs.StringP("service", "s", "", "Service / Database name (required)")
+		engine := fs.StringP("engine", "e", "postgres", "Database engine (postgres|mysql|redis|mongodb)")
+		cron := fs.StringP("cron", "c", "0 0 * * *", "Cron expression (standard 5-part)")
+		retention := fs.IntP("retention", "r", 14, "Retention period in days")
+		_ = fs.Parse(args[1:])
+
+		if *service == "" {
+			fmt.Println("Usage: pikpik schedule create --service <db_name> [--engine <postgres>] [--cron \"0 0 * * * \"] [--retention 14]")
+			os.Exit(1)
+		}
+
+		enabled := true
+		sch, err := client.CreateBackupSchedule(context.Background(), api.CreateBackupScheduleRequest{
+			ServiceID:      *service,
+			DatabaseType:   *engine,
+			Engine:         *engine,
+			CronExpr:       *cron,
+			CronExpression: *cron,
+			RetentionDays:  *retention,
+			RetentionDaily: *retention,
+			IsEnabled:      &enabled,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Creating backup schedule failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Automated backup schedule created (ID: %s, Cron: %q, Retention: %dd)\n", sch.ID, sch.CronExpr, sch.RetentionDaily)
+
+	case "rm", "delete", "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: pikpik schedule rm <schedule_id>")
+			os.Exit(1)
+		}
+		id := args[1]
+		if err := client.DeleteBackupSchedule(context.Background(), id); err != nil {
+			fmt.Fprintf(os.Stderr, "Deleting backup schedule failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Backup schedule %q deleted.\n", id)
+
+	default:
+		fmt.Printf("Unknown schedule subcommand: %s\nUsage: pikpik schedule [list|create|rm]\n", sub)
+		os.Exit(1)
+	}
+}
+
+// formatBytesInt formats byte counts into human-readable string (KiB, MiB, GiB).
+func formatBytesInt(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 
 

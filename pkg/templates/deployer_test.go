@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/client"
+	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
@@ -380,5 +381,71 @@ func TestDeployer_RollbackOnPartialFailure(t *testing.T) {
 	if err == nil && len(svcs) > 0 {
 		t.Errorf("expected 0 services in store after rollback, found %d", len(svcs))
 	}
+
+	// Verify store env vars were cleaned up by rollback (no orphaned secrets)
+	if resp != nil && resp.AppID != "" {
+		envs, err := st.EnvVars().ListByResource(ctx, store.TierService, resp.AppID)
+		if err == nil && len(envs) > 0 {
+			t.Errorf("expected 0 env vars in store after rollback, found %d", len(envs))
+		}
+	}
 }
+
+func TestDeployer_DeployWithVaultEncryption(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open sqlite store: %v", err)
+	}
+	defer st.Close()
+	cat := DefaultCatalog()
+
+	vault, err := crypto.NewAESVault("master-secret-for-testing-vault-32b!")
+	if err != nil {
+		t.Fatalf("failed to create vault: %v", err)
+	}
+
+	mockCM := &testMockContainerManager{}
+	orch := &testMockOrchestrator{containers: mockCM}
+
+	deployer := NewDeployer(cat, st, orch, vault)
+	deployer.SetVolumeRoot(tmpDir)
+
+	req := DeployTemplateRequest{
+		Name: "test-vault-pb",
+	}
+
+	resp, err := deployer.Deploy(ctx, "pocketbase", req)
+	if err != nil {
+		t.Fatalf("deploy failed: %v", err)
+	}
+
+	envs, err := st.EnvVars().ListByResource(ctx, store.TierService, resp.AppID)
+	if err != nil || len(envs) == 0 {
+		t.Fatalf("expected env vars in store: %v", err)
+	}
+
+	foundKey := false
+	for _, env := range envs {
+		if env.Key == "POCKETBASE_ENCRYPTION_KEY" {
+			foundKey = true
+			if !strings.HasPrefix(env.ValueEncrypted, "v1:") {
+				t.Errorf("expected v1: prefix on encrypted secret, got: %s", env.ValueEncrypted)
+			}
+			decrypted, err := vault.DecryptString(ctx, env.ValueEncrypted)
+			if err != nil {
+				t.Fatalf("failed to decrypt secret: %v", err)
+			}
+			if len(decrypted) != 32 {
+				t.Errorf("expected 32-char decrypted secret, got length %d (%s)", len(decrypted), decrypted)
+			}
+		}
+	}
+	if !foundKey {
+		t.Errorf("expected POCKETBASE_ENCRYPTION_KEY in store env vars")
+	}
+}
+
 

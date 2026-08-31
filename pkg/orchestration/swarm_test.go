@@ -99,7 +99,7 @@ func TestSwarmManagerServiceLifecycle(t *testing.T) {
 			StartPeriod: 15 * time.Second,
 			Retries:     3,
 		},
-		Constraints: []string{"node.role == worker"},
+		Constraints: []string{"node.role == manager"},
 		UpdateConfig: orchestration.RollingUpdateConfig{
 			Order:       "start-first",
 			Parallelism: 1,
@@ -245,6 +245,35 @@ func TestSwarmManager_PlacementConstraintValidation(t *testing.T) {
 	}
 
 	// 2. Valid constraints in CreateService
+	mock.NodeListFunc = func(ctx context.Context, options types.NodeListOptions) ([]swarm.Node, error) {
+		return []swarm.Node{
+			{
+				ID: "node-worker-ssd",
+				Description: swarm.NodeDescription{
+					Hostname: "worker-01",
+					Engine: swarm.EngineDescription{
+						EngineVersion: "27.5.1",
+						Labels:        map[string]string{"operatingsystem": "linux", "driver": "overlay2"},
+					},
+					Resources: swarm.Resources{
+						NanoCPUs:    4 * 1e9,
+						MemoryBytes: 8 * 1024 * 1024 * 1024,
+					},
+				},
+				Spec: swarm.NodeSpec{
+					Role:         swarm.NodeRoleWorker,
+					Availability: swarm.NodeAvailabilityActive,
+					Annotations: swarm.Annotations{
+						Labels: map[string]string{"disk": "ssd"},
+					},
+				},
+				Status: swarm.NodeStatus{
+					State: swarm.NodeStateReady,
+				},
+			},
+		}, nil
+	}
+
 	validSpec := orchestration.ServiceSpec{
 		Name:  "valid-svc",
 		Image: "nginx:alpine",
@@ -260,6 +289,20 @@ func TestSwarmManager_PlacementConstraintValidation(t *testing.T) {
 	}
 	if sid == "" {
 		t.Errorf("expected non-empty service ID")
+	}
+
+	// 2b. Unmatchable constraints in CreateService -> should fail pre-flight validation
+	unmatchableSpec := orchestration.ServiceSpec{
+		Name:  "unmatchable-svc",
+		Image: "nginx:alpine",
+		Constraints: []string{
+			"node.role == worker",
+			"node.labels.disk == hdd",
+		},
+	}
+	_, unmatchErr := mgr.CreateService(ctx, unmatchableSpec)
+	if unmatchErr == nil {
+		t.Fatalf("expected error for unmatchable constraint, got nil")
 	}
 
 	// 3. Verify ListNodes populates EngineLabels

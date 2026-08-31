@@ -134,6 +134,7 @@ type EnvVarStore interface {
 	Get(ctx context.Context, tier ScopeTier, resourceID, key string) (*EnvVar, error)
 	ListByResource(ctx context.Context, tier ScopeTier, resourceID string) ([]*EnvVar, error)
 	Delete(ctx context.Context, tier ScopeTier, resourceID, key string) error
+	DeleteByResource(ctx context.Context, tier ScopeTier, resourceID string) error
 }
 
 // VolumeStore handles persistent storage volume metadata and managed volumes.

@@ -274,6 +274,43 @@ func TestBackupEngine_ContainerExecFailure(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestBackupEngine_NilExecRunner_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	mockS3 := &mockS3MultipartClient{
+		storage: make(map[string][]byte),
+	}
+
+	engine := backup.NewBackupEngine(mockS3, nil)
+
+	_, err := engine.StreamBackup(ctx, backup.BackupJobConfig{
+		BackupID:    "bk_nil_exec",
+		ProjectSlug: "proj",
+		ServiceSlug: "postgres",
+		Engine:      backup.EnginePostgres17,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "docker exec runner is nil")
+
+	err = engine.StreamRestore(ctx, backup.RestoreJobConfig{
+		RestoreID:   "rst_nil_exec",
+		ProjectSlug: "proj",
+		ServiceSlug: "postgres",
+		Engine:      backup.EnginePostgres17,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "docker exec runner is nil")
+
+	// Socket runner with nil CLI also returns error
+	socketRunner := backup.NewSocketDockerExecRunner(nil)
+	code, runErr := socketRunner.ExecStreamStdout(ctx, "c1", []string{"ls"}, nil, io.Discard)
+	assert.Equal(t, -1, code)
+	assert.Error(t, runErr)
+
+	code, runErr = socketRunner.ExecStreamStdin(ctx, "c1", []string{"cat"}, nil, strings.NewReader("hi"))
+	assert.Equal(t, -1, code)
+	assert.Error(t, runErr)
+}
+
 func TestPostgresTemplate_Generation(t *testing.T) {
 	tmpl, err := backup.GeneratePostgresTemplate(backup.PostgresTemplateConfig{
 		ProjectSlug:  "alpha",

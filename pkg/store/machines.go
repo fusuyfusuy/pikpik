@@ -43,6 +43,9 @@ func (s *sqlMachineStore) Create(ctx context.Context, m *ManagedMachine) error {
 		m.Status, m.LastSeen, m.CreatedAt, m.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create managed machine: %w", err)
 	}
 	return nil

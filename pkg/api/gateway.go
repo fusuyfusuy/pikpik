@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -63,6 +64,9 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 	}
 
 	pty := NewPTYHandler(opts.DockerClient)
+	if opts.Store != nil {
+		pty.SetStore(opts.Store)
+	}
 
 	mux := http.NewServeMux()
 	RegisterRoutes(
@@ -78,39 +82,58 @@ func NewAPIGatewayWithOptions(opts APIGatewayOptions) *APIGateway {
 		opts.BuildManager,
 	)
 
-	// Wrap mux with standard CORS, MaxBytesReader (10MB limit) and Request ID middleware
+	// Wrap mux with standard Security Headers, Panic Recovery, CORS, and MaxBytesReader (10MB limit)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if len(opts.AllowedOrigins) > 0 {
-			for _, o := range opts.AllowedOrigins {
-				if o == "*" {
-					w.Header().Set("Access-Control-Allow-Origin", "*")
-					break
+		// Panic recovery middleware
+		defer func() {
+			if rec := recover(); rec != nil {
+				reqID := r.Header.Get("X-Request-ID")
+				if reqID == "" {
+					reqID = GenerateRequestID()
 				}
-				if origin != "" && (o == origin || strings.EqualFold(o, origin)) {
+				WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, fmt.Sprintf("Internal server error: %v", rec), nil, reqID)
+			}
+		}()
+
+		// Security headers
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// CORS handling
+		if opts.EnableCors {
+			origin := r.Header.Get("Origin")
+			if len(opts.AllowedOrigins) > 0 {
+				for _, o := range opts.AllowedOrigins {
+					if o == "*" {
+						w.Header().Set("Access-Control-Allow-Origin", "*")
+						break
+					}
+					if origin != "" && (o == origin || strings.EqualFold(o, origin)) {
+						w.Header().Set("Access-Control-Allow-Origin", origin)
+						w.Header().Set("Access-Control-Allow-Credentials", "true")
+						w.Header().Set("Vary", "Origin")
+						break
+					}
+				}
+			} else {
+				// Default CORS behavior if no specific allowed origins list provided
+				if origin != "" {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 					w.Header().Set("Vary", "Origin")
-					break
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
 				}
 			}
-		} else {
-			// Default CORS behavior if no specific allowed origins list provided
-			if origin != "" {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Set("Vary", "Origin")
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
+
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Sec-WebSocket-Protocol, X-Request-ID, X-Node-ID, X-Node-Name, X-Node-Role")
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
 			}
-		}
-
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Sec-WebSocket-Protocol, X-Request-ID, X-Node-ID, X-Node-Name, X-Node-Role")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
 		}
 
 		// Enforce 10MB limit on incoming JSON/HTTP request bodies

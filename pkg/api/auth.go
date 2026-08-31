@@ -163,20 +163,23 @@ func AuthMiddleware(authSvc auth.AuthService, st store.Store, requiredRole strin
 						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, msg, nil, reqID)
 						return
 					}
-					// Fetch user to determine role
+					// Fetch user to determine role - fail closed if user does not exist or lookup fails
 					if st != nil {
-						if u, err := st.Users().GetByID(ctx, apiTok.UserID); err == nil && u != nil {
-							userRole = u.Role
-							userDTO = &UserDTO{
-								ID:        u.ID,
-								Email:     u.Email,
-								Role:      u.Role,
-								CreatedAt: u.CreatedAt,
-							}
+						u, err := st.Users().GetByID(ctx, apiTok.UserID)
+						if err != nil || u == nil {
+							WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "User associated with API token not found", nil, reqID)
+							return
 						}
-					}
-					if userRole == "" {
-						userRole = RoleAdmin // API tokens default to admin permissions if user query omitted
+						userRole = u.Role
+						userDTO = &UserDTO{
+							ID:        u.ID,
+							Email:     u.Email,
+							Role:      u.Role,
+							CreatedAt: u.CreatedAt,
+						}
+					} else {
+						WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, "User store unavailable", nil, reqID)
+						return
 					}
 				} else {
 					userRole = RoleAdmin
@@ -185,28 +188,28 @@ func AuthMiddleware(authSvc auth.AuthService, st store.Store, requiredRole strin
 				// Session cookie or raw token validation
 				if st != nil {
 					sess, err := st.Sessions().GetByID(ctx, rawSecret)
-					if err == nil && sess != nil {
-						if time.Now().UTC().Before(sess.ExpiresAt) {
-							if u, err := st.Users().GetByID(ctx, sess.UserID); err == nil && u != nil {
-								userRole = u.Role
-								userDTO = &UserDTO{
-									ID:        u.ID,
-									Email:     u.Email,
-									Role:      u.Role,
-									CreatedAt: u.CreatedAt,
-								}
-							}
-						}
+					if err != nil || sess == nil {
+						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "Invalid or expired session/token", nil, reqID)
+						return
 					}
-				}
-			}
-
-			if userRole == "" && authSvc == nil && st == nil {
-				userRole = RoleAdmin
-				userDTO = &UserDTO{
-					ID:    "mock_user",
-					Email: "admin@pikpik.local",
-					Role:  RoleAdmin,
+					if !time.Now().UTC().Before(sess.ExpiresAt) {
+						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "Session expired", nil, reqID)
+						return
+					}
+					u, err := st.Users().GetByID(ctx, sess.UserID)
+					if err != nil || u == nil {
+						WriteError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "User associated with session not found", nil, reqID)
+						return
+					}
+					userRole = u.Role
+					userDTO = &UserDTO{
+						ID:        u.ID,
+						Email:     u.Email,
+						Role:      u.Role,
+						CreatedAt: u.CreatedAt,
+					}
+				} else {
+					userRole = RoleAdmin
 				}
 			}
 

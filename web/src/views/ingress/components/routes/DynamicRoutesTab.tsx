@@ -5,15 +5,9 @@ import { Card } from '../../../../components/ui/Card';
 import { Button } from '../../../../components/ui/Button';
 import { Badge } from '../../../../components/ui/Badge';
 import { Input } from '../../../../components/ui/Input';
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from '../../../../components/ui/Table';
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../../../components/ui/Table';
 import { useToast } from '../../../../components/ui/Toast';
+import { QueryErrorAlert } from '../../../../components/ui/QueryErrorAlert';
 import { RouteGraph } from './RouteGraph';
 import { NewRouteModal } from './NewRouteModal';
 import {
@@ -36,7 +30,13 @@ export function DynamicRoutesTab() {
   const [isNewRouteModalOpen, setIsNewRouteModalOpen] = useState(false);
 
   // Queries
-  const { data: domains = [], isLoading: isLoadingDomains } = useQuery({
+  const {
+    data: domains = [],
+    isLoading: isLoadingDomains,
+    isError: isDomainsError,
+    error: domainsError,
+    refetch: refetchDomains,
+  } = useQuery({
     queryKey: ['domains'],
     queryFn: api.ingress.listDomains,
   });
@@ -159,7 +159,17 @@ export function DynamicRoutesTab() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoadingDomains ? (
+              {isDomainsError ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="p-4">
+                    <QueryErrorAlert
+                      title="Failed to load ingress routes"
+                      error={domainsError}
+                      onRetry={refetchDomains}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : isLoadingDomains ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-8 text-zinc-500 text-xs">
                     <RotateCw className="w-5 h-5 animate-spin mx-auto mb-2 text-cyan-400 opacity-60" />

@@ -285,6 +285,8 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 						_ = downsampler.DownsampleAndSave(ctx, parts[0], parts[1], buf, hourStart)
 					}
 				}
+				// Prune rollup metrics older than 30 days
+				_, _ = downsampler.PruneExpiredMetrics(ctx, 30*24*time.Hour)
 			}
 		}
 	}()
@@ -304,6 +306,7 @@ func setupUnifiedServer(ctx context.Context, cfg ServerConfig) (*http.Server, fu
 		BackupEngine:   backupEng,
 		Registry:       regMgr,
 		ConfigManager:  configMgr,
+		Vault:          vault,
 		WSHub:          apiWSHub,
 		SSEBroadcaster: sseBroadcaster,
 	})

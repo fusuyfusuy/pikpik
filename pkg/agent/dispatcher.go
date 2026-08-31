@@ -7,12 +7,43 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+var validContainerIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+func validateContainerID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("missing container id")
+	}
+	if strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "..") || strings.Contains(id, "%") || !validContainerIDRegex.MatchString(id) {
+		return fmt.Errorf("invalid container id %q: path traversal or invalid characters detected", id)
+	}
+	return nil
+}
+
+func sanitizeTail(tail string) string {
+	tail = strings.TrimSpace(tail)
+	if tail == "" || tail == "all" {
+		if tail == "all" {
+			return "all"
+		}
+		return "100"
+	}
+	for _, r := range tail {
+		if r < '0' || r > '9' {
+			return "100"
+		}
+	}
+	return tail
+}
 
 // CommandHandlerFunc is the signature for handling specific agent commands.
 type CommandHandlerFunc func(ctx context.Context, cmd *CommandPayload) (interface{}, error)
@@ -150,11 +181,11 @@ func (d *defaultDispatcher) handleDockerInspect(ctx context.Context, cmd *Comman
 		targetID = val
 	}
 
-	if targetID == "" {
-		return nil, fmt.Errorf("missing container id for docker.inspect")
+	if err := validateContainerID(targetID); err != nil {
+		return nil, err
 	}
 
-	url := fmt.Sprintf("http://localhost/containers/%s/json", targetID)
+	url := fmt.Sprintf("http://localhost/containers/%s/json", url.PathEscape(targetID))
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -195,11 +226,12 @@ func (d *defaultDispatcher) handleDockerLogs(ctx context.Context, cmd *CommandPa
 		}
 	}
 
-	if targetID == "" {
-		return nil, fmt.Errorf("missing container id for docker.logs")
+	if err := validateContainerID(targetID); err != nil {
+		return nil, err
 	}
+	tail = sanitizeTail(tail)
 
-	url := fmt.Sprintf("http://localhost/containers/%s/logs?stdout=true&stderr=true&tail=%s", targetID, tail)
+	url := fmt.Sprintf("http://localhost/containers/%s/logs?stdout=true&stderr=true&tail=%s", url.PathEscape(targetID), url.QueryEscape(tail))
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err

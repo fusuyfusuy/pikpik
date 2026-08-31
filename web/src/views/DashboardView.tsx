@@ -27,6 +27,8 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
+
 export interface DashboardViewProps {
   onNavigate: (view: string) => void;
 }
@@ -39,40 +41,77 @@ const mockTelemetry = Array.from({ length: 20 }, (_, i) => ({
 }));
 
 export function DashboardView({ onNavigate }: DashboardViewProps) {
-  const { data: apps, refetch: refetchApps } = useQuery({
+  const {
+    data: apps,
+    isError: isAppsError,
+    error: appsError,
+    refetch: refetchApps,
+  } = useQuery({
     queryKey: ['apps'],
     queryFn: () => api.apps.list(),
   });
 
-  const { data: stacks, refetch: refetchStacks } = useQuery({
+  const {
+    data: stacks,
+    isError: isStacksError,
+    error: stacksError,
+    refetch: refetchStacks,
+  } = useQuery({
     queryKey: ['stacks'],
     queryFn: api.stacks.list,
   });
 
-  const { data: nodes, refetch: refetchNodes } = useQuery({
+  const {
+    data: nodes,
+    isError: isNodesError,
+    error: nodesError,
+    refetch: refetchNodes,
+  } = useQuery({
     queryKey: ['nodes'],
     queryFn: api.nodes.list,
   });
 
-  const { data: databases, refetch: refetchDatabases } = useQuery({
+  const {
+    data: databases,
+    isError: isDatabasesError,
+    error: databasesError,
+    refetch: refetchDatabases,
+  } = useQuery({
     queryKey: ['databases'],
     queryFn: api.databases.list,
   });
 
-  const { data: domains, refetch: refetchDomains } = useQuery({
+  const {
+    data: domains,
+    isError: isDomainsError,
+    error: domainsError,
+    refetch: refetchDomains,
+  } = useQuery({
     queryKey: ['domains'],
     queryFn: api.ingress.listDomains,
   });
 
-  const { data: systemInfo } = useQuery({
+  const {
+    data: systemInfo,
+    isError: isSystemInfoError,
+    error: systemInfoError,
+    refetch: refetchSystemInfo,
+  } = useQuery({
     queryKey: ['systemInfo'],
     queryFn: api.system.getInfo,
   });
 
-  const { data: diskInfo } = useQuery({
+  const {
+    data: diskInfo,
+    refetch: refetchDiskInfo,
+  } = useQuery({
     queryKey: ['diskInfo'],
     queryFn: api.system.getDiskUsage,
   });
+
+  const isAllError = isAppsError && isNodesError && isDatabasesError;
+  const hasAnyError = isAppsError || isStacksError || isNodesError || isDatabasesError || isDomainsError || isSystemInfoError;
+  const firstError = appsError || nodesError || databasesError || stacksError || domainsError || systemInfoError;
 
   const activeAppsCount = apps?.filter((a) => a.status === 'running').length || 0;
   const readyNodesCount = nodes?.filter((n) => n.status === 'ready').length || 0;
@@ -84,6 +123,8 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
     refetchNodes();
     refetchDatabases();
     refetchDomains();
+    refetchSystemInfo();
+    refetchDiskInfo();
   };
 
   return (
@@ -93,9 +134,19 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
         <div>
           <h1 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2.5">
             <span>Cluster Overview</span>
-            <Badge variant="success" dot pulse>
-              Swarm Operational
-            </Badge>
+            {isAllError ? (
+              <Badge variant="error" dot pulse>
+                Cluster Unreachable
+              </Badge>
+            ) : hasAnyError ? (
+              <Badge variant="warning" dot pulse>
+                Degraded Telemetry
+              </Badge>
+            ) : (
+              <Badge variant="success" dot pulse>
+                Swarm Operational
+              </Badge>
+            )}
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
             Real-time telemetry, categorized workloads, and infrastructure allocation
@@ -111,6 +162,14 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
           </Button>
         </div>
       </div>
+
+      {hasAnyError && (
+        <QueryErrorAlert
+          title="Cluster Query Warning"
+          error={firstError}
+          onRetry={handleRefreshAll}
+        />
+      )}
 
       {/* Categorized Metric Cards Grid (5 Pillars) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

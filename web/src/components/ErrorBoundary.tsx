@@ -71,7 +71,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       const componentStack = this.state.errorInfo?.componentStack;
 
       return (
-        <div className="min-h-screen bg-[#09090b] text-zinc-100 flex items-center justify-center p-6 select-text">
+        <div className="min-h-[400px] w-full text-zinc-100 flex items-center justify-center p-6 select-text">
           <div className="max-w-xl w-full bg-zinc-950/80 border border-zinc-800 rounded-xl p-6 shadow-2xl backdrop-blur-md space-y-6">
             <div className="flex items-start gap-4">
               <div className="p-3 bg-rose-950/50 border border-rose-800/60 rounded-lg text-rose-400 shrink-0">

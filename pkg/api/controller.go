@@ -21,6 +21,7 @@ import (
 	"github.com/fusuycorp/pikpik/pkg/backup"
 	"github.com/fusuycorp/pikpik/pkg/build"
 	"github.com/fusuycorp/pikpik/pkg/config"
+	"github.com/fusuycorp/pikpik/pkg/crypto"
 	"github.com/fusuycorp/pikpik/pkg/git"
 	"github.com/fusuycorp/pikpik/pkg/ingress"
 	"github.com/fusuycorp/pikpik/pkg/orchestration"
@@ -167,6 +168,7 @@ type ControllerDependencies struct {
 	BackupEngine   backup.BackupEngine
 	Registry       registry.RegistryManager
 	ConfigManager  config.ConfigManager
+	Vault          crypto.Vault
 	WSHub          *WebSocketHub
 	SSEBroadcaster *SSEBroadcaster
 	BuildManager   *build.BuildManager
@@ -183,6 +185,7 @@ type DefaultController struct {
 	backup         backup.BackupEngine
 	reg            registry.RegistryManager
 	configMgr      config.ConfigManager
+	vault          crypto.Vault
 	wsHub          *WebSocketHub
 	sseBroadcaster *SSEBroadcaster
 	buildMgr       *build.BuildManager
@@ -208,7 +211,7 @@ type DefaultController struct {
 func NewDefaultController(deps ControllerDependencies) *DefaultController {
 	deployer := deps.Deployer
 	if deployer == nil {
-		deployer = templates.NewDeployer(templates.DefaultCatalog(), deps.Store, deps.Orchestrator)
+		deployer = templates.NewDeployer(templates.DefaultCatalog(), deps.Store, deps.Orchestrator, deps.Vault)
 	}
 	return &DefaultController{
 		st:             deps.Store,
@@ -218,6 +221,7 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 		backup:         deps.BackupEngine,
 		reg:            deps.Registry,
 		configMgr:      deps.ConfigManager,
+		vault:          deps.Vault,
 		wsHub:          deps.WSHub,
 		sseBroadcaster: deps.SSEBroadcaster,
 		buildMgr:       deps.BuildManager,
@@ -237,6 +241,27 @@ func NewDefaultController(deps ControllerDependencies) *DefaultController {
 	}
 }
 
+func (c *DefaultController) recordAudit(ctx context.Context, action, resType, resID, metadataJSON string) {
+	if c.st == nil || c.st.Audit() == nil {
+		return
+	}
+	userID := ""
+	if u, ok := GetUserFromContext(ctx); ok && u != nil {
+		userID = u.ID
+	}
+	_ = c.st.Audit().Record(ctx, userID, action, resType, resID, metadataJSON, "")
+}
+
+func isSecretEnvKey(k string) bool {
+	upper := strings.ToUpper(k)
+	return strings.Contains(upper, "PASSWORD") ||
+		strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "KEY") ||
+		strings.Contains(upper, "TOKEN") ||
+		strings.Contains(upper, "AUTH") ||
+		strings.Contains(upper, "PRIVATE")
+}
+
 // --- Auth Operations ---
 
 func (c *DefaultController) Login(ctx context.Context, email, password string) (*LoginResponse, error) {
@@ -245,7 +270,7 @@ func (c *DefaultController) Login(ctx context.Context, email, password string) (
 		tok := "pik_live_mockdevsessiontoken000000"
 		return &LoginResponse{
 			Token:     tok,
-			ExpiresAt: time.Now().Add(24 * time.Hour),
+			ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 			User: UserDTO{
 				ID:        "usr_dev_admin",
 				Email:     email,
@@ -260,15 +285,16 @@ func (c *DefaultController) Login(ctx context.Context, email, password string) (
 		return nil, err
 	}
 
-	// Create a session or API token
-	genToken, err := c.authSvc.CreateAPIToken(ctx, user.ID, "Web Session", []string{"*"}, nil)
+	// Create a session or API token with a 30-day expiration
+	expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+	genToken, err := c.authSvc.CreateAPIToken(ctx, user.ID, "Web Session", []string{"*"}, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LoginResponse{
 		Token:     genToken.RawSecret,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+		ExpiresAt: expiresAt,
 		User: UserDTO{
 			ID:        user.ID,
 			Email:     user.Email,
@@ -282,9 +308,10 @@ func (c *DefaultController) Logout(ctx context.Context, token string) error {
 	if c.st != nil && strings.HasPrefix(token, auth.DefaultTokenPrefix) {
 		tokenHash := auth.HashToken(token)
 		if tok, err := c.st.APITokens().GetByHash(ctx, tokenHash); err == nil && tok != nil {
-			return c.st.APITokens().Delete(ctx, tok.ID)
+			_ = c.st.APITokens().Delete(ctx, tok.ID)
 		}
 	}
+	c.recordAudit(ctx, "session:logout", "session", token, "")
 	return nil
 }
 
@@ -338,6 +365,7 @@ func (c *DefaultController) CreateAPIToken(ctx context.Context, userID, name str
 	if err != nil {
 		return nil, err
 	}
+	c.recordAudit(ctx, "token:create", "token", gen.Token.ID, fmt.Sprintf(`{"name":%q,"user_id":%q}`, name, userID))
 	return &APITokenDTO{
 		ID:        gen.Token.ID,
 		Name:      gen.Token.Name,
@@ -353,7 +381,11 @@ func (c *DefaultController) DeleteAPIToken(ctx context.Context, tokenID string) 
 	if c.st == nil {
 		return nil
 	}
-	return c.st.APITokens().Delete(ctx, tokenID)
+	if err := c.st.APITokens().Delete(ctx, tokenID); err != nil {
+		return err
+	}
+	c.recordAudit(ctx, "token:revoke", "token", tokenID, "")
+	return nil
 }
 
 // --- Organization Operations ---
@@ -413,6 +445,8 @@ func (c *DefaultController) CreateOrganization(ctx context.Context, req *CreateO
 			return nil, err
 		}
 	}
+
+	c.recordAudit(ctx, "org:create", "org", org.ID, fmt.Sprintf(`{"name":%q,"slug":%q}`, req.Name, slug))
 
 	return &OrganizationDTO{
 		ID:        org.ID,
@@ -565,6 +599,8 @@ func (c *DefaultController) CreateProject(ctx context.Context, req *CreateProjec
 		}
 	}
 
+	c.recordAudit(ctx, "project:create", "project", prj.ID, fmt.Sprintf(`{"name":%q,"slug":%q}`, req.Name, slug))
+
 	return &ProjectDTO{
 		ID:          prj.ID,
 		OrgID:       prj.OrgID,
@@ -607,6 +643,8 @@ func (c *DefaultController) UpdateProject(ctx context.Context, id string, req *U
 			return nil, err
 		}
 
+		c.recordAudit(ctx, "project:update", "project", id, fmt.Sprintf(`{"name":%q}`, prj.Name))
+
 		svcs, _ := c.st.Services().ListByProject(ctx, prj.ID)
 		return &ProjectDTO{
 			ID:          prj.ID,
@@ -632,7 +670,12 @@ func (c *DefaultController) DeleteProject(ctx context.Context, id string) error 
 	}
 
 	if c.st != nil {
-		return c.st.Projects().Delete(ctx, id)
+		_ = c.st.EnvVars().DeleteByResource(ctx, store.TierProject, id)
+		err := c.st.Projects().Delete(ctx, id)
+		if err == nil {
+			c.recordAudit(ctx, "project:delete", "project", id, "")
+		}
+		return err
 	}
 	return nil
 }
@@ -878,7 +921,7 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 	c.apps[appID] = app
 
 	if c.st != nil {
-		_ = c.st.Services().Create(ctx, &store.Service{
+		if err := c.st.Services().Create(ctx, &store.Service{
 			ID:               appID,
 			ProjectID:        projectID,
 			StageID:          stageID,
@@ -898,8 +941,36 @@ func (c *DefaultController) CreateApp(ctx context.Context, req *CreateAppRequest
 			BuildStrategy:    req.BuildStrategy,
 			DockerfilePath:   req.DockerfilePath,
 			PublishDirectory: req.PublishDirectory,
-		})
+		}); err != nil {
+			delete(c.apps, appID)
+			return nil, fmt.Errorf("failed to persist service: %w", err)
+		}
+
+		if len(req.Env) > 0 {
+			now := time.Now().UTC()
+			for k, v := range req.Env {
+				isSec := isSecretEnvKey(k)
+				val := v
+				if isSec && c.vault != nil && !strings.HasPrefix(val, "v1:") {
+					if enc, err := c.vault.EncryptString(ctx, val); err == nil {
+						val = enc
+					}
+				}
+				_ = c.st.EnvVars().Set(ctx, &store.EnvVar{
+					ID:             store.NewID("env"),
+					ScopeTier:      store.TierService,
+					ResourceID:     appID,
+					Key:            k,
+					ValueEncrypted: val,
+					IsSecret:       isSec,
+					CreatedAt:      now,
+					UpdatedAt:      now,
+				})
+			}
+		}
 	}
+
+	c.recordAudit(ctx, "app:create", "app", appID, fmt.Sprintf(`{"name":%q,"image":%q}`, req.Name, req.Image))
 
 	return app, nil
 }
@@ -992,9 +1063,13 @@ func (c *DefaultController) UpdateApp(ctx context.Context, id string, req *Updat
 			svc.BuildStrategy = app.BuildStrategy
 			svc.DockerfilePath = app.DockerfilePath
 			svc.PublishDirectory = app.PublishDirectory
-			_ = c.st.Services().Update(ctx, svc)
+			if err := c.st.Services().Update(ctx, svc); err != nil {
+				return nil, fmt.Errorf("failed to persist service update: %w", err)
+			}
 		}
 	}
+
+	c.recordAudit(ctx, "app:update", "app", id, fmt.Sprintf(`{"name":%q,"image":%q}`, app.Name, app.Image))
 
 	return app, nil
 }
@@ -1027,8 +1102,12 @@ func (c *DefaultController) DeleteApp(ctx context.Context, id string) error {
 		_ = c.orch.Containers().Remove(ctx, id, true, true)
 	}
 	if c.st != nil {
-		_ = c.st.Services().Delete(ctx, id)
+		_ = c.st.EnvVars().DeleteByResource(ctx, store.TierService, id)
+		if err := c.st.Services().Delete(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to delete service from store: %w", err)
+		}
 	}
+	c.recordAudit(ctx, "app:delete", "app", id, "")
 	return nil
 }
 
@@ -1119,7 +1198,9 @@ func (c *DefaultController) DeployApp(ctx context.Context, id string, image stri
 
 	app.Status = "running"
 	if c.st != nil {
-		_ = c.st.Services().UpdateStatus(ctx, id, "running")
+		if err := c.st.Services().UpdateStatus(ctx, id, "running"); err != nil {
+			return fmt.Errorf("failed to persist service status: %w", err)
+		}
 	}
 	if c.wsHub != nil {
 		c.wsHub.Broadcast(WSMessage{
@@ -1133,6 +1214,7 @@ func (c *DefaultController) DeployApp(ctx context.Context, id string, image stri
 	if c.sseBroadcaster != nil {
 		c.sseBroadcaster.Broadcast("events", id, "deployment_finished", map[string]string{"status": "running", "image": app.Image})
 	}
+	c.recordAudit(ctx, "app:deploy", "app", id, fmt.Sprintf(`{"image":%q}`, app.Image))
 	return nil
 }
 
@@ -1145,6 +1227,7 @@ func (c *DefaultController) RestartApp(ctx context.Context, id string) error {
 	if c.orch != nil {
 		_ = c.orch.Containers().Restart(ctx, id, 10*time.Second)
 	}
+	c.recordAudit(ctx, "app:restart", "app", id, "")
 	return nil
 }
 
@@ -1159,6 +1242,7 @@ func (c *DefaultController) StopApp(ctx context.Context, id string) error {
 	if c.orch != nil {
 		_ = c.orch.Swarm().ScaleService(ctx, id, 0)
 	}
+	c.recordAudit(ctx, "app:stop", "app", id, "")
 	return nil
 }
 
@@ -1173,6 +1257,7 @@ func (c *DefaultController) StartApp(ctx context.Context, id string) error {
 	if c.orch != nil {
 		_ = c.orch.Swarm().ScaleService(ctx, id, 1)
 	}
+	c.recordAudit(ctx, "app:start", "app", id, "")
 	return nil
 }
 
@@ -1181,10 +1266,26 @@ func (c *DefaultController) GetAppEnv(ctx context.Context, id string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	if app.Env == nil {
-		return make(map[string]string), nil
+	res := make(map[string]string)
+	if app.Env != nil {
+		for k, v := range app.Env {
+			res[k] = v
+		}
 	}
-	return app.Env, nil
+	if c.st != nil {
+		if storedVars, err := c.st.EnvVars().ListByResource(ctx, store.TierService, id); err == nil {
+			for _, v := range storedVars {
+				val := v.ValueEncrypted
+				if v.IsSecret && strings.HasPrefix(val, "v1:") && c.vault != nil {
+					if dec, err := c.vault.DecryptString(ctx, val); err == nil {
+						val = dec
+					}
+				}
+				res[v.Key] = val
+			}
+		}
+	}
+	return res, nil
 }
 
 func (c *DefaultController) SetAppEnv(ctx context.Context, id string, env map[string]string) error {
@@ -1194,6 +1295,30 @@ func (c *DefaultController) SetAppEnv(ctx context.Context, id string, env map[st
 	}
 	app.Env = env
 	app.UpdatedAt = time.Now().UTC()
+
+	if c.st != nil {
+		now := time.Now().UTC()
+		for k, v := range env {
+			isSec := isSecretEnvKey(k)
+			val := v
+			if isSec && c.vault != nil && !strings.HasPrefix(val, "v1:") {
+				if enc, err := c.vault.EncryptString(ctx, val); err == nil {
+					val = enc
+				}
+			}
+			_ = c.st.EnvVars().Set(ctx, &store.EnvVar{
+				ID:             store.NewID("env"),
+				ScopeTier:      store.TierService,
+				ResourceID:     id,
+				Key:            k,
+				ValueEncrypted: val,
+				IsSecret:       isSec,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			})
+		}
+	}
+	c.recordAudit(ctx, "app:set_env", "app", id, "")
 	return nil
 }
 
@@ -1286,12 +1411,16 @@ func (c *DefaultController) CreateStack(ctx context.Context, req *CreateStackReq
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		}
-		_ = c.st.Stacks().Create(ctx, dbStack)
+		if err := c.st.Stacks().Create(ctx, dbStack); err != nil {
+			return nil, fmt.Errorf("failed to persist stack: %w", err)
+		}
 	}
 
 	c.mu.Lock()
 	c.stacks[id] = stack
 	c.mu.Unlock()
+
+	c.recordAudit(ctx, "stack:create", "stack", stack.ID, fmt.Sprintf(`{"name":%q}`, req.Name))
 
 	return stack, nil
 }
@@ -1347,19 +1476,23 @@ func (c *DefaultController) UpdateStack(ctx context.Context, id string, composeY
 	stack.UpdatedAt = time.Now().UTC()
 
 	if c.st != nil {
-		_ = c.st.Stacks().Update(ctx, &store.Stack{
+		if err := c.st.Stacks().Update(ctx, &store.Stack{
 			ID:          stack.ID,
 			ProjectID:   stack.ProjectID,
 			Name:        stack.Name,
 			ComposeYAML: composeYAML,
 			Status:      stack.Status,
 			UpdatedAt:   stack.UpdatedAt,
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("failed to persist stack update: %w", err)
+		}
 	}
 
 	c.mu.Lock()
 	c.stacks[stack.ID] = stack
 	c.mu.Unlock()
+
+	c.recordAudit(ctx, "stack:update", "stack", stack.ID, "")
 
 	return stack, nil
 }
@@ -1372,7 +1505,9 @@ func (c *DefaultController) DeployStack(ctx context.Context, id string) error {
 
 	stack.Status = "deploying"
 	if c.st != nil {
-		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "deploying")
+		if err := c.st.Stacks().UpdateStatus(ctx, stack.ID, "deploying"); err != nil {
+			return fmt.Errorf("failed to update stack status: %w", err)
+		}
 	}
 
 	if c.orch != nil {
@@ -1404,19 +1539,23 @@ func (c *DefaultController) DeployStack(ctx context.Context, id string) error {
 
 		if c.st != nil {
 			for _, netName := range res.CreatedNetworks {
-				_ = c.st.Networks().Create(ctx, &store.ManagedNetwork{
+				if err := c.st.Networks().Create(ctx, &store.ManagedNetwork{
 					ProjectID: stack.ProjectID,
 					Name:      netName,
 					Driver:    "bridge",
 					Scope:     "stack",
-				})
+				}); err != nil {
+					return fmt.Errorf("failed to persist stack network: %w", err)
+				}
 			}
 			for _, volName := range res.CreatedVolumes {
-				_ = c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
+				if err := c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
 					ProjectID: stack.ProjectID,
 					Name:      volName,
 					Driver:    "local",
-				})
+				}); err != nil {
+					return fmt.Errorf("failed to persist stack volume: %w", err)
+				}
 			}
 		}
 	}
@@ -1424,8 +1563,11 @@ func (c *DefaultController) DeployStack(ctx context.Context, id string) error {
 	stack.Status = "running"
 	stack.UpdatedAt = time.Now().UTC()
 	if c.st != nil {
-		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "running")
+		if err := c.st.Stacks().UpdateStatus(ctx, stack.ID, "running"); err != nil {
+			return fmt.Errorf("failed to update stack status: %w", err)
+		}
 	}
+	c.recordAudit(ctx, "stack:deploy", "stack", stack.ID, "")
 	return nil
 }
 
@@ -1440,8 +1582,11 @@ func (c *DefaultController) StopStack(ctx context.Context, id string) error {
 	stack.Status = "stopped"
 	stack.UpdatedAt = time.Now().UTC()
 	if c.st != nil {
-		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "stopped")
+		if err := c.st.Stacks().UpdateStatus(ctx, stack.ID, "stopped"); err != nil {
+			return fmt.Errorf("failed to persist stack status: %w", err)
+		}
 	}
+	c.recordAudit(ctx, "stack:stop", "stack", stack.ID, "")
 	return nil
 }
 
@@ -1456,8 +1601,11 @@ func (c *DefaultController) RestartStack(ctx context.Context, id string) error {
 	stack.Status = "running"
 	stack.UpdatedAt = time.Now().UTC()
 	if c.st != nil {
-		_ = c.st.Stacks().UpdateStatus(ctx, stack.ID, "running")
+		if err := c.st.Stacks().UpdateStatus(ctx, stack.ID, "running"); err != nil {
+			return fmt.Errorf("failed to persist stack status: %w", err)
+		}
 	}
+	c.recordAudit(ctx, "stack:restart", "stack", stack.ID, "")
 	return nil
 }
 
@@ -1467,9 +1615,12 @@ func (c *DefaultController) DeleteStack(ctx context.Context, id string) error {
 		_ = c.orch.Stacks().RemoveStack(ctx, stack.Name)
 	}
 	if c.st != nil {
-		_ = c.st.Stacks().Delete(ctx, id)
-		if stack != nil {
-			_ = c.st.Stacks().Delete(ctx, stack.ID)
+		targetID := id
+		if stack != nil && stack.ID != "" {
+			targetID = stack.ID
+		}
+		if err := c.st.Stacks().Delete(ctx, targetID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to delete stack from store: %w", err)
 		}
 	}
 	c.mu.Lock()
@@ -1478,6 +1629,7 @@ func (c *DefaultController) DeleteStack(ctx context.Context, id string) error {
 		delete(c.stacks, stack.ID)
 	}
 	c.mu.Unlock()
+	c.recordAudit(ctx, "stack:delete", "stack", id, "")
 	return nil
 }
 
@@ -1592,7 +1744,7 @@ func (c *DefaultController) CreateNetwork(ctx context.Context, req *CreateNetwor
 	}
 
 	if c.st != nil {
-		_ = c.st.Networks().Create(ctx, &store.ManagedNetwork{
+		if err := c.st.Networks().Create(ctx, &store.ManagedNetwork{
 			ID:         id,
 			ProjectID:  projID,
 			Name:       req.Name,
@@ -1601,12 +1753,16 @@ func (c *DefaultController) CreateNetwork(ctx context.Context, req *CreateNetwor
 			IsExternal: req.IsExternal,
 			CreatedAt:  now,
 			UpdatedAt:  now,
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("failed to persist network: %w", err)
+		}
 	}
 
 	c.mu.Lock()
 	c.networks[id] = net
 	c.mu.Unlock()
+
+	c.recordAudit(ctx, "network:create", "network", net.ID, fmt.Sprintf(`{"name":%q}`, req.Name))
 
 	return net, nil
 }
@@ -1617,9 +1773,12 @@ func (c *DefaultController) DeleteNetwork(ctx context.Context, id string) error 
 		_ = c.orch.RawClient().NetworkRemove(ctx, n.Name)
 	}
 	if c.st != nil {
-		_ = c.st.Networks().Delete(ctx, id)
-		if n != nil {
-			_ = c.st.Networks().Delete(ctx, n.ID)
+		targetID := id
+		if n != nil && n.ID != "" {
+			targetID = n.ID
+		}
+		if err := c.st.Networks().Delete(ctx, targetID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to delete network from store: %w", err)
 		}
 	}
 	c.mu.Lock()
@@ -1628,6 +1787,7 @@ func (c *DefaultController) DeleteNetwork(ctx context.Context, id string) error 
 		delete(c.networks, n.ID)
 	}
 	c.mu.Unlock()
+	c.recordAudit(ctx, "network:delete", "network", id, "")
 	return nil
 }
 
@@ -1746,7 +1906,7 @@ func (c *DefaultController) CreateVolume(ctx context.Context, req *CreateVolumeR
 	}
 
 	if c.st != nil {
-		_ = c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
+		if err := c.st.Volumes().CreateManaged(ctx, &store.ManagedVolume{
 			ID:        id,
 			ProjectID: projID,
 			Name:      req.Name,
@@ -1754,12 +1914,16 @@ func (c *DefaultController) CreateVolume(ctx context.Context, req *CreateVolumeR
 			SizeBytes: 0,
 			CreatedAt: now,
 			UpdatedAt: now,
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("failed to persist managed volume: %w", err)
+		}
 	}
 
 	c.mu.Lock()
 	c.volumes[id] = vol
 	c.mu.Unlock()
+
+	c.recordAudit(ctx, "volume:create", "volume", vol.ID, fmt.Sprintf(`{"name":%q}`, req.Name))
 
 	return vol, nil
 }
@@ -1770,9 +1934,12 @@ func (c *DefaultController) DeleteVolume(ctx context.Context, id string) error {
 		_ = c.orch.RawClient().VolumeRemove(ctx, v.Name, true)
 	}
 	if c.st != nil {
-		_ = c.st.Volumes().DeleteManaged(ctx, id)
-		if v != nil {
-			_ = c.st.Volumes().DeleteManaged(ctx, v.ID)
+		targetID := id
+		if v != nil && v.ID != "" {
+			targetID = v.ID
+		}
+		if err := c.st.Volumes().DeleteManaged(ctx, targetID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to delete managed volume from store: %w", err)
 		}
 	}
 	c.mu.Lock()
@@ -1781,6 +1948,7 @@ func (c *DefaultController) DeleteVolume(ctx context.Context, id string) error {
 		delete(c.volumes, v.ID)
 	}
 	c.mu.Unlock()
+	c.recordAudit(ctx, "volume:delete", "volume", id, "")
 	return nil
 }
 
@@ -1977,12 +2145,14 @@ func (c *DefaultController) DeleteMachine(ctx context.Context, id string) error 
 		if c.agentServer != nil {
 			c.agentServer.UnregisterNode(id)
 		}
+		c.recordAudit(ctx, "machine:delete", "machine", id, "")
 		return nil
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.machines, id)
+	c.recordAudit(ctx, "machine:delete", "machine", id, "")
 	return nil
 }
 
@@ -2029,10 +2199,12 @@ func (c *DefaultController) JoinSwarmCluster(ctx context.Context, id string, req
 
 	if c.st != nil && c.st.Machines() != nil {
 		mRec, err := c.st.Machines().GetByID(ctx, id)
-		if err == nil {
+		if err == nil && mRec != nil {
 			mRec.Role = req.Role
 			mRec.Status = "online"
-			_ = c.st.Machines().Update(ctx, mRec)
+			if err := c.st.Machines().Update(ctx, mRec); err != nil {
+				return nil, fmt.Errorf("failed to persist machine update: %w", err)
+			}
 		}
 	}
 
@@ -2166,18 +2338,43 @@ func (c *DefaultController) CreateDatabase(ctx context.Context, req *CreateDatab
 	c.databases[id] = db
 
 	if c.st != nil {
-		_ = c.st.Services().Create(ctx, &store.Service{
+		if err := c.st.Services().Create(ctx, &store.Service{
 			ID:            id,
-			ProjectID:     "default",
-			StageID:       "production",
+			ProjectID:     "prj_default",
+			StageID:       "stg_default_prod",
 			Name:          req.Name,
 			Slug:          strings.ToLower(req.Name),
 			Type:          "database",
 			Image:         req.Engine + ":latest",
 			ContainerPort: port,
 			Status:        "running",
-		})
+		}); err != nil {
+			delete(c.databases, id)
+			return nil, fmt.Errorf("failed to persist database service: %w", err)
+		}
+
+		if req.Password != "" {
+			pw := req.Password
+			if c.vault != nil && !strings.HasPrefix(pw, "v1:") {
+				if enc, err := c.vault.EncryptString(ctx, pw); err == nil {
+					pw = enc
+				}
+			}
+			now := time.Now().UTC()
+			_ = c.st.EnvVars().Set(ctx, &store.EnvVar{
+				ID:             store.NewID("env"),
+				ScopeTier:      store.TierService,
+				ResourceID:     id,
+				Key:            "DB_PASSWORD",
+				ValueEncrypted: pw,
+				IsSecret:       true,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			})
+		}
 	}
+
+	c.recordAudit(ctx, "database:create", "database", db.ID, fmt.Sprintf(`{"name":%q,"engine":%q}`, req.Name, req.Engine))
 
 	return db, nil
 }
@@ -2208,6 +2405,7 @@ func (c *DefaultController) UpdateDatabase(ctx context.Context, id string, req *
 	if req.CPULimit != nil {
 		db.CPULimit = *req.CPULimit
 	}
+	c.recordAudit(ctx, "database:update", "database", id, "")
 	return db, nil
 }
 
@@ -2219,6 +2417,7 @@ func (c *DefaultController) RestartDatabase(ctx context.Context, id string) erro
 	if c.orch != nil {
 		_ = c.orch.Containers().Restart(ctx, db.ID, 10*time.Second)
 	}
+	c.recordAudit(ctx, "database:restart", "database", id, "")
 	return nil
 }
 
@@ -2228,8 +2427,12 @@ func (c *DefaultController) DeleteDatabase(ctx context.Context, id string) error
 
 	delete(c.databases, id)
 	if c.st != nil {
-		_ = c.st.Services().Delete(ctx, id)
+		_ = c.st.EnvVars().DeleteByResource(ctx, store.TierService, id)
+		if err := c.st.Services().Delete(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to delete database service from store: %w", err)
+		}
 	}
+	c.recordAudit(ctx, "database:delete", "database", id, "")
 	return nil
 }
 
@@ -2262,6 +2465,7 @@ func (c *DefaultController) CreateBackup(ctx context.Context, serviceID string) 
 		CreatedAt:         time.Now().UTC(),
 	}
 	c.backups[id] = b
+	c.recordAudit(ctx, "backup:create", "backup", b.ID, fmt.Sprintf(`{"service_id":%q}`, serviceID))
 	return b, nil
 }
 
@@ -2277,6 +2481,9 @@ func (c *DefaultController) GetBackup(ctx context.Context, id string) (*Backup, 
 
 func (c *DefaultController) RestoreBackup(ctx context.Context, id, targetServiceID string) error {
 	_, err := c.GetBackup(ctx, id)
+	if err == nil {
+		c.recordAudit(ctx, "backup:restore", "backup", id, fmt.Sprintf(`{"target_service_id":%q}`, targetServiceID))
+	}
 	return err
 }
 
@@ -2285,6 +2492,7 @@ func (c *DefaultController) DeleteBackup(ctx context.Context, id string) error {
 	defer c.mu.Unlock()
 
 	delete(c.backups, id)
+	c.recordAudit(ctx, "backup:delete", "backup", id, "")
 	return nil
 }
 
@@ -2398,6 +2606,19 @@ func (c *DefaultController) CreateBackupSchedule(ctx context.Context, req *Creat
 		isEnabled = *req.IsEnabled
 	}
 
+	passwordEnc := req.Password
+	if passwordEnc != "" && c.vault != nil && !strings.HasPrefix(passwordEnc, "v1:") {
+		if enc, err := c.vault.EncryptString(ctx, passwordEnc); err == nil {
+			passwordEnc = enc
+		}
+	}
+	s3SecretEnc := req.S3SecretKey
+	if s3SecretEnc != "" && c.vault != nil && !strings.HasPrefix(s3SecretEnc, "v1:") {
+		if enc, err := c.vault.EncryptString(ctx, s3SecretEnc); err == nil {
+			s3SecretEnc = enc
+		}
+	}
+
 	schID := store.NewID("sch")
 	now := time.Now().UTC()
 
@@ -2410,26 +2631,28 @@ func (c *DefaultController) CreateBackupSchedule(ctx context.Context, req *Creat
 	}
 
 	sch := &store.BackupSchedule{
-		ID:               schID,
-		ServiceID:        req.ServiceID,
-		CronExpr:         cronExpr,
-		Engine:           engine,
-		DatabaseName:     req.DatabaseName,
-		Username:         req.Username,
-		S3Bucket:         s3Bucket,
-		S3Endpoint:       req.S3Endpoint,
-		S3Region:         req.S3Region,
-		S3AccessKey:      req.S3AccessKey,
-		RetentionHourly:  req.RetentionHourly,
-		RetentionDaily:   retentionDaily,
-		RetentionWeekly:  req.RetentionWeekly,
-		RetentionMonthly: req.RetentionMonthly,
-		MaxBackups:       req.MaxBackups,
-		Compression:      compression,
-		IsEnabled:        isEnabled,
-		NextRunAt:        nextRun,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                   schID,
+		ServiceID:            req.ServiceID,
+		CronExpr:             cronExpr,
+		Engine:               engine,
+		DatabaseName:         req.DatabaseName,
+		Username:             req.Username,
+		PasswordEncrypted:    passwordEnc,
+		S3Bucket:             s3Bucket,
+		S3Endpoint:           req.S3Endpoint,
+		S3Region:             req.S3Region,
+		S3AccessKey:          req.S3AccessKey,
+		S3SecretKeyEncrypted: s3SecretEnc,
+		RetentionHourly:      req.RetentionHourly,
+		RetentionDaily:       retentionDaily,
+		RetentionWeekly:      req.RetentionWeekly,
+		RetentionMonthly:     req.RetentionMonthly,
+		MaxBackups:           req.MaxBackups,
+		Compression:          compression,
+		IsEnabled:            isEnabled,
+		NextRunAt:            nextRun,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 
 	c.mu.Lock()
@@ -2437,10 +2660,26 @@ func (c *DefaultController) CreateBackupSchedule(ctx context.Context, req *Creat
 	c.mu.Unlock()
 
 	if c.st != nil {
+		if _, err := c.st.Services().GetByID(ctx, req.ServiceID); err != nil {
+			_ = c.st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
+			_ = c.st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
+			_ = c.st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
+			_ = c.st.Services().Create(ctx, &store.Service{
+				ID:        req.ServiceID,
+				ProjectID: "prj_default",
+				StageID:   "stg_default",
+				Name:      req.ServiceID,
+				Slug:      strings.ToLower(req.ServiceID),
+				Type:      "database",
+				Status:    "running",
+			})
+		}
 		if err := c.st.Schedules().Create(ctx, sch); err != nil {
 			return nil, err
 		}
 	}
+
+	c.recordAudit(ctx, "schedule:create", "schedule", sch.ID, fmt.Sprintf(`{"service_id":%q}`, req.ServiceID))
 
 	return sch, nil
 }
@@ -2476,6 +2715,15 @@ func (c *DefaultController) UpdateBackupSchedule(ctx context.Context, id string,
 	if req.Username != "" {
 		sch.Username = req.Username
 	}
+	if req.Password != "" {
+		passwordEnc := req.Password
+		if c.vault != nil && !strings.HasPrefix(passwordEnc, "v1:") {
+			if enc, err := c.vault.EncryptString(ctx, passwordEnc); err == nil {
+				passwordEnc = enc
+			}
+		}
+		sch.PasswordEncrypted = passwordEnc
+	}
 	if req.S3Bucket != "" {
 		sch.S3Bucket = req.S3Bucket
 	}
@@ -2487,6 +2735,15 @@ func (c *DefaultController) UpdateBackupSchedule(ctx context.Context, id string,
 	}
 	if req.S3AccessKey != "" {
 		sch.S3AccessKey = req.S3AccessKey
+	}
+	if req.S3SecretKey != "" {
+		s3SecretEnc := req.S3SecretKey
+		if c.vault != nil && !strings.HasPrefix(s3SecretEnc, "v1:") {
+			if enc, err := c.vault.EncryptString(ctx, s3SecretEnc); err == nil {
+				s3SecretEnc = enc
+			}
+		}
+		sch.S3SecretKeyEncrypted = s3SecretEnc
 	}
 	if req.RetentionHourly != nil {
 		sch.RetentionHourly = *req.RetentionHourly
@@ -2517,6 +2774,8 @@ func (c *DefaultController) UpdateBackupSchedule(ctx context.Context, id string,
 		}
 	}
 
+	c.recordAudit(ctx, "schedule:update", "schedule", sch.ID, "")
+
 	return sch, nil
 }
 
@@ -2526,8 +2785,11 @@ func (c *DefaultController) DeleteBackupSchedule(ctx context.Context, id string)
 
 	delete(c.schedules, id)
 	if c.st != nil {
-		return c.st.Schedules().Delete(ctx, id)
+		if err := c.st.Schedules().Delete(ctx, id); err != nil {
+			return err
+		}
 	}
+	c.recordAudit(ctx, "schedule:delete", "schedule", id, "")
 	return nil
 }
 
@@ -2608,6 +2870,53 @@ func (c *DefaultController) ReconcileIngress(ctx context.Context) error {
 	return nil
 }
 
+func redactSensitiveJSON(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		res := make(map[string]any, len(val))
+		for k, item := range val {
+			kLower := strings.ToLower(k)
+			if kLower == "api_token" || kLower == "private_key" || kLower == "key" {
+				if str, ok := item.(string); ok && str != "" {
+					res[k] = "[REDACTED]"
+					continue
+				}
+			}
+			res[k] = redactSensitiveJSON(item)
+		}
+		return res
+	case []any:
+		res := make([]any, len(val))
+		for i, item := range val {
+			res[i] = redactSensitiveJSON(item)
+		}
+		return res
+	case string:
+		if strings.Contains(val, "PRIVATE KEY") {
+			return "[REDACTED]"
+		}
+		return val
+	default:
+		return v
+	}
+}
+
+func redactCaddyConfigJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var val any
+	if err := json.Unmarshal(raw, &val); err != nil {
+		return raw
+	}
+	redacted := redactSensitiveJSON(val)
+	out, err := json.Marshal(redacted)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(out)
+}
+
 func (c *DefaultController) GetCaddyConfig(ctx context.Context) (*CaddyDiagnosticsDTO, error) {
 	adminURL := "http://127.0.0.1:2019"
 	start := time.Now()
@@ -2624,7 +2933,7 @@ func (c *DefaultController) GetCaddyConfig(ctx context.Context) (*CaddyDiagnosti
 			diag.Status = "offline"
 			diag.Config = json.RawMessage(`{"error": "caddy admin api unreachable"}`)
 		} else {
-			diag.Config = cfg
+			diag.Config = redactCaddyConfigJSON(cfg)
 		}
 		if routes, err := c.ingress.ListRoutes(ctx); err == nil {
 			diag.ActiveRoutes = len(routes)
@@ -2846,17 +3155,18 @@ func (c *DefaultController) Rebuild(ctx context.Context, buildID string) (*store
 	c.mu.Unlock()
 
 	if c.st != nil && c.buildMgr == nil {
-		_ = c.st.Builds().Create(ctx, newBuild)
+		if err := c.st.Builds().Create(ctx, newBuild); err != nil {
+			delete(c.builds, newID)
+			return nil, fmt.Errorf("failed to persist build: %w", err)
+		}
 	}
 
 	return newBuild, nil
 }
 
 func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret string, signature string, payload []byte) (*store.Build, error) {
-	if secret != "" {
-		if signature == "" || !git.VerifyGitHubSignature(secret, payload, signature) {
-			return nil, errors.New("invalid webhook signature")
-		}
+	if secret == "" || signature == "" || !git.VerifyGitHubSignature(secret, payload, signature) {
+		return nil, errors.New("invalid webhook signature")
 	}
 
 	event, err := git.ParseGitHubPushEvent(payload)
@@ -2871,6 +3181,21 @@ func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret stri
 			var foundID string
 			if scanErr := row.Scan(&foundID); scanErr == nil && foundID != "" {
 				appID = foundID
+			} else {
+				// Ensure default hierarchy and create service record if missing for foreign key integrity
+				_ = c.st.Organizations().Create(ctx, &store.Organization{ID: "org_default", Name: "Default Org", Slug: "default"})
+				_ = c.st.Projects().Create(ctx, &store.Project{ID: "prj_default", OrgID: "org_default", Name: "Default Project", Slug: "default"})
+				_ = c.st.Stages().Create(ctx, &store.Stage{ID: "stg_default", ProjectID: "prj_default", Name: "Default Stage", Slug: "default"})
+				_ = c.st.Services().Create(ctx, &store.Service{
+					ID:        appID,
+					ProjectID: "prj_default",
+					StageID:   "stg_default",
+					Name:      event.Repository,
+					Slug:      strings.ToLower(event.Repository),
+					Type:      "app",
+					Image:     "pikpik/app:latest",
+					Status:    "running",
+				})
 			}
 		}
 	}
@@ -2916,7 +3241,10 @@ func (c *DefaultController) HandleGitHubWebhook(ctx context.Context, secret stri
 	c.mu.Unlock()
 
 	if c.st != nil && c.buildMgr == nil {
-		_ = c.st.Builds().Create(ctx, bld)
+		if err := c.st.Builds().Create(ctx, bld); err != nil {
+			delete(c.builds, newID)
+			return nil, fmt.Errorf("failed to persist build: %w", err)
+		}
 	}
 
 	return bld, nil
@@ -2929,11 +3257,14 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 
 	if c.st != nil {
 		svc, err := c.st.Services().GetByID(ctx, appID)
-		if err == nil && svc != nil && svc.DeployTokenHash != "" {
-			if token == "" || auth.HashToken(token) != svc.DeployTokenHash {
-				return nil, errors.New("unauthorized git webhook token")
-			}
+		if err != nil || svc == nil || svc.DeployTokenHash == "" {
+			return nil, errors.New("unauthorized git webhook token")
 		}
+		if token == "" || auth.HashToken(token) != svc.DeployTokenHash {
+			return nil, errors.New("unauthorized git webhook token")
+		}
+	} else if token == "" {
+		return nil, errors.New("unauthorized git webhook token")
 	}
 
 	event, err := git.ParseGenericGitPush(r)
@@ -2978,7 +3309,10 @@ func (c *DefaultController) HandleGenericGitWebhook(ctx context.Context, appID, 
 	c.mu.Unlock()
 
 	if c.st != nil && c.buildMgr == nil {
-		_ = c.st.Builds().Create(ctx, bld)
+		if err := c.st.Builds().Create(ctx, bld); err != nil {
+			delete(c.builds, newID)
+			return nil, fmt.Errorf("failed to persist build: %w", err)
+		}
 	}
 
 	return bld, nil
@@ -3001,11 +3335,18 @@ func (c *DefaultController) DeployTemplate(ctx context.Context, id string, req *
 	if req == nil {
 		req = &templates.DeployTemplateRequest{}
 	}
+	var res *templates.DeployTemplateResponse
+	var err error
 	if c.deployer != nil {
-		return c.deployer.Deploy(ctx, id, *req)
+		res, err = c.deployer.Deploy(ctx, id, *req)
+	} else {
+		deployer := templates.NewDeployer(templates.DefaultCatalog(), c.st, c.orch, c.vault)
+		res, err = deployer.Deploy(ctx, id, *req)
 	}
-	deployer := templates.NewDeployer(templates.DefaultCatalog(), c.st, c.orch)
-	return deployer.Deploy(ctx, id, *req)
+	if err == nil && res != nil {
+		c.recordAudit(ctx, "template:deploy", "template", id, fmt.Sprintf(`{"name":%q}`, req.Name))
+	}
+	return res, err
 }
 
 

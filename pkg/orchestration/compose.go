@@ -532,6 +532,7 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 	createdNets := make([]string, 0)
 	createdVols := make([]string, 0)
 	deployedContainers := make([]string, 0)
+	oldContainersToRetire := make([]string, 0)
 
 	type rollbackItem struct {
 		newContainerID string
@@ -818,13 +819,18 @@ func (m *DockerStackManager) DeployStack(ctx context.Context, spec ComposeStackS
 			probeCancel()
 		}
 
-		// If rolling update was successful, retire old container
+		// If rolling update was successful, stop old container and queue for retirement after full stack deployment
 		if oldContainerID != "" {
 			_ = m.containers.Stop(ctx, oldContainerID, 5*time.Second)
-			_ = m.containers.Remove(ctx, oldContainerID, true, true)
+			oldContainersToRetire = append(oldContainersToRetire, oldContainerID)
 		}
 
 		result.ServicesDeployed = append(result.ServicesDeployed, svcName)
+	}
+
+	// Full stack successfully deployed: clean up retired old containers
+	for _, oldCID := range oldContainersToRetire {
+		_ = m.containers.Remove(context.Background(), oldCID, true, true)
 	}
 
 	return result, nil

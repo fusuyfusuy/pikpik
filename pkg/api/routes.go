@@ -52,39 +52,18 @@ func WriteError(w http.ResponseWriter, statusCode int, code, message string, det
 	})
 }
 
-// getPathParam retrieves a URL path parameter (via r.PathValue or manual parsing).
+// getPathParam retrieves a URL path parameter via strict route matching.
 func getPathParam(r *http.Request, key string) string {
-	if v := r.PathValue(key); v != "" {
-		return v
+	return r.PathValue(key)
+}
+
+// writeServiceError formats validation vs internal server errors.
+func writeServiceError(w http.ResponseWriter, err error, reqID string) {
+	if strings.Contains(err.Error(), "cannot be empty") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "already exists") {
+		WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, reqID)
+	} else {
+		WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 	}
-	if key == "app_id" {
-		if v := r.PathValue("id"); v != "" {
-			return v
-		}
-	}
-	if key == "id" {
-		if v := r.PathValue("app_id"); v != "" {
-			return v
-		}
-	}
-	if key == "build_id" {
-		if v := r.PathValue("id"); v != "" {
-			return v
-		}
-	}
-	// Fallback to URL path token splitting
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if key == "app_id" || key == "id" {
-		for i, p := range parts {
-			if (p == "apps" || p == "templates" || p == "stacks" || p == "nodes" || p == "databases" || p == "backups" || p == "builds") && i+1 < len(parts) {
-				return parts[i+1]
-			}
-		}
-	}
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
 }
 
 // RegisterRoutes mounts all REST and WebSocket routes on the mux.
@@ -150,7 +129,7 @@ func RegisterRoutes(
 			Path:     "/",
 			Expires:  resp.ExpiresAt,
 			HttpOnly: true,
-			Secure:   false, // set true behind TLS
+			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 		})
 		WriteJSON(w, http.StatusOK, resp, reqID)
@@ -165,6 +144,8 @@ func RegisterRoutes(
 			Path:     "/",
 			Expires:  time.Unix(0, 0),
 			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
 		})
 		WriteJSON(w, http.StatusOK, map[string]string{"message": "logged out"}, GetRequestID(r.Context()))
 	}))
@@ -177,20 +158,6 @@ func RegisterRoutes(
 		}
 		WriteJSON(w, http.StatusOK, user, GetRequestID(r.Context()))
 	}))
-
-	mux.HandleFunc("POST /api/v1/auth/passkey/login/begin", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]string{
-			"challenge": "pikpik_passkey_mock_challenge_0123456789",
-			"status":    "challenge_created",
-		}, GenerateRequestID())
-	})
-
-	mux.HandleFunc("POST /api/v1/auth/passkey/login/finish", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, http.StatusOK, map[string]string{
-			"token":   "pik_live_passkey_auth_session",
-			"message": "passkey verified",
-		}, GenerateRequestID())
-	})
 
 	mux.Handle("GET /api/v1/auth/tokens", authWrap(RoleDeveloper, func(w http.ResponseWriter, r *http.Request) {
 		user, _ := ctrl.GetCurrentUser(r.Context())
@@ -387,7 +354,7 @@ func RegisterRoutes(
 		}
 		app, err := ctrl.CreateApp(r.Context(), &req)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			writeServiceError(w, err, GetRequestID(r.Context()))
 			return
 		}
 		WriteJSON(w, http.StatusCreated, app, GetRequestID(r.Context()))
@@ -539,7 +506,7 @@ func RegisterRoutes(
 		}
 		stack, err := ctrl.CreateStack(r.Context(), &req)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			writeServiceError(w, err, GetRequestID(r.Context()))
 			return
 		}
 		WriteJSON(w, http.StatusCreated, stack, GetRequestID(r.Context()))
@@ -646,7 +613,7 @@ func RegisterRoutes(
 		}
 		net, err := ctrl.CreateNetwork(r.Context(), &req)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			writeServiceError(w, err, GetRequestID(r.Context()))
 			return
 		}
 		WriteJSON(w, http.StatusCreated, net, GetRequestID(r.Context()))
@@ -700,7 +667,7 @@ func RegisterRoutes(
 		}
 		vol, err := ctrl.CreateVolume(r.Context(), &req)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			writeServiceError(w, err, GetRequestID(r.Context()))
 			return
 		}
 		WriteJSON(w, http.StatusCreated, vol, GetRequestID(r.Context()))
@@ -875,7 +842,7 @@ func RegisterRoutes(
 		}
 		db, err := ctrl.CreateDatabase(r.Context(), &req)
 		if err != nil {
-			WriteError(w, http.StatusBadRequest, ErrCodeValidationFailed, err.Error(), nil, GetRequestID(r.Context()))
+			writeServiceError(w, err, GetRequestID(r.Context()))
 			return
 		}
 		WriteJSON(w, http.StatusCreated, db, GetRequestID(r.Context()))
@@ -1136,7 +1103,7 @@ func RegisterRoutes(
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "reconciled"}, GetRequestID(r.Context()))
 	}))
 
-	mux.Handle("GET /api/v1/ingress/caddy/config", authWrap(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /api/v1/ingress/caddy/config", authWrap(RoleAdmin, func(w http.ResponseWriter, r *http.Request) {
 		diag, err := ctrl.GetCaddyConfig(r.Context())
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, GetRequestID(r.Context()))

@@ -27,14 +27,14 @@ export function NetworkingHubView() {
     queryFn: () => api.networks.list(),
   });
 
-  const { data: diagnostics } = useQuery({
+  const { data: diagnostics, isError: isDiagnosticsError } = useQuery({
     queryKey: ['caddy-diagnostics'],
     queryFn: () => api.ingress.getCaddyConfig(),
   });
 
   const routesCount = domains?.length ?? 0;
   const networksCount = networks?.length ?? 0;
-  const isCaddyOnline = diagnostics?.status === 'online';
+  const isCaddyOnline = diagnostics?.status === 'online' || diagnostics?.status === 'healthy';
 
   const tabItems = [
     {
@@ -93,10 +93,22 @@ export function NetworkingHubView() {
         <div className="flex items-center gap-3 self-start sm:self-auto">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-900/80 border border-zinc-800 text-xs">
             <span className="text-zinc-400">Caddy REST API:</span>
-            <span className="flex items-center gap-1.5 font-medium text-emerald-400 font-mono">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              {isCaddyOnline ? 'Online (9ms)' : 'Online'}
-            </span>
+            {isDiagnosticsError ? (
+              <span className="flex items-center gap-1.5 font-medium text-rose-400 font-mono">
+                <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                Unreachable
+              </span>
+            ) : isCaddyOnline ? (
+              <span className="flex items-center gap-1.5 font-medium text-emerald-400 font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                Online ({diagnostics?.latency_ms ? `${diagnostics.latency_ms}ms` : '<15ms'})
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 font-medium text-amber-400 font-mono">
+                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                Degraded
+              </span>
+            )}
           </div>
         </div>
       </div>

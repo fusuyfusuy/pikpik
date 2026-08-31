@@ -224,6 +224,10 @@ func resolveS3Client(defaultClient s3.S3Client, bucket, endpoint, region, access
 
 // ExecuteMultiDBBackup coordinates a zero-disk memory-bounded streaming backup to S3.
 func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s3.S3Client, cfg BackupJobConfig) (*BackupResult, error) {
+	if exec == nil {
+		return nil, errors.New("docker exec runner is nil")
+	}
+
 	targetS3, err := resolveS3Client(s3Client, cfg.S3Bucket, cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Client)
 	if err != nil {
 		return nil, err
@@ -340,7 +344,7 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 	}
 
 	// 5. Grandfather-Father-Son Retention Pruning
-	if cfg.RetentionRules.KeepHourly > 0 || cfg.RetentionRules.KeepDaily > 0 || cfg.RetentionRules.MaxBackups > 0 {
+	if cfg.RetentionRules.KeepHourly > 0 || cfg.RetentionRules.KeepDaily > 0 || cfg.RetentionRules.KeepWeekly > 0 || cfg.RetentionRules.KeepMonthly > 0 || cfg.RetentionRules.MaxBackups > 0 {
 		prefix := fmt.Sprintf("backups/%s/%s/", projectSlug, serviceSlug)
 		_, _ = targetS3.PruneRetention(ctx, prefix, s3.RetentionPolicy{
 			KeepHourly:  cfg.RetentionRules.KeepHourly,
@@ -366,6 +370,10 @@ func ExecuteMultiDBBackup(ctx context.Context, exec DockerExecRunner, s3Client s
 
 // ExecuteMultiDBRestore downloads an S3 backup stream, decompresses it in memory (if needed), and pipes to container stdin.
 func ExecuteMultiDBRestore(ctx context.Context, exec DockerExecRunner, s3Client s3.S3Client, cfg RestoreJobConfig) error {
+	if exec == nil {
+		return errors.New("docker exec runner is nil")
+	}
+
 	targetS3, err := resolveS3Client(s3Client, cfg.S3Bucket, cfg.S3Endpoint, cfg.S3Region, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Client)
 	if err != nil {
 		return err

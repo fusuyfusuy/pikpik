@@ -45,6 +45,9 @@ func (s *sqlUserStore) Create(ctx context.Context, user *User) error {
 		totpEnabled, user.SessionVersion, user.CreatedAt, user.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create user: %w", err)
 	}
 	return nil

@@ -143,10 +143,12 @@ type completeMultipartUploadResult struct {
 }
 
 type listBucketResult struct {
-	XMLName  xml.Name         `xml:"ListBucketResult"`
-	Name     string           `xml:"Name"`
-	Prefix   string           `xml:"Prefix"`
-	Contents []objectMetadata `xml:"Contents"`
+	XMLName               xml.Name         `xml:"ListBucketResult"`
+	Name                  string           `xml:"Name"`
+	Prefix                string           `xml:"Prefix"`
+	IsTruncated           bool             `xml:"IsTruncated"`
+	NextContinuationToken string           `xml:"NextContinuationToken"`
+	Contents              []objectMetadata `xml:"Contents"`
 }
 
 type objectMetadata struct {
@@ -275,9 +277,28 @@ func (c *DefaultS3Client) UploadStreamMultipart(ctx context.Context, key string,
 	}
 
 	partSize := c.opts.PartSizeBytes
-	partsChan := make(chan partResult, 100)
+	partsChan := make(chan partResult, c.opts.MaxConcurrency)
 	var totalUploadedBytes int64
 	var uploadErr error
+
+	var uploadedParts []completePart
+	collectorDone := make(chan struct{})
+
+	// Drain result channel concurrently as worker goroutines finish to eliminate deadlocks
+	go func() {
+		defer close(collectorDone)
+		for res := range partsChan {
+			if res.err != nil && uploadErr == nil {
+				uploadErr = res.err
+			}
+			if res.err == nil {
+				uploadedParts = append(uploadedParts, completePart{
+					PartNumber: res.partNumber,
+					ETag:       res.etag,
+				})
+			}
+		}
+	}()
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, c.opts.MaxConcurrency)
@@ -285,7 +306,9 @@ func (c *DefaultS3Client) UploadStreamMultipart(ctx context.Context, key string,
 	partNumber := 1
 	for {
 		if ctx.Err() != nil {
-			uploadErr = ctx.Err()
+			if uploadErr == nil {
+				uploadErr = ctx.Err()
+			}
 			break
 		}
 
@@ -298,7 +321,18 @@ func (c *DefaultS3Client) UploadStreamMultipart(ctx context.Context, key string,
 			currPart := partNumber
 			partNumber++
 
-			semaphore <- struct{}{}
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				if uploadErr == nil {
+					uploadErr = ctx.Err()
+				}
+				break
+			}
+			if uploadErr != nil {
+				break
+			}
+
 			wg.Add(1)
 
 			go func(pNum int, pData []byte) {
@@ -308,10 +342,13 @@ func (c *DefaultS3Client) UploadStreamMultipart(ctx context.Context, key string,
 				}()
 
 				etag, err := c.uploadPart(ctx, key, uploadID, pNum, pData)
-				partsChan <- partResult{
+				select {
+				case partsChan <- partResult{
 					partNumber: pNum,
 					etag:       etag,
 					err:        err,
+				}:
+				case <-ctx.Done():
 				}
 			}(currPart, chunk)
 		}
@@ -320,27 +357,17 @@ func (c *DefaultS3Client) UploadStreamMultipart(ctx context.Context, key string,
 			break
 		}
 		if rErr != nil {
-			uploadErr = rErr
+			if uploadErr == nil {
+				uploadErr = rErr
+			}
 			break
 		}
 	}
 
-	// Wait for all workers to finish
+	// Wait for all workers to finish and close result channel
 	wg.Wait()
 	close(partsChan)
-
-	var uploadedParts []completePart
-	for res := range partsChan {
-		if res.err != nil && uploadErr == nil {
-			uploadErr = res.err
-		}
-		if res.err == nil {
-			uploadedParts = append(uploadedParts, completePart{
-				PartNumber: res.partNumber,
-				ETag:       res.etag,
-			})
-		}
-	}
+	<-collectorDone
 
 	// If error occurred, abort multipart upload to prevent orphan leaks
 	if uploadErr != nil {
@@ -552,50 +579,71 @@ func (c *DefaultS3Client) DownloadStream(ctx context.Context, key string) (io.Re
 	return resp.Body, info, nil
 }
 
-// ListObjects returns objects matching a given prefix.
+// ListObjects returns objects matching a given prefix with continuation-token pagination.
 func (c *DefaultS3Client) ListObjects(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	q := url.Values{}
-	q.Set("list-type", "2")
-	if prefix != "" {
-		q.Set("prefix", prefix)
-	}
-
-	targetURL, err := c.buildURL("", q)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	SignRequest(req, "", c.opts.AccessKeyID, c.opts.SecretAccessKey, c.opts.Region, time.Now())
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("list objects failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list objects error HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var listResult listBucketResult
-	if err := xml.NewDecoder(resp.Body).Decode(&listResult); err != nil {
-		return nil, fmt.Errorf("failed to decode list objects xml: %w", err)
-	}
-
 	var objects []ObjectInfo
-	for _, item := range listResult.Contents {
-		t, _ := time.Parse(time.RFC3339, item.LastModified)
-		objects = append(objects, ObjectInfo{
-			Key:          item.Key,
-			Size:         item.Size,
-			ETag:         item.ETag,
-			LastModified: t,
-		})
+	var continuationToken string
+
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		q := url.Values{}
+		q.Set("list-type", "2")
+		if prefix != "" {
+			q.Set("prefix", prefix)
+		}
+		if continuationToken != "" {
+			q.Set("continuation-token", continuationToken)
+		}
+
+		targetURL, err := c.buildURL("", q)
+		if err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		SignRequest(req, "", c.opts.AccessKeyID, c.opts.SecretAccessKey, c.opts.Region, time.Now())
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list objects failed: %w", err)
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("list objects error HTTP %d: %s", resp.StatusCode, string(body))
+		}
+
+		var listResult listBucketResult
+		if err := xml.NewDecoder(resp.Body).Decode(&listResult); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode list objects xml: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, item := range listResult.Contents {
+			t, _ := time.Parse(time.RFC3339, item.LastModified)
+			if t.IsZero() {
+				t, _ = parseS3Time(item.LastModified)
+			}
+			objects = append(objects, ObjectInfo{
+				Key:          item.Key,
+				Size:         item.Size,
+				ETag:         item.ETag,
+				LastModified: t,
+			})
+		}
+
+		if !listResult.IsTruncated || listResult.NextContinuationToken == "" {
+			break
+		}
+		continuationToken = listResult.NextContinuationToken
 	}
 
 	return objects, nil

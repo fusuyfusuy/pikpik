@@ -245,6 +245,104 @@ func TestAPIClient_Endpoints(t *testing.T) {
 	if err := client.DeleteVolume(context.Background(), vol.ID); err != nil {
 		t.Fatalf("client delete volume failed: %v", err)
 	}
+
+	// 11. Ingress / Domain Methods
+	dom, err := client.BindDomain(context.Background(), api.BindDomainRequest{
+		AppID:   app.ID,
+		Domain:  "test.customdomain.org",
+		AutoTLS: true,
+	})
+	if err != nil {
+		t.Fatalf("client bind domain failed: %v", err)
+	}
+	if dom.Domain != "test.customdomain.org" {
+		t.Errorf("expected domain test.customdomain.org, got %s", dom.Domain)
+	}
+
+	domains, err := client.ListDomains(context.Background())
+	if err != nil || len(domains) == 0 {
+		t.Fatalf("client list domains failed: %v", err)
+	}
+
+	if err := client.ReconcileIngress(context.Background()); err != nil {
+		t.Fatalf("client reconcile ingress failed: %v", err)
+	}
+
+	if _, err := client.GetCaddyConfig(context.Background()); err != nil {
+		t.Fatalf("client get caddy config failed: %v", err)
+	}
+
+	if err := client.DeleteDomain(context.Background(), dom.ID); err != nil {
+		t.Fatalf("client delete domain failed: %v", err)
+	}
+
+	// 12. Registry Methods
+	st, err := client.GetRegistryStatus(context.Background())
+	if err != nil || st == nil {
+		t.Fatalf("client get registry status failed: %v", err)
+	}
+
+	cat, err := client.ListRepositories(context.Background())
+	if err != nil || cat == nil {
+		t.Fatalf("client list repositories failed: %v", err)
+	}
+
+	creds, err := client.GetRegistryCredentials(context.Background(), "")
+	if err != nil {
+		t.Fatalf("client get registry creds failed: %v", err)
+	}
+	_ = creds
+
+	if err := client.GarbageCollectRegistry(context.Background()); err != nil {
+		t.Fatalf("client gc registry failed: %v", err)
+	}
+
+	// 13. Backup Schedules Methods
+	enabled := true
+	sch, err := client.CreateBackupSchedule(context.Background(), api.CreateBackupScheduleRequest{
+		ServiceID:      db.ID,
+		DatabaseType:   "postgres",
+		Engine:         "postgres",
+		CronExpr:       "0 2 * * *",
+		CronExpression: "0 2 * * *",
+		RetentionDaily: 7,
+		RetentionDays:  7,
+		IsEnabled:      &enabled,
+	})
+	if err != nil {
+		t.Fatalf("client create backup schedule failed: %v", err)
+	}
+	if sch.ServiceID != db.ID {
+		t.Errorf("expected service ID %s, got %s", db.ID, sch.ServiceID)
+	}
+
+	schedules, err := client.ListBackupSchedules(context.Background(), db.ID)
+	if err != nil || len(schedules) == 0 {
+		t.Fatalf("client list backup schedules failed: %v", err)
+	}
+
+	if err := client.DeleteBackupSchedule(context.Background(), sch.ID); err != nil {
+		t.Fatalf("client delete backup schedule failed: %v", err)
+	}
+}
+
+func TestFormatBytesInt(t *testing.T) {
+	tests := []struct {
+		input    int64
+		expected string
+	}{
+		{500, "500 B"},
+		{1024, "1.0 KiB"},
+		{1048576, "1.0 MiB"},
+		{1073741824, "1.0 GiB"},
+	}
+
+	for _, tc := range tests {
+		got := formatBytesInt(tc.input)
+		if got != tc.expected {
+			t.Errorf("formatBytesInt(%d) = %q, expected %q", tc.input, got, tc.expected)
+		}
+	}
 }
 
 // 4. Test Init Command

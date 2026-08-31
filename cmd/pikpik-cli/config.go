@@ -93,8 +93,23 @@ func (cm *ConfigManager) Save(cfg *Config) error {
 	}
 
 	tmpPath := fmt.Sprintf("%s.tmp.%d", cm.configPath, time.Now().UnixNano())
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("creating tmp config failed: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing tmp config failed: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("syncing tmp config failed: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing tmp config failed: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, cm.configPath); err != nil {

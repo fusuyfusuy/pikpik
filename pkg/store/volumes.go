@@ -34,6 +34,9 @@ func (s *sqlVolumeStore) Create(ctx context.Context, v *Volume) error {
 		v.Type, v.HostPath, v.ConfigContentEncrypted, v.CreatedAt, v.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create volume: %w", err)
 	}
 	return nil

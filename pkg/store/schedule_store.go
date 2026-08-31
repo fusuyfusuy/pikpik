@@ -126,6 +126,9 @@ func (s *sqlScheduleStore) Create(ctx context.Context, sch *BackupSchedule) erro
 		sch.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create backup schedule: %w", err)
 	}
 	return nil

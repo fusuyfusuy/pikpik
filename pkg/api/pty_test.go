@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	dockerclient "github.com/docker/docker/client"
 	"github.com/fusuycorp/pikpik/pkg/api"
 	"github.com/gorilla/websocket"
 )
@@ -397,5 +401,107 @@ func TestPTY_HostMachine_PrivilegedRoles_Allowed(t *testing.T) {
 
 			_ = conn.WriteMessage(websocket.BinaryMessage, []byte{0xFF})
 		})
+	}
+}
+
+type mockDockerClientPTY struct {
+	dockerclient.CommonAPIClient
+	inspectFunc func(ctx context.Context, containerID string) (types.ContainerJSON, error)
+}
+
+func (m *mockDockerClientPTY) ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+	if m.inspectFunc != nil {
+		return m.inspectFunc(ctx, containerID)
+	}
+	return types.ContainerJSON{}, nil
+}
+
+// 11. Security regression: developer role must NOT be permitted to exec into control plane / unmanaged containers.
+func TestPTY_Container_UnmanagedOrControlPlane_Forbidden(t *testing.T) {
+	mockDocker := &mockDockerClientPTY{
+		inspectFunc: func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+			return types.ContainerJSON{
+				ContainerJSONBase: &types.ContainerJSONBase{
+					ID: "c_control_plane_01",
+				},
+				Config: &container.Config{
+					Labels: map[string]string{
+						"pikpik.managed":  "false",
+						"pikpik.internal": "true",
+					},
+				},
+			}, nil
+		},
+	}
+
+	ptyHandler := api.NewPTYHandler(mockDocker)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleDeveloper))
+	defer server.Close()
+
+	wsURL := "ws" + server.URL[4:] + "?target_type=container&target_id=c_control_plane_01"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial pty websocket: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected error frame: %v", err)
+	}
+	var exitMsg api.TermExitMessage
+	if len(payload) > 1 {
+		_ = json.Unmarshal(payload[1:], &exitMsg)
+	}
+	if len(payload) == 0 || payload[0] != 0xFF || !strings.Contains(exitMsg.Error, "forbidden") {
+		t.Fatalf("expected forbidden exit frame for unmanaged container, got %q", string(payload))
+	}
+}
+
+// 12. Security regression: developer role must NOT be permitted to exec into containers belonging to a different project.
+func TestPTY_Container_MismatchedProject_Forbidden(t *testing.T) {
+	mockDocker := &mockDockerClientPTY{
+		inspectFunc: func(ctx context.Context, containerID string) (types.ContainerJSON, error) {
+			return types.ContainerJSON{
+				ContainerJSONBase: &types.ContainerJSONBase{
+					ID: "c_tenant_b_01",
+				},
+				Config: &container.Config{
+					Labels: map[string]string{
+						"pikpik.managed":    "true",
+						"pikpik.project_id": "prj_tenant_b",
+						"pikpik.app_id":     "app_tenant_b_api",
+					},
+				},
+			}, nil
+		},
+	}
+
+	ptyHandler := api.NewPTYHandler(mockDocker)
+	server := httptest.NewServer(withRole(ptyHandler, api.RoleDeveloper))
+	defer server.Close()
+
+	// Developer caller attempts to specify project_id=prj_tenant_a on a container labeled prj_tenant_b
+	wsURL := "ws" + server.URL[4:] + "?target_type=container&target_id=c_tenant_b_01&project_id=prj_tenant_a"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial pty websocket: %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected error frame: %v", err)
+	}
+	var exitMsg api.TermExitMessage
+	if len(payload) > 1 {
+		_ = json.Unmarshal(payload[1:], &exitMsg)
+	}
+	if len(payload) == 0 || payload[0] != 0xFF || !strings.Contains(exitMsg.Error, "forbidden") {
+		t.Fatalf("expected forbidden exit frame for mismatched project, got %q", string(payload))
 	}
 }

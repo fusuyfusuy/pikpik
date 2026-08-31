@@ -403,3 +403,113 @@ func TestS3Client_PruneStaleMultipartUploads(t *testing.T) {
 	assert.Equal(t, []string{"stale-upload-id-123"}, abortedUploads)
 	mu.Unlock()
 }
+
+func TestS3Client_UploadStreamMultipart_LargeNumberOfParts_NoDeadlock(t *testing.T) {
+	var mu sync.Mutex
+	uploadedParts := make(map[int]int)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		q := r.URL.Query()
+		if r.Method == http.MethodPost && q.Has("uploads") {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<InitiateMultipartUploadResult><Bucket>test-bucket</Bucket><Key>large.dump.gz</Key><UploadId>large-up-123</UploadId></InitiateMultipartUploadResult>`)
+			return
+		}
+
+		if r.Method == http.MethodPut && q.Has("uploadId") {
+			var partNum int
+			fmt.Sscanf(q.Get("partNumber"), "%d", &partNum)
+			data, _ := io.ReadAll(r.Body)
+			uploadedParts[partNum] = len(data)
+			w.Header().Set("ETag", fmt.Sprintf(`"etag-p-%d"`, partNum))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method == http.MethodPost && q.Has("uploadId") {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<CompleteMultipartUploadResult><Bucket>test-bucket</Bucket><Key>large.dump.gz</Key><ETag>"final-etag"</ETag></CompleteMultipartUploadResult>`)
+			return
+		}
+
+		http.Error(w, "not handled", http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	// 150 parts with 1024 bytes each -> total 150KB, crossing the 100-part deadlock ceiling
+	partSize := 1024
+	numParts := 150
+	totalSize := numParts * partSize
+	payload := bytes.Repeat([]byte("X"), totalSize)
+
+	client, err := s3.NewClient(s3.ClientOptions{
+		Provider:       s3.ProviderMinIO,
+		Endpoint:       ts.URL,
+		Bucket:         "test-bucket",
+		ForcePathStyle: true,
+		PartSizeBytes:  int64(partSize),
+		MaxConcurrency: 4,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := client.UploadStreamMultipart(ctx, "large.dump.gz", bytes.NewReader(payload), s3.UploadOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "large.dump.gz", info.Key)
+	assert.Equal(t, int64(totalSize), info.Size)
+
+	mu.Lock()
+	assert.Equal(t, numParts, len(uploadedParts), "all 150 parts must be uploaded without deadlock")
+	mu.Unlock()
+}
+
+func TestS3Client_ListObjects_Pagination(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.Method == http.MethodGet && q.Get("list-type") == "2" {
+			token := q.Get("continuation-token")
+			w.Header().Set("Content-Type", "application/xml")
+			if token == "" {
+				// Page 1: return 2 items with NextContinuationToken = "page2"
+				fmt.Fprintf(w, `<ListBucketResult>
+					<Name>test-bucket</Name>
+					<IsTruncated>true</IsTruncated>
+					<NextContinuationToken>page2</NextContinuationToken>
+					<Contents><Key>backups/obj1.gz</Key><Size>100</Size><LastModified>2026-08-30T10:00:00Z</LastModified></Contents>
+					<Contents><Key>backups/obj2.gz</Key><Size>200</Size><LastModified>2026-08-30T11:00:00Z</LastModified></Contents>
+				</ListBucketResult>`)
+				return
+			} else if token == "page2" {
+				// Page 2: return 1 item with IsTruncated = false
+				fmt.Fprintf(w, `<ListBucketResult>
+					<Name>test-bucket</Name>
+					<IsTruncated>false</IsTruncated>
+					<Contents><Key>backups/obj3.gz</Key><Size>300</Size><LastModified>2026-08-30T12:00:00Z</LastModified></Contents>
+				</ListBucketResult>`)
+				return
+			}
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client, err := s3.NewClient(s3.ClientOptions{
+		Provider:       s3.ProviderMinIO,
+		Endpoint:       ts.URL,
+		Bucket:         "test-bucket",
+		ForcePathStyle: true,
+	})
+	require.NoError(t, err)
+
+	objs, err := client.ListObjects(context.Background(), "backups/")
+	require.NoError(t, err)
+	require.Len(t, objs, 3, "should have fetched all 3 objects across both pages")
+	assert.Equal(t, "backups/obj1.gz", objs[0].Key)
+	assert.Equal(t, "backups/obj2.gz", objs[1].Key)
+	assert.Equal(t, "backups/obj3.gz", objs[2].Key)
+}

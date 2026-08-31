@@ -49,6 +49,7 @@ type CloneOptions struct {
 	WorkDir       string `json:"work_dir,omitempty"`
 	AppID         string `json:"app_id,omitempty"`
 	BuildID       string `json:"build_id,omitempty"`
+	AllowLocal    bool   `json:"allow_local,omitempty"`
 }
 
 // Workspace represents an isolated build workspace directory on the host filesystem.

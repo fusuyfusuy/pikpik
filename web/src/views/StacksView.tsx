@@ -9,6 +9,7 @@ import { Input, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Tabs } from '../components/ui/Tabs';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatDate } from '../lib/utils';
 import {
   Layers,
@@ -69,17 +70,35 @@ export function StacksView() {
   const [volDriver, setVolDriver] = useState('local');
 
   // --- Queries ---
-  const { data: stacks, isLoading: isStacksLoading } = useQuery({
+  const {
+    data: stacks,
+    isLoading: isStacksLoading,
+    isError: isStacksError,
+    error: stacksError,
+    refetch: refetchStacks,
+  } = useQuery({
     queryKey: ['stacks'],
     queryFn: api.stacks.list,
   });
 
-  const { data: networks, isLoading: isNetworksLoading } = useQuery({
+  const {
+    data: networks,
+    isLoading: isNetworksLoading,
+    isError: isNetworksError,
+    error: networksError,
+    refetch: refetchNetworks,
+  } = useQuery({
     queryKey: ['networks'],
     queryFn: () => api.networks.list(),
   });
 
-  const { data: volumes, isLoading: isVolumesLoading } = useQuery({
+  const {
+    data: volumes,
+    isLoading: isVolumesLoading,
+    isError: isVolumesError,
+    error: volumesError,
+    refetch: refetchVolumes,
+  } = useQuery({
     queryKey: ['volumes'],
     queryFn: () => api.volumes.list(),
   });
@@ -296,7 +315,13 @@ export function StacksView() {
       {/* ========================================================================= */}
       {activeTab === 'stacks' && (
         <div>
-          {isStacksLoading ? (
+          {isStacksError ? (
+            <QueryErrorAlert
+              title="Failed to load compose stacks"
+              error={stacksError}
+              onRetry={refetchStacks}
+            />
+          ) : isStacksLoading ? (
             <div className="text-center py-12 text-zinc-500 text-xs">Loading stacks...</div>
           ) : !stacks || stacks.length === 0 ? (
             <Card className="text-center py-12">
@@ -433,7 +458,13 @@ export function StacksView() {
       {/* ========================================================================= */}
       {activeTab === 'networks' && (
         <div className="space-y-4">
-          {isNetworksLoading ? (
+          {isNetworksError ? (
+            <QueryErrorAlert
+              title="Failed to load virtual networks"
+              error={networksError}
+              onRetry={refetchNetworks}
+            />
+          ) : isNetworksLoading ? (
             <div className="text-center py-12 text-zinc-500 text-xs">Loading networks...</div>
           ) : !networks || networks.length === 0 ? (
             <Card className="text-center py-12">
@@ -507,7 +538,13 @@ export function StacksView() {
       {/* ========================================================================= */}
       {activeTab === 'volumes' && (
         <div className="space-y-4">
-          {isVolumesLoading ? (
+          {isVolumesError ? (
+            <QueryErrorAlert
+              title="Failed to load storage volumes"
+              error={volumesError}
+              onRetry={refetchVolumes}
+            />
+          ) : isVolumesLoading ? (
             <div className="text-center py-12 text-zinc-500 text-xs">Loading volumes...</div>
           ) : !volumes || volumes.length === 0 ? (
             <Card className="text-center py-12">

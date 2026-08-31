@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/api"
+	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
+	"github.com/fusuycorp/pikpik/pkg/templates"
 	"github.com/gorilla/websocket"
 )
 
@@ -522,4 +524,183 @@ func (c *APIClient) PruneVolumes(ctx context.Context, projectID string) (*api.Pr
 	}
 	return &res.Data, nil
 }
+
+// --- Ingress / Domain Methods ---
+
+// ListDomains lists all custom domain bindings across projects.
+func (c *APIClient) ListDomains(ctx context.Context) ([]api.DomainBinding, error) {
+	var res api.Response[[]api.DomainBinding]
+	if err := c.doRequest(ctx, "GET", "/api/v1/ingress/domains", nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// BindDomain binds a domain name to an application.
+func (c *APIClient) BindDomain(ctx context.Context, req api.BindDomainRequest) (*api.DomainBinding, error) {
+	var res api.Response[api.DomainBinding]
+	if err := c.doRequest(ctx, "POST", "/api/v1/ingress/domains", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// DeleteDomain deletes a domain binding.
+func (c *APIClient) DeleteDomain(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "DELETE", "/api/v1/ingress/domains/"+id, nil, &res)
+}
+
+// UploadCertificate uploads a custom TLS certificate and private key.
+func (c *APIClient) UploadCertificate(ctx context.Context, req api.CertificateUploadRequest) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "POST", "/api/v1/ingress/certificates", req, &res)
+}
+
+// ReconcileIngress forces Caddy to re-sync all routes and TLS config.
+func (c *APIClient) ReconcileIngress(ctx context.Context) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "POST", "/api/v1/ingress/reconcile", nil, &res)
+}
+
+// GetCaddyConfig retrieves active Caddy configuration and diagnostics.
+func (c *APIClient) GetCaddyConfig(ctx context.Context) (*api.CaddyDiagnosticsDTO, error) {
+	var res api.Response[api.CaddyDiagnosticsDTO]
+	if err := c.doRequest(ctx, "GET", "/api/v1/ingress/caddy/config", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// --- Registry Methods ---
+
+// GetRegistryStatus retrieves the embedded container registry daemon status.
+func (c *APIClient) GetRegistryStatus(ctx context.Context) (*api.RegistryStatusResponse, error) {
+	var res api.Response[api.RegistryStatusResponse]
+	if err := c.doRequest(ctx, "GET", "/api/v1/registry/status", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// ListRepositories retrieves the image catalog and tags.
+func (c *APIClient) ListRepositories(ctx context.Context) (*api.RepositoryCatalogResponse, error) {
+	var res api.Response[api.RepositoryCatalogResponse]
+	if err := c.doRequest(ctx, "GET", "/api/v1/registry/repositories", nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// GetRegistryCredentials retrieves robot credentials for automated push/pull.
+func (c *APIClient) GetRegistryCredentials(ctx context.Context, projectID string) ([]api.RobotCredentialsResponse, error) {
+	url := "/api/v1/registry/credentials"
+	if projectID != "" {
+		url += "?project_id=" + projectID
+	}
+	var res api.Response[[]api.RobotCredentialsResponse]
+	if err := c.doRequest(ctx, "GET", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// RotateRegistryCredentials rotates the robot credential token.
+func (c *APIClient) RotateRegistryCredentials(ctx context.Context, id string) (*api.RobotCredentialsResponse, error) {
+	url := "/api/v1/registry/credentials/rotate"
+	if id != "" {
+		url += "?id=" + id
+	}
+	var res api.Response[api.RobotCredentialsResponse]
+	if err := c.doRequest(ctx, "POST", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// GarbageCollectRegistry prunes unreferenced image blobs and manifests.
+func (c *APIClient) GarbageCollectRegistry(ctx context.Context) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "POST", "/api/v1/registry/garbage-collect", nil, &res)
+}
+
+// --- Templates Methods ---
+
+// ListTemplates lists marketplace templates with optional category/search filters.
+func (c *APIClient) ListTemplates(ctx context.Context, category, search string) ([]templates.Template, error) {
+	url := "/api/v1/templates"
+	params := []string{}
+	if category != "" && category != "All" {
+		params = append(params, "category="+category)
+	}
+	if search != "" {
+		params = append(params, "search="+search)
+	}
+	if len(params) > 0 {
+		url += "?" + strings.Join(params, "&")
+	}
+	var res api.Response[[]templates.Template]
+	if err := c.doRequest(ctx, "GET", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// GetTemplate retrieves a template specification and environment variables schema.
+func (c *APIClient) GetTemplate(ctx context.Context, id string) (*templates.Template, error) {
+	var res api.Response[templates.Template]
+	if err := c.doRequest(ctx, "GET", "/api/v1/templates/"+id, nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// DeployTemplate deploys a 1-click marketplace template stack.
+func (c *APIClient) DeployTemplate(ctx context.Context, id string, req templates.DeployTemplateRequest) (*templates.DeployTemplateResponse, error) {
+	var res api.Response[templates.DeployTemplateResponse]
+	if err := c.doRequest(ctx, "POST", "/api/v1/templates/"+id+"/deploy", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// --- Backup Schedules Methods ---
+
+// ListBackupSchedules lists automated cron backup schedules.
+func (c *APIClient) ListBackupSchedules(ctx context.Context, serviceID string) ([]*store.BackupSchedule, error) {
+	url := "/api/v1/backups/schedules"
+	if serviceID != "" {
+		url += "?service_id=" + serviceID
+	}
+	var res api.Response[[]*store.BackupSchedule]
+	if err := c.doRequest(ctx, "GET", url, nil, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
+// CreateBackupSchedule provisions a new cron backup schedule.
+func (c *APIClient) CreateBackupSchedule(ctx context.Context, req api.CreateBackupScheduleRequest) (*store.BackupSchedule, error) {
+	var res api.Response[store.BackupSchedule]
+	if err := c.doRequest(ctx, "POST", "/api/v1/backups/schedules", req, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// GetBackupSchedule retrieves a backup schedule by ID.
+func (c *APIClient) GetBackupSchedule(ctx context.Context, id string) (*store.BackupSchedule, error) {
+	var res api.Response[store.BackupSchedule]
+	if err := c.doRequest(ctx, "GET", "/api/v1/backups/schedules/"+id, nil, &res); err != nil {
+		return nil, err
+	}
+	return &res.Data, nil
+}
+
+// DeleteBackupSchedule removes a backup schedule.
+func (c *APIClient) DeleteBackupSchedule(ctx context.Context, id string) error {
+	var res api.Response[map[string]any]
+	return c.doRequest(ctx, "DELETE", "/api/v1/backups/schedules/"+id, nil, &res)
+}
+
 

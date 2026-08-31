@@ -5,6 +5,7 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatBytes, formatDate } from '../lib/utils';
 import {
   HardDrive,
@@ -18,17 +19,33 @@ export function RegistryView() {
   const queryClient = useQueryClient();
   const toast = useToast();
 
-  const { data: status, isLoading: isStatusLoading } = useQuery({
+  const {
+    data: status,
+    isLoading: isStatusLoading,
+    isError: isStatusError,
+    error: statusError,
+    refetch: refetchStatus,
+  } = useQuery({
     queryKey: ['registryStatus'],
     queryFn: api.registry.getStatus,
   });
 
-  const { data: catalog } = useQuery({
+  const {
+    data: catalog,
+    isError: isCatalogError,
+    error: catalogError,
+    refetch: refetchCatalog,
+  } = useQuery({
     queryKey: ['registryCatalog'],
     queryFn: api.registry.listRepositories,
   });
 
-  const { data: credentials } = useQuery({
+  const {
+    data: credentials,
+    isError: isCredentialsError,
+    error: credentialsError,
+    refetch: refetchCredentials,
+  } = useQuery({
     queryKey: ['registryCredentials'],
     queryFn: () => api.registry.getCredentials(),
   });
@@ -75,6 +92,18 @@ export function RegistryView() {
           Run Garbage Collection
         </Button>
       </div>
+
+      {(isStatusError || isCatalogError || isCredentialsError) && (
+        <QueryErrorAlert
+          title="Registry Service Error"
+          error={statusError || catalogError || credentialsError}
+          onRetry={() => {
+            refetchStatus();
+            refetchCatalog();
+            refetchCredentials();
+          }}
+        />
+      )}
 
       {/* Registry Status Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

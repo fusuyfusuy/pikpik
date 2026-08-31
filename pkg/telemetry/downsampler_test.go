@@ -81,3 +81,55 @@ func TestDownsamplerHourlyRollupAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, resultsAfterPrune)
 }
+
+// TestDownsampler_EliminatesDuplicateInsertions verifies multiple saves for the same hour window update in-place without duplicate rows.
+func TestDownsampler_EliminatesDuplicateInsertions(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	downsampler := telemetry.NewDownsampler(db)
+	ring := telemetry.NewRingBuffer(360)
+	now := time.Now().Truncate(time.Hour).Unix()
+
+	ctx := context.Background()
+
+	// 1. Initial push of 10 points
+	for i := 0; i < 10; i++ {
+		ring.Push(telemetry.MetricPoint{
+			Timestamp:   now + int64(i*10),
+			CPUPercent:  10.0,
+			MemoryBytes: 100 * 1024 * 1024,
+		})
+	}
+	err := downsampler.DownsampleAndSave(ctx, "service", "svc_web", ring, now)
+	require.NoError(t, err)
+
+	fromTime := time.Unix(now-10, 0)
+	toTime := time.Unix(now+3700, 0)
+	results, err := downsampler.QueryHourlyMetrics(ctx, "service", "svc_web", fromTime, toTime)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, 10, results[0].SampleCount)
+
+	// 2. Second downsample tick during the same hour with 20 points
+	for i := 10; i < 20; i++ {
+		ring.Push(telemetry.MetricPoint{
+			Timestamp:   now + int64(i*10),
+			CPUPercent:  20.0,
+			MemoryBytes: 200 * 1024 * 1024,
+		})
+	}
+	err = downsampler.DownsampleAndSave(ctx, "service", "svc_web", ring, now)
+	require.NoError(t, err)
+
+	// Verify still exactly 1 record with updated sample count and metrics
+	results, err = downsampler.QueryHourlyMetrics(ctx, "service", "svc_web", fromTime, toTime)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "must not create duplicate row on multiple downsamples within the same hour")
+	assert.Equal(t, 20, results[0].SampleCount)
+
+	// 3. Test PruneExpiredMetrics
+	pruned, err := downsampler.PruneExpiredMetrics(ctx, 1*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), pruned)
+}

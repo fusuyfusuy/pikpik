@@ -117,6 +117,14 @@ func (s *DockerSwarmManager) CreateService(ctx context.Context, spec ServiceSpec
 		spec.ParsedConstraints = parsed
 	}
 
+	if len(spec.ParsedConstraints) > 0 || spec.Resources.MemoryReserve > 0 || spec.Resources.CPUReserve > 0 {
+		if nodes, err := s.ListNodes(ctx); err == nil && len(nodes) > 0 {
+			if err := ValidateConstraintsAgainstNodes(spec.ParsedConstraints, spec.Resources, nodes); err != nil {
+				return "", fmt.Errorf("pre-flight constraint validation failed: %w", err)
+			}
+		}
+	}
+
 	swarmSpec := s.convertSpecToSwarm(spec)
 
 	resp, err := s.cli.ServiceCreate(ctx, swarmSpec, types.ServiceCreateOptions{})
@@ -138,6 +146,14 @@ func (s *DockerSwarmManager) UpdateService(ctx context.Context, serviceID string
 			return fmt.Errorf("invalid placement constraint: %w", err)
 		}
 		spec.ParsedConstraints = parsed
+	}
+
+	if len(spec.ParsedConstraints) > 0 || spec.Resources.MemoryReserve > 0 || spec.Resources.CPUReserve > 0 {
+		if nodes, err := s.ListNodes(ctx); err == nil && len(nodes) > 0 {
+			if err := ValidateConstraintsAgainstNodes(spec.ParsedConstraints, spec.Resources, nodes); err != nil {
+				return fmt.Errorf("pre-flight constraint validation failed: %w", err)
+			}
+		}
 	}
 
 	swarmSpec := s.convertSpecToSwarm(spec)

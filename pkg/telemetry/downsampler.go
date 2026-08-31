@@ -52,7 +52,7 @@ func (d *Downsampler) DownsampleAndSave(ctx context.Context, entityType, entityI
 	return d.SaveAggregate(ctx, agg)
 }
 
-// SaveAggregate inserts a single DownsampleAggregate into SQLite table system_metrics_hourly.
+// SaveAggregate inserts or updates a single DownsampleAggregate in SQLite table system_metrics_hourly without duplicate rows.
 func (d *Downsampler) SaveAggregate(ctx context.Context, agg *DownsampleAggregate) error {
 	if d.db == nil {
 		return nil
@@ -66,7 +66,20 @@ func (d *Downsampler) SaveAggregate(ctx context.Context, agg *DownsampleAggregat
 		net_rx_total, net_tx_total,
 		disk_read_total, disk_write_total,
 		sample_count, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(entity_type, entity_id, bucket_start) DO UPDATE SET
+		cpu_avg = excluded.cpu_avg,
+		cpu_min = excluded.cpu_min,
+		cpu_max = excluded.cpu_max,
+		cpu_p95 = excluded.cpu_p95,
+		mem_avg = excluded.mem_avg,
+		mem_max = excluded.mem_max,
+		net_rx_total = excluded.net_rx_total,
+		net_tx_total = excluded.net_tx_total,
+		disk_read_total = excluded.disk_read_total,
+		disk_write_total = excluded.disk_write_total,
+		sample_count = excluded.sample_count,
+		created_at = excluded.created_at`
 
 	nowUnix := time.Now().UTC().Unix()
 	bucketUnix := agg.BucketStart.UTC().Unix()
@@ -158,4 +171,13 @@ func (d *Downsampler) PruneMetricsOlderThan(ctx context.Context, olderThan time.
 		return 0, fmt.Errorf("telemetry: prune old metrics failed: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// PruneExpiredMetrics deletes rollup records older than retention (default 30 days if retention <= 0).
+func (d *Downsampler) PruneExpiredMetrics(ctx context.Context, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		retention = 30 * 24 * time.Hour
+	}
+	cutoff := time.Now().UTC().Add(-retention)
+	return d.PruneMetricsOlderThan(ctx, cutoff)
 }

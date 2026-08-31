@@ -403,3 +403,103 @@ func TestAgentLogStreamMessage(t *testing.T) {
 	assert.Equal(t, "c_app_web", receivedLogs[0].TargetID)
 }
 
+func TestAgentDispatcher_DockerPathTraversal_Sanitization(t *testing.T) {
+	dispatcher := agent.NewCommandDispatcher("")
+	ctx := context.Background()
+
+	traversalPayloads := []string{
+		"../../etc/shadow",
+		"../volumes/prune",
+		"x/archive?path=/etc/passwd#",
+		"container/../escape",
+		"bad%2fid",
+		";rm -rf /",
+		"",
+	}
+
+	for _, badID := range traversalPayloads {
+		// docker.inspect
+		res, err := dispatcher.Dispatch(ctx, &agent.CommandPayload{
+			Command: "docker.inspect",
+			Args:    []string{badID},
+		})
+		require.NoError(t, err) // Dispatch returns structured result with Success=false on handler error
+		assert.False(t, res.Success, "docker.inspect with %q must fail", badID)
+		assert.NotEmpty(t, res.Error)
+
+		// docker.logs
+		res, err = dispatcher.Dispatch(ctx, &agent.CommandPayload{
+			Command: "docker.logs",
+			Args:    []string{badID, "100"},
+		})
+		require.NoError(t, err)
+		assert.False(t, res.Success, "docker.logs with %q must fail", badID)
+		assert.NotEmpty(t, res.Error)
+	}
+}
+
+func TestAgentServer_NodeIdentityBindingAndSpoofingPrevention(t *testing.T) {
+	// 1. Test NodeTokenValidator
+	validTokens := map[string]string{
+		"node_alpha": "token_alpha_secret",
+		"node_beta":  "token_beta_secret",
+	}
+
+	serverOpts := agent.AgentServerOptions{
+		NodeTokenValidator: func(nodeID, token string) bool {
+			expected, exists := validTokens[nodeID]
+			return exists && expected == token
+		},
+	}
+	agentServer := agent.NewAgentServer(serverOpts)
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if srvImpl, ok := agentServer.(interface{ HandleHTTP(http.ResponseWriter, *http.Request) }); ok {
+			srvImpl.HandleHTTP(w, r)
+		}
+	}))
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+
+	// Attempt connecting as node_alpha with node_beta's token (spoofing attempt)
+	cfgSpoof := agent.AgentConfig{
+		NodeID:          "node_alpha",
+		ControlPlaneURL: wsURL,
+		EnrollmentToken: "token_beta_secret",
+	}
+	clientSpoof, err := agent.NewAgentClient(cfgSpoof, &mockProcReader{}, nil, nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	require.NoError(t, clientSpoof.Start(ctx))
+	defer clientSpoof.Close()
+
+	time.Sleep(200 * time.Millisecond)
+
+	srvImpl := agentServer.(interface {
+		GetNodeSession(string) (*agent.NodeSession, bool)
+	})
+	_, exists := srvImpl.GetNodeSession("node_alpha")
+	assert.False(t, exists, "spoofed node_alpha must be rejected by NodeTokenValidator")
+
+	// 2. Connect legitimately as node_alpha
+	cfgLegit := agent.AgentConfig{
+		NodeID:          "node_alpha",
+		ControlPlaneURL: wsURL,
+		EnrollmentToken: "token_alpha_secret",
+	}
+	clientLegit, err := agent.NewAgentClient(cfgLegit, &mockProcReader{}, nil, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, clientLegit.Start(ctx))
+	defer clientLegit.Close()
+
+	require.Eventually(t, func() bool {
+		_, ok := srvImpl.GetNodeSession("node_alpha")
+		return ok
+	}, 2*time.Second, 50*time.Millisecond, "legitimate node_alpha must connect")
+}
+

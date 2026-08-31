@@ -35,6 +35,9 @@ func (s *sqlStackStore) Create(ctx context.Context, stack *Stack) error {
 		stack.ID, stack.ProjectID, stack.Name, stack.ComposeYAML, stack.Status, stack.CreatedAt, stack.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create stack: %w", err)
 	}
 	return nil

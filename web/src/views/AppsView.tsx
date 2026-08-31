@@ -17,6 +17,7 @@ import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import {
   Layers,
   Plus,
@@ -75,7 +76,13 @@ export function AppsView() {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
 
   // Queries
-  const { data: projects = [], isLoading: isProjectsLoading } = useQuery({
+  const {
+    data: projects = [],
+    isLoading: isProjectsLoading,
+    isError: isProjectsError,
+    error: projectsError,
+    refetch: refetchProjects,
+  } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.projects.list(),
   });
@@ -85,7 +92,13 @@ export function AppsView() {
     queryFn: api.tags.list,
   });
 
-  const { data: apps = [], isLoading: isAppsLoading } = useQuery({
+  const {
+    data: apps = [],
+    isLoading: isAppsLoading,
+    isError: isAppsError,
+    error: appsError,
+    refetch: refetchApps,
+  } = useQuery({
     queryKey: ['apps', selectedProject, selectedTag, searchQuery],
     queryFn: () =>
       api.apps.list({
@@ -515,7 +528,16 @@ export function AppsView() {
       </Card>
 
       {/* Visual Project Cards Grouping */}
-      {isAppsLoading || isProjectsLoading ? (
+      {isAppsError || isProjectsError ? (
+        <QueryErrorAlert
+          title="Failed to Load Applications"
+          error={appsError || projectsError}
+          onRetry={() => {
+            refetchApps();
+            refetchProjects();
+          }}
+        />
+      ) : isAppsLoading || isProjectsLoading ? (
         <Card className="p-8 text-center text-zinc-500 text-sm">
           <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2 text-cyan-400" />
           Loading workspace and applications...

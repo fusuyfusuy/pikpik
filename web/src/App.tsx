@@ -4,6 +4,7 @@ import { api, getToken } from './lib/api';
 import { Layout } from './components/Layout';
 import { useSSE } from './hooks/useSSE';
 import { User } from './lib/types';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Lazy-loaded Views for route-level code splitting
 const LoginView = lazy(() => import('./views/LoginView').then((m) => ({ default: m.LoginView })));
@@ -115,19 +116,21 @@ export function App() {
       onLogout={handleLogout}
       sseStatus={sseStatus}
     >
-      <Suspense fallback={<ViewLoader />}>
-        {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
-        {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
-        {currentView === 'apps' && <AppsView />}
-        {currentView === 'stacks' && <StacksView />}
-        {currentView === 'nodes' && <NodesView />}
-        {currentView === 'databases' && <DatabasesView />}
-        {currentView === 'ingress' && <IngressView />}
-        {currentView === 'backups' && <BackupsView />}
-        {currentView === 'registry' && <RegistryView />}
-        {currentView === 'system' && <SystemView />}
-        {currentView === 'settings' && <SettingsView user={currentUser} />}
-      </Suspense>
+      <ErrorBoundary key={currentView}>
+        <Suspense fallback={<ViewLoader />}>
+          {currentView === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
+          {(currentView === 'marketplace' || currentView === 'templates') && <MarketplaceView />}
+          {currentView === 'apps' && <AppsView />}
+          {currentView === 'stacks' && <StacksView />}
+          {currentView === 'nodes' && <NodesView />}
+          {currentView === 'databases' && <DatabasesView />}
+          {currentView === 'ingress' && <IngressView />}
+          {currentView === 'backups' && <BackupsView />}
+          {currentView === 'registry' && <RegistryView />}
+          {currentView === 'system' && <SystemView />}
+          {currentView === 'settings' && <SettingsView user={currentUser} />}
+        </Suspense>
+      </ErrorBoundary>
     </Layout>
   );
 }

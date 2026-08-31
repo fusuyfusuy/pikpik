@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/telemetry"
@@ -87,17 +88,37 @@ type CommandResult struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// NodeTokenValidatorFunc verifies whether an incoming enrollment token is authorized for a specific node ID.
+type NodeTokenValidatorFunc func(nodeID, token string) bool
+
 // NodeSession tracks an authenticated active worker node connection on the control plane.
 type NodeSession struct {
-	NodeID          string
-	NodeName        string
-	NodeRole        string
-	RemoteAddr      string
-	ConnectedAt     time.Time
-	LastHeartbeat   time.Time
-	Conn            *websocket.Conn
-	PendingCommands map[string]chan *CommandResult
-	writeMu         sync.Mutex
+	NodeID                string
+	NodeName              string
+	NodeRole              string
+	RemoteAddr            string
+	ConnectedAt           time.Time
+	LastHeartbeat         time.Time
+	lastHeartbeatUnixNano atomic.Int64
+	Conn                  *websocket.Conn
+	PendingCommands       map[string]chan *CommandResult
+	writeMu               sync.Mutex
+}
+
+// UpdateHeartbeat sets the last heartbeat timestamp atomically.
+func (ns *NodeSession) UpdateHeartbeat() {
+	now := time.Now().UTC()
+	ns.LastHeartbeat = now
+	ns.lastHeartbeatUnixNano.Store(now.UnixNano())
+}
+
+// GetLastHeartbeat returns the last heartbeat timestamp atomically.
+func (ns *NodeSession) GetLastHeartbeat() time.Time {
+	nano := ns.lastHeartbeatUnixNano.Load()
+	if nano > 0 {
+		return time.Unix(0, nano).UTC()
+	}
+	return ns.LastHeartbeat
 }
 
 // SafeWrite writes data to the WebSocket connection under a mutex lock.

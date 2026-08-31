@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fusuycorp/pikpik/pkg/api"
+	"github.com/fusuycorp/pikpik/pkg/auth"
 	"github.com/fusuycorp/pikpik/pkg/store"
 )
 
@@ -168,6 +169,35 @@ func TestBuildEndpoints_GenericGitWebhook(t *testing.T) {
 	}
 	defer st.Close()
 
+	ctx := context.Background()
+	_ = st.Organizations().Create(ctx, &store.Organization{
+		ID:   "org_default",
+		Name: "Default Org",
+		Slug: "default",
+	})
+	_ = st.Projects().Create(ctx, &store.Project{
+		ID:    "prj_default",
+		OrgID: "org_default",
+		Name:  "Default Project",
+		Slug:  "default",
+	})
+	_ = st.Stages().Create(ctx, &store.Stage{
+		ID:        "stg_default",
+		ProjectID: "prj_default",
+		Name:      "Default Stage",
+		Slug:      "default",
+	})
+	if err := st.Services().Create(ctx, &store.Service{
+		ID:              "app_custom_01",
+		ProjectID:       "prj_default",
+		StageID:         "stg_default",
+		Name:            "custom-app",
+		Slug:            "custom-app",
+		DeployTokenHash: auth.HashToken("pik_ndg_test"),
+	}); err != nil {
+		t.Fatalf("failed to create service: %v", err)
+	}
+
 	ctrl := api.NewDefaultController(api.ControllerDependencies{
 		Store: st,
 	})
@@ -187,6 +217,7 @@ func TestBuildEndpoints_GenericGitWebhook(t *testing.T) {
 		"clone_url": "https://git.corp.local/custom/repo.git"
 	}`
 
+	// 1. Valid Token
 	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/git/app_custom_01?token=pik_ndg_test", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -209,6 +240,18 @@ func TestBuildEndpoints_GenericGitWebhook(t *testing.T) {
 	if res.Data.CommitSHA != "9876543210ab" {
 		t.Errorf("expected commit sha 9876543210ab, got %s", res.Data.CommitSHA)
 	}
+
+	// 2. Invalid Token (Fail Closed)
+	badReq, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/webhooks/git/app_custom_01?token=wrong_token", strings.NewReader(payload))
+	badReq.Header.Set("Content-Type", "application/json")
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatalf("bad request failed: %v", err)
+	}
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for invalid token, got %d", badResp.StatusCode)
+	}
 }
 
 func TestBuildEndpoints_ListGetRebuildStream(t *testing.T) {
@@ -225,7 +268,7 @@ func TestBuildEndpoints_ListGetRebuildStream(t *testing.T) {
 	_ = st.Projects().Create(ctx, proj)
 	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
 	_ = st.Stages().Create(ctx, stage)
-	svc := &store.Service{ID: "app_api_01", ProjectID: proj.ID, StageID: stage.ID, Name: "api", Slug: "api", Type: "app"}
+	svc := &store.Service{ID: "app_api_01", ProjectID: proj.ID, StageID: stage.ID, Name: "api", Slug: "api", Type: "app", Image: "pikpik/app:latest"}
 	_ = st.Services().Create(ctx, svc)
 
 	// Create an existing build record

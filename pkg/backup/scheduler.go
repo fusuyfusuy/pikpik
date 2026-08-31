@@ -233,6 +233,7 @@ func (c *CronExpression) Next(from time.Time) time.Time {
 // CronSchedulerConfig holds configuration options for the backup cron scheduler.
 type CronSchedulerConfig struct {
 	PollInterval time.Duration
+	JobTimeout   time.Duration
 	Vault        crypto.Vault
 }
 
@@ -243,6 +244,7 @@ type CronScheduler struct {
 	s3Client     s3.S3Client
 	vault        crypto.Vault
 	pollInterval time.Duration
+	jobTimeout   time.Duration
 
 	running     atomic.Bool
 	stopCh      chan struct{}
@@ -257,10 +259,14 @@ type CronScheduler struct {
 // NewCronScheduler initializes a new CronScheduler.
 func NewCronScheduler(st store.Store, engine BackupEngine, s3Client s3.S3Client, cfgs ...CronSchedulerConfig) *CronScheduler {
 	pollInterval := 10 * time.Second
+	jobTimeout := 15 * time.Minute
 	var vault crypto.Vault
 	if len(cfgs) > 0 {
 		if cfgs[0].PollInterval > 0 {
 			pollInterval = cfgs[0].PollInterval
+		}
+		if cfgs[0].JobTimeout > 0 {
+			jobTimeout = cfgs[0].JobTimeout
 		}
 		vault = cfgs[0].Vault
 	}
@@ -271,6 +277,7 @@ func NewCronScheduler(st store.Store, engine BackupEngine, s3Client s3.S3Client,
 		s3Client:     s3Client,
 		vault:        vault,
 		pollInterval: pollInterval,
+		jobTimeout:   jobTimeout,
 	}
 }
 
@@ -474,8 +481,19 @@ func (s *CronScheduler) ExecuteScheduleJob(ctx context.Context, sch *store.Backu
 		},
 	}
 
+	if s.backupEngine == nil {
+		return nil, errors.New("backup engine is not configured")
+	}
+
+	jobTimeout := s.jobTimeout
+	if jobTimeout <= 0 {
+		jobTimeout = 15 * time.Minute
+	}
+	jobCtx, jobCancel := context.WithTimeout(ctx, jobTimeout)
+	defer jobCancel()
+
 	startTime := time.Now()
-	res, backupErr := s.backupEngine.StreamBackup(ctx, jobCfg)
+	res, backupErr := s.backupEngine.StreamBackup(jobCtx, jobCfg)
 	duration := time.Since(startTime)
 
 	// Update schedule run times
@@ -488,6 +506,12 @@ func (s *CronScheduler) ExecuteScheduleJob(ctx context.Context, sch *store.Backu
 		if err == nil && bkpCfg != nil {
 			configID = bkpCfg.ID
 		} else {
+			s3SecretEnc := sch.S3SecretKeyEncrypted
+			if s3SecretEnc != "" && s.vault != nil && !strings.HasPrefix(s3SecretEnc, "v1:") {
+				if enc, err := s.vault.EncryptString(ctx, s3SecretEnc); err == nil {
+					s3SecretEnc = enc
+				}
+			}
 			newCfg := &store.BackupConfig{
 				ID:                   "bkp_" + sch.ID,
 				ServiceID:            sch.ServiceID,
@@ -495,7 +519,7 @@ func (s *CronScheduler) ExecuteScheduleJob(ctx context.Context, sch *store.Backu
 				S3Bucket:             sch.S3Bucket,
 				S3Region:             sch.S3Region,
 				S3AccessKey:          sch.S3AccessKey,
-				S3SecretKeyEncrypted: sch.S3SecretKeyEncrypted,
+				S3SecretKeyEncrypted: s3SecretEnc,
 				CronExpr:             sch.CronExpr,
 				RetentionDays:        30,
 				IsEnabled:            sch.IsEnabled,
@@ -532,9 +556,9 @@ func (s *CronScheduler) ExecuteScheduleJob(ctx context.Context, sch *store.Backu
 	}
 
 	// Trigger S3 GFS retention pruning if S3 client is available
-	if scheduleS3Client != nil && (sch.RetentionHourly > 0 || sch.RetentionDaily > 0 || sch.MaxBackups > 0) {
+	if scheduleS3Client != nil && (sch.RetentionHourly > 0 || sch.RetentionDaily > 0 || sch.RetentionWeekly > 0 || sch.RetentionMonthly > 0 || sch.MaxBackups > 0) {
 		prefix := fmt.Sprintf("backups/%s/%s/", projectSlug, serviceSlug)
-		_, _ = scheduleS3Client.PruneRetention(ctx, prefix, s3.RetentionPolicy{
+		_, _ = scheduleS3Client.PruneRetention(jobCtx, prefix, s3.RetentionPolicy{
 			KeepHourly:  sch.RetentionHourly,
 			KeepDaily:   sch.RetentionDaily,
 			KeepWeekly:  sch.RetentionWeekly,

@@ -43,6 +43,9 @@ func (s *sqlAPITokenStore) Create(ctx context.Context, token *APIToken) error {
 		string(scopesJSON), token.SessionVersion, token.LastUsedAt, token.ExpiresAt, token.CreatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create api token: %w", err)
 	}
 	return nil

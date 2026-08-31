@@ -9,6 +9,7 @@ import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatDate } from '../lib/utils';
 import {
   Key,
@@ -42,7 +43,13 @@ export function SettingsView({ user }: SettingsViewProps) {
   const [selectedScopes, setSelectedScopes] = useState<string[]>(['read:apps', 'write:apps']);
   const [copiedToken, setCopiedToken] = useState(false);
 
-  const { data: tokens, isLoading } = useQuery({
+  const {
+    data: tokens,
+    isLoading,
+    isError: isTokensError,
+    error: tokensError,
+    refetch: refetchTokens,
+  } = useQuery({
     queryKey: ['apiTokens'],
     queryFn: api.auth.listTokens,
   });
@@ -164,7 +171,17 @@ export function SettingsView({ user }: SettingsViewProps) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isLoading ? (
+              {isTokensError ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="p-4">
+                    <QueryErrorAlert
+                      title="Failed to load API tokens"
+                      error={tokensError}
+                      onRetry={refetchTokens}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : isLoading ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-8 text-zinc-500">
                     Loading tokens...

@@ -43,6 +43,9 @@ func (s *sqlNetworkStore) Create(ctx context.Context, net *ManagedNetwork) error
 		net.ID, net.ProjectID, net.Name, net.Driver, net.Scope, isExt, net.CreatedAt, net.UpdatedAt,
 	)
 	if err != nil {
+		if IsDuplicateKeyError(err) {
+			return ErrDuplicateKey
+		}
 		return fmt.Errorf("store: failed to create managed network: %w", err)
 	}
 	return nil

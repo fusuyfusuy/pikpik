@@ -512,3 +512,89 @@ func TestStore_BackupSchedules(t *testing.T) {
 		t.Fatalf("Expected ErrNotFound after deletion, got: %v", err)
 	}
 }
+
+func TestStore_DeleteByResource(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	resID := "app_test_res_123"
+	if err := st.EnvVars().Set(ctx, &store.EnvVar{
+		ScopeTier:      store.TierService,
+		ResourceID:     resID,
+		Key:            "FOO",
+		ValueEncrypted: "bar",
+	}); err != nil {
+		t.Fatalf("Failed to set FOO: %v", err)
+	}
+
+	if err := st.EnvVars().Set(ctx, &store.EnvVar{
+		ScopeTier:      store.TierService,
+		ResourceID:     resID,
+		Key:            "BAZ",
+		ValueEncrypted: "qux",
+	}); err != nil {
+		t.Fatalf("Failed to set BAZ: %v", err)
+	}
+
+	list, err := st.EnvVars().ListByResource(ctx, store.TierService, resID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("Expected 2 env vars, got %d, err: %v", len(list), err)
+	}
+
+	if err := st.EnvVars().DeleteByResource(ctx, store.TierService, resID); err != nil {
+		t.Fatalf("DeleteByResource failed: %v", err)
+	}
+
+	listAfter, err := st.EnvVars().ListByResource(ctx, store.TierService, resID)
+	if err != nil || len(listAfter) != 0 {
+		t.Fatalf("Expected 0 env vars after DeleteByResource, got %d, err: %v", len(listAfter), err)
+	}
+}
+
+func TestStore_DuplicateKeyMapping(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// Test user duplicate email
+	u1 := &store.User{
+		ID:           "usr_dup_1",
+		Email:        "dup@test.com",
+		PasswordHash: "hash1",
+		Role:         "owner",
+	}
+	if err := st.Users().Create(ctx, u1); err != nil {
+		t.Fatalf("Failed to create u1: %v", err)
+	}
+
+	u2 := &store.User{
+		ID:           "usr_dup_2",
+		Email:        "dup@test.com",
+		PasswordHash: "hash2",
+		Role:         "viewer",
+	}
+	err := st.Users().Create(ctx, u2)
+	if !errors.Is(err, store.ErrDuplicateKey) {
+		t.Fatalf("Expected ErrDuplicateKey for duplicate user email, got: %v", err)
+	}
+
+	// Test org duplicate slug
+	org1 := &store.Organization{
+		ID:   "org_dup_1",
+		Name: "Org 1",
+		Slug: "dup-org",
+	}
+	if err := st.Organizations().Create(ctx, org1); err != nil {
+		t.Fatalf("Failed to create org1: %v", err)
+	}
+
+	org2 := &store.Organization{
+		ID:   "org_dup_2",
+		Name: "Org 2",
+		Slug: "dup-org",
+	}
+	err = st.Organizations().Create(ctx, org2)
+	if !errors.Is(err, store.ErrDuplicateKey) {
+		t.Fatalf("Expected ErrDuplicateKey for duplicate org slug, got: %v", err)
+	}
+}
+

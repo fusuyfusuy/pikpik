@@ -11,15 +11,9 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from '../components/ui/Table';
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatBytes, formatDate } from '../lib/utils';
 import {
   Archive,
@@ -69,12 +63,24 @@ export function BackupsView() {
   const [scheduleIsEnabled, setScheduleIsEnabled] = useState(true);
 
   // Queries
-  const { data: backups, isLoading: isBackupsLoading } = useQuery({
+  const {
+    data: backups,
+    isLoading: isBackupsLoading,
+    isError: isBackupsError,
+    error: backupsError,
+    refetch: refetchBackups,
+  } = useQuery({
     queryKey: ['backups'],
     queryFn: api.backups.list,
   });
 
-  const { data: schedules, isLoading: isSchedulesLoading } = useQuery({
+  const {
+    data: schedules,
+    isLoading: isSchedulesLoading,
+    isError: isSchedulesError,
+    error: schedulesError,
+    refetch: refetchSchedules,
+  } = useQuery({
     queryKey: ['backupSchedules'],
     queryFn: () => api.schedules.list(),
   });
@@ -84,7 +90,12 @@ export function BackupsView() {
     queryFn: api.databases.list,
   });
 
-  const { data: destinations } = useQuery({
+  const {
+    data: destinations,
+    isError: isDestinationsError,
+    error: destinationsError,
+    refetch: refetchDestinations,
+  } = useQuery({
     queryKey: ['backupDestinations'],
     queryFn: api.backups.listDestinations,
   });
@@ -278,7 +289,17 @@ export function BackupsView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isBackupsLoading ? (
+              {isBackupsError ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="p-4">
+                    <QueryErrorAlert
+                      title="Failed to load backups"
+                      error={backupsError}
+                      onRetry={refetchBackups}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : isBackupsLoading ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-zinc-500">
                     Loading backup snapshots...
@@ -373,7 +394,17 @@ export function BackupsView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {isSchedulesLoading ? (
+              {isSchedulesError ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="p-4">
+                    <QueryErrorAlert
+                      title="Failed to load backup schedules"
+                      error={schedulesError}
+                      onRetry={refetchSchedules}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : isSchedulesLoading ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-zinc-500">
                     Loading backup schedules...
@@ -456,7 +487,15 @@ export function BackupsView() {
       {/* TAB 3: Destinations */}
       {activeTab === 'destinations' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {destinations && destinations.length > 0 ? (
+          {isDestinationsError ? (
+            <div className="md:col-span-3">
+              <QueryErrorAlert
+                title="Failed to load backup destinations"
+                error={destinationsError}
+                onRetry={refetchDestinations}
+              />
+            </div>
+          ) : destinations && destinations.length > 0 ? (
             destinations.map((d) => (
               <Card key={d.id} className="p-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">

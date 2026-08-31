@@ -21,5 +21,5 @@ CREATE TABLE IF NOT EXISTS system_metrics_hourly (
     created_at        INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_metrics_entity_time 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_entity_time 
 ON system_metrics_hourly(entity_type, entity_id, bucket_start);

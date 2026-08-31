@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/fusuycorp/pikpik/pkg/store"
 	"github.com/gorilla/websocket"
 	"golang.org/x/sys/unix"
 )
@@ -24,11 +25,17 @@ import (
 // across Docker containers, Swarm tasks, and Host Machine operating systems.
 type PTYHandler struct {
 	dockerCli dockerclient.CommonAPIClient
+	store     store.Store
 }
 
 // NewPTYHandler creates a new PTYHandler instance.
 func NewPTYHandler(dockerCli dockerclient.CommonAPIClient) *PTYHandler {
 	return &PTYHandler{dockerCli: dockerCli}
+}
+
+// SetStore configures the backing metadata store for project/service authorization.
+func (h *PTYHandler) SetStore(st store.Store) {
+	h.store = st
 }
 
 type safeWSConn struct {
@@ -93,6 +100,10 @@ func (h *PTYHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	role := GetRoleFromContext(r.Context())
+	reqProjectID := r.URL.Query().Get("project_id")
+	reqAppID := r.URL.Query().Get("app_id")
+
 	switch targetType {
 	case "container":
 		if targetID == "" {
@@ -102,7 +113,7 @@ func (h *PTYHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(cmd) == 0 {
 			cmd = []string{"/bin/sh"}
 		}
-		h.handleContainerPTY(ctx, cancel, safeConn, targetID, cmd)
+		h.handleContainerPTY(ctx, cancel, safeConn, targetID, cmd, role, reqProjectID, reqAppID)
 
 	case "swarm_task":
 		if targetID == "" {
@@ -112,10 +123,9 @@ func (h *PTYHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(cmd) == 0 {
 			cmd = []string{"/bin/sh"}
 		}
-		h.handleSwarmTaskPTY(ctx, cancel, safeConn, targetID, cmd)
+		h.handleSwarmTaskPTY(ctx, cancel, safeConn, targetID, cmd, role, reqProjectID, reqAppID)
 
 	case "host_machine", "host", "node":
-		role := GetRoleFromContext(r.Context())
 		if role != RoleAdmin && role != RoleOwner {
 			safeConn.WriteExit(1, "forbidden: host machine terminal requires admin or owner role")
 			return
@@ -134,10 +144,71 @@ func (h *PTYHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *PTYHandler) handleContainerPTY(ctx context.Context, cancel context.CancelFunc, sConn *safeWSConn, containerID string, cmd []string) {
+func (h *PTYHandler) handleContainerPTY(ctx context.Context, cancel context.CancelFunc, sConn *safeWSConn, containerID string, cmd []string, role string, reqProjectID string, reqAppID string) {
 	if h.dockerCli == nil {
 		sConn.WriteExit(1, "docker client unavailable")
 		return
+	}
+
+	if role == "" || role == RoleViewer {
+		sConn.WriteExit(1, "forbidden: container terminal requires developer or admin role")
+		return
+	}
+
+	// 1. Inspect container to verify existence, labels, and management boundaries
+	cnt, err := h.dockerCli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		sConn.WriteExit(1, fmt.Sprintf("container inspect failed: %v", err))
+		return
+	}
+
+	// 2. Control plane and unmanaged containers isolation
+	isManaged := cnt.Config != nil && cnt.Config.Labels != nil && cnt.Config.Labels["pikpik.managed"] == "true"
+	isInternal := cnt.Config != nil && cnt.Config.Labels != nil && (cnt.Config.Labels["pikpik.internal"] == "true" || cnt.Config.Labels["pikpik.role"] == "system-registry" || cnt.Config.Labels["pikpik.service"] == "registry")
+
+	if !isManaged || isInternal {
+		if role != RoleAdmin && role != RoleOwner {
+			sConn.WriteExit(1, "forbidden: access to control plane or unmanaged containers requires admin role")
+			return
+		}
+	}
+
+	// 3. Per-project / service authorization for non-admin callers (Developer)
+	if role != RoleAdmin && role != RoleOwner {
+		var cntProjectID, cntAppID string
+		if cnt.Config != nil && cnt.Config.Labels != nil {
+			cntProjectID = cnt.Config.Labels["pikpik.project_id"]
+			cntAppID = cnt.Config.Labels["pikpik.app_id"]
+			if cntAppID == "" {
+				cntAppID = cnt.Config.Labels["pikpik.service_name"]
+			}
+			if cntAppID == "" {
+				cntAppID = cnt.Config.Labels["pikpik.name"]
+			}
+		}
+
+		if cntProjectID == "" {
+			sConn.WriteExit(1, "forbidden: unassociated tenant container requires admin role")
+			return
+		}
+
+		if reqProjectID != "" && reqProjectID != cntProjectID {
+			sConn.WriteExit(1, fmt.Sprintf("forbidden: caller does not have access to project %s", cntProjectID))
+			return
+		}
+
+		if reqAppID != "" && cntAppID != "" && reqAppID != cntAppID {
+			sConn.WriteExit(1, fmt.Sprintf("forbidden: caller does not have access to service %s", cntAppID))
+			return
+		}
+
+		if h.store != nil {
+			proj, err := h.store.Projects().GetByID(ctx, cntProjectID)
+			if err != nil || proj == nil {
+				sConn.WriteExit(1, "forbidden: target project not found or inaccessible")
+				return
+			}
+		}
 	}
 
 	execCfg := container.ExecOptions{
@@ -223,7 +294,7 @@ func (h *PTYHandler) handleContainerPTY(ctx context.Context, cancel context.Canc
 	}
 }
 
-func (h *PTYHandler) handleSwarmTaskPTY(ctx context.Context, cancel context.CancelFunc, sConn *safeWSConn, taskID string, cmd []string) {
+func (h *PTYHandler) handleSwarmTaskPTY(ctx context.Context, cancel context.CancelFunc, sConn *safeWSConn, taskID string, cmd []string, role string, reqProjectID string, reqAppID string) {
 	if h.dockerCli == nil {
 		sConn.WriteExit(1, "docker client unavailable")
 		return
@@ -260,7 +331,7 @@ func (h *PTYHandler) handleSwarmTaskPTY(ctx context.Context, cancel context.Canc
 		containerID = taskID
 	}
 
-	h.handleContainerPTY(ctx, cancel, sConn, containerID, cmd)
+	h.handleContainerPTY(ctx, cancel, sConn, containerID, cmd, role, reqProjectID, reqAppID)
 }
 
 type hostSession struct {

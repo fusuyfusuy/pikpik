@@ -20,19 +20,21 @@ type TokenValidatorFunc func(token string) bool
 
 // AgentServerOptions configures the Control Plane agent server handler.
 type AgentServerOptions struct {
-	EnrollmentToken string
-	TokenValidator  TokenValidatorFunc
-	OnTelemetry     TelemetryCallback
-	OnLog           LogCallback
-	RingBuffers     map[string]telemetry.RingBuffer
-	WebSocketHub    telemetry.WebSocketHub
-	MachineStore    store.MachineStore
+	EnrollmentToken    string
+	TokenValidator     TokenValidatorFunc
+	NodeTokenValidator NodeTokenValidatorFunc
+	OnTelemetry        TelemetryCallback
+	OnLog              LogCallback
+	RingBuffers        map[string]telemetry.RingBuffer
+	WebSocketHub       telemetry.WebSocketHub
+	MachineStore       store.MachineStore
 }
 
 type defaultAgentServer struct {
 	mu           sync.RWMutex
 	sessions     map[string]*NodeSession
 	tokenVal     TokenValidatorFunc
+	nodeTokenVal NodeTokenValidatorFunc
 	onTelemetry  TelemetryCallback
 	onLog        LogCallback
 	ringBuffers  map[string]telemetry.RingBuffer
@@ -59,6 +61,7 @@ func NewAgentServer(opts AgentServerOptions) telemetry.AgentServer {
 	return &defaultAgentServer{
 		sessions:     make(map[string]*NodeSession),
 		tokenVal:     val,
+		nodeTokenVal: opts.NodeTokenValidator,
 		onTelemetry:  opts.OnTelemetry,
 		onLog:        opts.OnLog,
 		ringBuffers:  rb,
@@ -94,6 +97,21 @@ func (s *defaultAgentServer) RegisterNode(nodeID string, session interface{}) {
 	defer s.mu.Unlock()
 
 	if sess, ok := session.(*NodeSession); ok {
+		if oldSess, exists := s.sessions[nodeID]; exists && oldSess != nil && oldSess != sess {
+			if oldSess.Conn != nil {
+				_ = oldSess.Conn.Close(websocket.StatusPolicyViolation, "displaced by new session")
+			}
+			for id, ch := range oldSess.PendingCommands {
+				select {
+				case ch <- &CommandResult{
+					ID:      id,
+					Success: false,
+					Error:   "node re-enrolled with new session",
+				}:
+				default:
+				}
+			}
+		}
 		s.sessions[nodeID] = sess
 	}
 }
@@ -170,8 +188,27 @@ func (s *defaultAgentServer) HandleHTTP(w http.ResponseWriter, r *http.Request) 
 	if nodeID == "" {
 		nodeID = r.URL.Query().Get("node_id")
 	}
+
+	// If mTLS client certificates are present, enforce CommonName identity binding
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		certCN := r.TLS.PeerCertificates[0].Subject.CommonName
+		if certCN != "" {
+			if nodeID != "" && nodeID != certCN {
+				http.Error(w, fmt.Sprintf("Forbidden: claimed node ID %q does not match client certificate CommonName %q", nodeID, certCN), http.StatusForbidden)
+				return
+			}
+			nodeID = certCN
+		}
+	}
+
 	if nodeID == "" {
 		nodeID = "node_" + r.RemoteAddr
+	}
+
+	// Validate node-specific token binding if configured
+	if s.nodeTokenVal != nil && !s.nodeTokenVal(nodeID, token) {
+		http.Error(w, fmt.Sprintf("Unauthorized: node %q not authorized with provided token", nodeID), http.StatusUnauthorized)
+		return
 	}
 
 	nodeName := r.Header.Get("X-Node-Name")
@@ -221,10 +258,10 @@ func (s *defaultAgentServer) HandleHTTP(w http.ResponseWriter, r *http.Request) 
 		NodeRole:        nodeRole,
 		RemoteAddr:      r.RemoteAddr,
 		ConnectedAt:     time.Now().UTC(),
-		LastHeartbeat:   time.Now().UTC(),
 		Conn:            conn,
 		PendingCommands: make(map[string]chan *CommandResult),
 	}
+	session.UpdateHeartbeat()
 
 	if s.machineStore != nil {
 		now := time.Now().UTC()
@@ -266,7 +303,7 @@ func (s *defaultAgentServer) heartbeatLoop(ctx context.Context, session *NodeSes
 			return
 		case <-ticker.C:
 			// Check dead connection deadline (25s)
-			if time.Since(session.LastHeartbeat) > 25*time.Second {
+			if time.Since(session.GetLastHeartbeat()) > 25*time.Second {
 				session.Conn.Close(websocket.StatusPolicyViolation, "heartbeat timeout")
 				return
 			}
@@ -303,7 +340,7 @@ func (s *defaultAgentServer) readLoop(ctx context.Context, session *NodeSession)
 			return
 		}
 
-		session.LastHeartbeat = time.Now().UTC()
+		session.UpdateHeartbeat()
 
 		if msgType != websocket.MessageText {
 			continue

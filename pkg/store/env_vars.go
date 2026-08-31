@@ -116,3 +116,13 @@ func (s *sqlEnvVarStore) Delete(ctx context.Context, tier ScopeTier, resourceID,
 	}
 	return nil
 }
+
+func (s *sqlEnvVarStore) DeleteByResource(ctx context.Context, tier ScopeTier, resourceID string) error {
+	query := `DELETE FROM env_vars WHERE scope_tier = ? AND resource_id = ?`
+	_, err := s.db.ExecContext(ctx, query, string(tier), resourceID)
+	if err != nil {
+		return fmt.Errorf("store: failed to delete env vars by resource: %w", err)
+	}
+	return nil
+}
+

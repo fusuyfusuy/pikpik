@@ -77,9 +77,9 @@ export function usePTY(options: UsePTYOptions = {}) {
     if (cmd) url.searchParams.set('cmd', cmd);
 
     const token = getToken();
-    if (token) url.searchParams.set('token', token);
+    const protocols = token ? [`pikpik-auth.${token}`] : undefined;
 
-    const ws = new WebSocket(url.toString());
+    const ws = protocols ? new WebSocket(url.toString(), protocols) : new WebSocket(url.toString());
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 

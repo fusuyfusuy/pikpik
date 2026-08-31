@@ -502,4 +502,72 @@ func TestCronScheduler_BootTimePruneStaleMultipartUploads(t *testing.T) {
 	}, 1*time.Second, 10*time.Millisecond)
 }
 
+func TestCronScheduler_ExecutionTimeoutIsolation(t *testing.T) {
+	ctx := context.Background()
+	st := newSchedulerTestStore(t)
+
+	org := &store.Organization{Name: "Org Timeout", Slug: "org-timeout"}
+	require.NoError(t, st.Organizations().Create(ctx, org))
+	proj := &store.Project{OrgID: org.ID, Name: "Proj Timeout", Slug: "proj-timeout"}
+	require.NoError(t, st.Projects().Create(ctx, proj))
+	stage := &store.Stage{ProjectID: proj.ID, Name: "Prod", Slug: "prod"}
+	require.NoError(t, st.Stages().Create(ctx, stage))
+	svc := &store.Service{
+		ProjectID: proj.ID,
+		StageID:   stage.ID,
+		Name:      "Timeout DB",
+		Slug:      "timeout-db",
+		Type:      "database",
+		Image:     "postgres:17-alpine",
+	}
+	require.NoError(t, st.Services().Create(ctx, svc))
+
+	pastTime := time.Date(2026, 8, 30, 2, 0, 0, 0, time.UTC)
+	sch := &store.BackupSchedule{
+		ServiceID: svc.ID,
+		CronExpr:  "0 2 * * *",
+		Engine:    "postgres:17",
+		S3Bucket:  "backups-bucket",
+		IsEnabled: true,
+		NextRunAt: &pastTime,
+	}
+	require.NoError(t, st.Schedules().Create(ctx, sch))
+
+	// Mock engine that blocks until context is cancelled
+	mockEngine := &mockSchedulerBackupEngine{}
+	hangEngine := &hangingBackupEngine{}
+
+	scheduler := backup.NewCronScheduler(st, hangEngine, nil, backup.CronSchedulerConfig{
+		PollInterval: 10 * time.Millisecond,
+		JobTimeout:   50 * time.Millisecond, // Isolated short timeout
+	})
+
+	now := time.Date(2026, 8, 30, 2, 5, 0, 0, time.UTC)
+	results, errs := scheduler.RunDueJobs(ctx, now)
+	require.Len(t, errs, 1, "should return 1 timeout error")
+	require.Empty(t, results)
+	assert.Contains(t, errs[0].Error(), "context deadline exceeded")
+
+	// Verify failed execution logged in DB
+	execs, err := st.Backups().ListExecutions(ctx, svc.ID, 10)
+	require.NoError(t, err)
+	require.Len(t, execs, 1)
+	assert.Equal(t, "failed", execs[0].Status)
+	assert.Contains(t, execs[0].ErrorMessage, "context deadline exceeded")
+	_ = mockEngine
+}
+
+type hangingBackupEngine struct{}
+
+func (h *hangingBackupEngine) StreamBackup(ctx context.Context, cfg backup.BackupJobConfig) (*backup.BackupResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (h *hangingBackupEngine) StreamRestore(ctx context.Context, cfg backup.RestoreJobConfig) error {
+	return nil
+}
+func (h *hangingBackupEngine) VerifyBackupEphemeral(ctx context.Context, cfg backup.RestoreJobConfig) (bool, error) {
+	return true, nil
+}
+
 

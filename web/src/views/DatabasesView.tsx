@@ -13,6 +13,7 @@ import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatDate } from '../lib/utils';
 import {
   Database as DbIcon,
@@ -46,7 +47,6 @@ export function DatabasesView() {
   const toast = useToast();
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [selectedDb, setSelectedDb] = useState<Database | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Form states for Create DB
@@ -63,7 +63,13 @@ export function DatabasesView() {
   const [retentionDays, setRetentionDays] = useState(14);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);
 
-  const { data: databases, isLoading } = useQuery({
+  const {
+    data: databases,
+    isLoading,
+    isError: isDatabasesError,
+    error: databasesError,
+    refetch: refetchDatabases,
+  } = useQuery({
     queryKey: ['databases'],
     queryFn: api.databases.list,
   });
@@ -98,7 +104,6 @@ export function DatabasesView() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['databases'] });
       toast.success('Database Deleted', 'Database container removed');
-      if (selectedDb) setSelectedDb(null);
     },
     onError: (err: Error) => toast.error('Delete Failed', err.message),
   });
@@ -114,12 +119,9 @@ export function DatabasesView() {
 
   const createScheduleMutation = useMutation({
     mutationFn: (req: CreateBackupScheduleRequest) => api.schedules.create(req),
-    onSuccess: (sch) => {
+    onSuccess: (newSch) => {
       queryClient.invalidateQueries({ queryKey: ['backupSchedules'] });
-      toast.success(
-        'Schedule Created',
-        `Cron backup (${sch.cron_expression || sch.cron_expr}) activated for ${sch.service_id}`
-      );
+      toast.success('Schedule Configured', `Automated backup created for ${newSch.service_id}`);
       setScheduleModalDb(null);
     },
     onError: (err: Error) => toast.error('Failed to create schedule', err.message),
@@ -194,7 +196,13 @@ export function DatabasesView() {
       </div>
 
       {/* Grid */}
-      {isLoading ? (
+      {isDatabasesError ? (
+        <QueryErrorAlert
+          title="Failed to load managed databases"
+          error={databasesError}
+          onRetry={refetchDatabases}
+        />
+      ) : isLoading ? (
         <div className="text-center py-12 text-zinc-500 text-xs">Loading databases...</div>
       ) : !databases || databases.length === 0 ? (
         <Card className="text-center py-12">

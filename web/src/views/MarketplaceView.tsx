@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import {
   Store,
   Search,
@@ -67,7 +68,13 @@ export function MarketplaceView() {
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [deployResult, setDeployResult] = useState<DeployTemplateResponse | null>(null);
 
-  const { data: templates, isLoading } = useQuery({
+  const {
+    data: templates,
+    isLoading,
+    isError: isTemplatesError,
+    error: templatesError,
+    refetch: refetchTemplates,
+  } = useQuery({
     queryKey: ['templates', selectedCategory, searchQuery],
     queryFn: () => api.templates.list(selectedCategory, searchQuery),
   });
@@ -217,7 +224,13 @@ export function MarketplaceView() {
       </div>
 
       {/* Grid of Templates */}
-      {isLoading ? (
+      {isTemplatesError ? (
+        <QueryErrorAlert
+          title="Failed to load marketplace templates"
+          error={templatesError}
+          onRetry={refetchTemplates}
+        />
+      ) : isLoading ? (
         <div className="text-center py-16 text-zinc-500 text-xs font-mono">
           <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2 text-cyan-400" />
           Loading curated marketplace templates...

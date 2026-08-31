@@ -46,6 +46,9 @@ func (p *LogFrameProcessor) DecodeStream(ctx context.Context, src io.Reader, std
 
 	select {
 	case <-ctx.Done():
+		if closer, ok := src.(io.Closer); ok {
+			_ = closer.Close()
+		}
 		return ctx.Err()
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, io.EOF) {

@@ -7,6 +7,7 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { useToast } from '../components/ui/Toast';
+import { QueryErrorAlert } from '../components/ui/QueryErrorAlert';
 import { formatBytes } from '../lib/utils';
 import {
   Cpu,
@@ -26,12 +27,22 @@ export function SystemView() {
   const [pruneVolumes, setPruneVolumes] = useState(false);
   const [pruneBuildCache, setPruneBuildCache] = useState(true);
 
-  const { data: info, refetch: refetchInfo } = useQuery({
+  const {
+    data: info,
+    isError: isInfoError,
+    error: infoError,
+    refetch: refetchInfo,
+  } = useQuery({
     queryKey: ['systemInfo'],
     queryFn: api.system.getInfo,
   });
 
-  const { data: disk, refetch: refetchDisk } = useQuery({
+  const {
+    data: disk,
+    isError: isDiskError,
+    error: diskError,
+    refetch: refetchDisk,
+  } = useQuery({
     queryKey: ['diskInfo'],
     queryFn: api.system.getDiskUsage,
   });
@@ -91,6 +102,17 @@ export function SystemView() {
           </Button>
         </div>
       </div>
+
+      {(isInfoError || isDiskError) && (
+        <QueryErrorAlert
+          title="Failed to load system metrics"
+          error={infoError || diskError}
+          onRetry={() => {
+            refetchInfo();
+            refetchDisk();
+          }}
+        />
+      )}
 
       {/* Host System Specs */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
