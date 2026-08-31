@@ -58,6 +58,7 @@ It compiles into 3 standalone Go binaries and an embedded React SPA:
 | M1 | UI Clothing & CLI Verification | Frontend Canary slider & API methods in `web/`, CLI verification | none | DONE |
 | M2 | E2E Test Suite Pass (Tiers 1-4) | Requirement-driven opaque-box test suite validation (Tiers 1-4) | M1, TEST_READY | DONE |
 | M3 | Adversarial Coverage Hardening (Tier 5) & Parity Publication | White-box adversarial testing, 0-race audit, final parity matrix | M2 | DONE |
+| M4 | Dokploy Parity Audit & Chaos Matrix (R1-R5) | Full Dokploy architectural comparison, 5-dimension chaos test matrix, <32MB streaming memory ceiling | M3 | DONE |
 
 ---
 
